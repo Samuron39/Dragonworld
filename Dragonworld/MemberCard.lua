@@ -193,22 +193,38 @@ local function GetGearRow(index)
     return row
 end
 
+-- Professions står i to kolonner (to rader), eller i tre kolonner med
+-- mindre skrift når medlemmet har flere enn fire.
+local MAX_CARD_PROFESSIONS = 6
+
 local function GetProfessionChip(index)
     local chip = card.professionChips[index]
     if chip then
         return chip
     end
-    local width = math.floor((LEFT_WIDTH - 6) / 2)
-    chip = DW.CreateChip(card, width, 22)
-    chip:SetPoint("TOPLEFT", 16 + ((index - 1) % 2) * (width + 6), -148 - math.floor((index - 1) / 2) * 26)
+    chip = DW.CreateChip(card, 100, 22)
     chip:SetScript("OnClick", function(self)
-        if current and self.profession and DW.OpenMemberProfession then
+        if not (current and self.profession and self.linked) then
+            return
+        end
+        if DW.ShowMemberProfession then
+            DW.ShowMemberProfession(current, self.profession)
+        elseif DW.OpenMemberProfession then
             DW.OpenMemberProfession(current, self.profession)
         end
     end)
     chip:HookScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-        GameTooltip:AddLine(self.linked and L.MC_PROFESSION_OPEN or L.MC_PROFESSION_NOT_SHARED, 1, 1, 1, true)
+        if self.fullText then
+            GameTooltip:AddLine(self.fullText, 1.00, 0.82, 0.00)
+        end
+        local text = L.MC_PROFESSION_NOT_SHARED
+        if self.linked then
+            text = L.MC_PROFESSION_OPEN
+        elseif self.gathering then
+            text = L.RO_TIP_GATHER
+        end
+        GameTooltip:AddLine(text, 1, 1, 1, true)
         GameTooltip:Show()
     end)
     chip:HookScript("OnLeave", function()
@@ -262,20 +278,34 @@ local function RefreshCard()
     -- Professions.
     card.professionsLabel:SetText(L.MC_PROFESSIONS)
     local professions = member.professions or {}
-    for index, profession in ipairs(professions) do
-        if index > 4 then
-            break
-        end
+    local shown = math.min(#professions, MAX_CARD_PROFESSIONS)
+    local columns = shown > 4 and 3 or 2
+    local width = math.floor((LEFT_WIDTH - (columns - 1) * 6) / columns)
+    for index = 1, shown do
+        local profession = professions[index]
         local chip = GetProfessionChip(index)
-        local linked = DW.CanOpenMemberProfession and DW.CanOpenMemberProfession(member, profession) or false
+        local linked
+        if DW.CanShowMemberProfession then
+            linked = DW.CanShowMemberProfession(member, profession) and true or false
+        else
+            linked = DW.CanOpenMemberProfession and DW.CanOpenMemberProfession(member, profession) or false
+        end
+        local full = (profession.max or 0) > 0 and ("%s %d/%d"):format(profession.name, profession.level, profession.max)
+            or ("%s %d"):format(profession.name, profession.level)
         chip.profession = profession
         chip.linked = linked
-        chip.label:SetText((profession.max or 0) > 0 and ("%s %d/%d"):format(profession.name, profession.level, profession.max)
-            or ("%s %d"):format(profession.name, profession.level))
+        chip.gathering = DW.IsGatheringProfession ~= nil and DW.IsGatheringProfession(profession)
+        chip.fullText = full
+        chip:SetSize(width, 22)
+        chip:ClearAllPoints()
+        chip:SetPoint("TOPLEFT", 16 + ((index - 1) % columns) * (width + 6), -148 - math.floor((index - 1) / columns) * 26)
+        -- Med tre kolonner er det ikke plass til "/150": den står i tooltipen.
+        chip.label:SetFontObject(columns == 3 and "GameFontHighlightSmall" or "GameFontHighlight")
+        chip.label:SetText(columns == 3 and ("%s %d"):format(profession.name, profession.level) or full)
         chip:SetDimmed(not linked)
         chip:Show()
     end
-    for index = math.min(#professions, 4) + 1, #card.professionChips do
+    for index = shown + 1, #card.professionChips do
         card.professionChips[index]:Hide()
     end
     card.noProfessions:SetText(L.MC_NO_PROFESSIONS)

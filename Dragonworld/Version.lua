@@ -11,16 +11,16 @@
 
 local ADDON_NAME, DW = ...
 
-DW.RELEASE = "0.21.0"
+DW.RELEASE = "0.22.0"
 
 -- Når RELEASE ble lagt ut (sekunder siden 1970, UTC). Med automatisk
 -- oppdatering er den lastet ned noen minutter etter dette. Skrives av release.ps1.
-DW.RELEASED_AT = 1795293134
+DW.RELEASED_AT = 1795294795
 
 -- Den nyeste versjonen som la til eller fjernet filer eller bilder. Har man en
 -- eldre enn denne, holder ikke /reload; spillet må startes helt på nytt.
 -- Skrives av release.ps1.
-DW.RESTART_RELEASE = "0.21.0"
+DW.RESTART_RELEASE = "0.22.0"
 
 -- Settes til true av oppdateringsprogrammet (Updater\update.ps1) på PC-er der
 -- automatisk oppdatering er slått på. Da vet addonen at nye versjoner lastes

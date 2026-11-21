@@ -625,6 +625,7 @@ function FontString:GetText() return self.text end
 function FontString:SetTextColor(r, g, b) assert(r and g and b); self.color = { r, g, b } end
 function FontString:SetJustifyH(j) assert(j == "LEFT" or j == "RIGHT" or j == "CENTER"); self.justifyH = j end
 function FontString:SetWordWrap(wrap) end
+function FontString:SetFontObject(font) assert(FONTS[font] or type(font) == "table", "SetFontObject: unknown font " .. tostring(font)); self.fontTemplate = font end
 -- How wide the text is drawn. Here every character is 6 wide.
 function FontString:GetStringWidth() return #(self.text or "") * 6 end
 function FontString:SetFont(path, size, flags)
@@ -3131,9 +3132,22 @@ do
     button.scripts.OnLeave(button)
     check("...and it goes back to yellow", colour(button.text.color, 1.00, 0.82, 0.00) and not GameTooltip:IsShown())
     button.scripts.OnClick(button)
-    check("clicking it does what a click on the profession link in chat does",
+    local rv = DragonworldRecipes
+    check("clicking it opens the recipe window; with only the game's link shared (an older version) it says what is missing",
+        rv ~= nil and rv:IsVisible() and rv.title.text == "Altine - Alchemy 300/300" and rv.empty:IsShown()
+        and rv.empty.text == ns.strings.nb.RC_NONE:format("Altine", "Alchemy") and #itemRefs == 0, rv and rv.title.text)
+    check("...and offers the game's own window", rv.gameButton:IsShown() and rv.gameButton.label.text == "Spillets vindu" and rv.close.label.text == "Lukk")
+    rv.gameButton.scripts.OnClick(rv.gameButton)
+    check("that button does what a click on the profession link in chat does",
         #itemRefs == 1 and itemRefs[1].link == "trade:Player-1-Altine:2259:171"
         and itemRefs[1].text == "|cffffd000|Htrade:Player-1-Altine:2259:171|h[Alchemy]|h|r", itemRefs[1] and itemRefs[1].text)
+    rv.close.scripts.OnClick(rv.close)
+    check("Close closes the recipe window", not rv:IsShown())
+    local herb = roRow("Altine").buttons[2]
+    herb.scripts.OnEnter(herb)
+    check("a gathering profession is never clickable, and hovering says there is nothing to show",
+        not herb.linked and GameTooltip.lines[2] == ns.strings.nb.RO_TIP_GATHER, table.concat(GameTooltip.lines, " / "))
+    herb.scripts.OnLeave(herb)
 end
 roReceive("P\tPlayer-1-Altine\tAlchemy:300:300;Herbalism:285:300", "Altine-Stormrage")
 flush()
@@ -3148,7 +3162,12 @@ do
         and card.professionChips[1].label.text == "Alchemy 300/300" and not card.professionChips[1].dimmed
         and card.professionChips[2].label.text == "Herbalism 285/300" and card.professionChips[2].dimmed)
     card.professionChips[1].scripts.OnClick(card.professionChips[1])
-    check("clicking a shared one on the card opens it", #itemRefs == 2 and itemRefs[2].link == "trade:Player-1-Altine:2259:171")
+    check("clicking a shared one on the card opens the recipe window on top of the card",
+        DragonworldRecipes:IsVisible() and DragonworldRecipes.title.text == "Altine - Alchemy 300/300" and card:IsVisible()
+        and DragonworldRecipes:GetFrameLevel() > card:GetFrameLevel() and #itemRefs == 1)
+    DragonworldRecipes.close.scripts.OnClick(DragonworldRecipes.close)
+    card.professionChips[2].scripts.OnClick(card.professionChips[2])
+    check("...a gathering one opens nothing", not DragonworldRecipes:IsShown())
     card.close.scripts.OnClick(card.close)
     roRow("Dagny").scripts.OnMouseUp(roRow("Dagny"), "LeftButton")
     check("a member with no known professions gets a card that says so",
@@ -3166,13 +3185,15 @@ end
 clearChat()
 SetItemRef = function() error("blocked") end
 roRow("Altine").buttons[1].scripts.OnClick(roRow("Altine").buttons[1])
+DragonworldRecipes.gameButton.scripts.OnClick(DragonworldRecipes.gameButton)
 check("if opening fails, the link is put in the player's chat instead",
     has("Fikk ikke åpnet professionen til Altine direkte.") and has("|Htrade:Player-1-Altine:2259:171|h[Alchemy]|h"), chatText())
 clearChat()
 SetItemRef = nil
-roRow("Altine").buttons[1].scripts.OnClick(roRow("Altine").buttons[1])
+DragonworldRecipes.gameButton.scripts.OnClick(DragonworldRecipes.gameButton)
 check("...also in a client without that function", has("|Htrade:Player-1-Altine:2259:171|h[Alchemy]|h"), chatText())
 SetItemRef = realSetItemRef
+DragonworldRecipes.close.scripts.OnClick(DragonworldRecipes.close)
 clearChat()
 
 -- A link filed under a name (older version, no id) cannot be opened.
@@ -3286,15 +3307,17 @@ end
 -- ---- "Open next": the addon opens the professions for the player, one per click ----
 do
     local realGetProfessions = GetProfessions
-    GetProfessions = function() return 1, 2, nil, 4, 5 end
+    GetProfessions = function() return 1, 2, 3, 4, 5 end
+    MY_PROFESSIONS[3] = { "Tailoring", 136249, 120, 150, 0, 0, 197 }
     MY_PROFESSIONS[4] = { "Fishing", 136245, 29, 75, 0, 0, 356 }
     roDB().seen = {}
     flush()
     sentNow(RO_PREFIX)
 
     -- The game: OpenTradeSkill opens one profession window and only works from
-    -- a click. Fishing has no window. Mining's window is called Smelting, and
-    -- its link does not carry Mining's number.
+    -- a click. Tailoring will not open here. Fishing is a gathering profession
+    -- (nothing to share), so it is never tried. Mining's window is called
+    -- Smelting, and its link does not carry Mining's number.
     local opened, closed, current, linkReady = {}, 0, nil, true
     local WINDOWS = {
         [185] = { name = "Cooking", level = 150, max = 225, link = "2550:185" },
@@ -3326,7 +3349,8 @@ do
     check("where the game lets an addon open a profession, the reminder has a button for the next one",
         open:IsShown() and open:IsEnabled() and open.label.text == "Åpne neste: Cooking" and select(1, shareNotice.ok:GetPoint()) == "BOTTOMLEFT"
         and shareNotice.text.text == ns.strings.nb.RO_SHARE_TEXT .. " " .. ns.strings.nb.RO_SHARE_TEXT_BUTTON and shareNotice.status.text == ""
-        and shareNotice.list.text == "Cooking 150 - ikke åpnet ennå\nEngineering 210 - ikke åpnet ennå\nFishing 29 - ikke åpnet ennå\nMining 230 - ikke åpnet ennå",
+        and shareNotice.list.text == "Cooking 150 - ikke åpnet ennå\nEngineering 210 - ikke åpnet ennå\n|cff9d9d9dFishing 29 - samleyrke, ingenting å dele|r"
+            .. "\nMining 230 - ikke åpnet ennå\nTailoring 120 - ikke åpnet ennå",
         open.label.text .. " | " .. shareNotice.list.text)
 
     inCombat = true
@@ -3350,27 +3374,29 @@ do
     check("the addon keeps looking while the game has not given the link yet",
         #opened == 2 and opened[2] == 202 and closed == 1 and not open:IsEnabled() and shareNotice.status.text == "Åpner Engineering ...")
     for _ = 1, 5 do flushNow() end
-    check("after a few seconds it gives up on that one, leaves its window open, and moves on",
+    check("after a few seconds it gives up on that one, leaves its window open, and moves on, past the gathering profession",
         shareNotice.status.text == "Fikk ingenting fra Engineering. Prøv å åpne den selv." and closed == 1 and current == 202
-        and open:IsEnabled() and open.label.text == "Åpne neste: Fishing", shareNotice.status.text .. " | " .. open.label.text)
+        and open:IsEnabled() and open.label.text == "Åpne neste: Mining", shareNotice.status.text .. " | " .. open.label.text)
     linkReady = true
     fire("TRADE_SKILL_LIST_UPDATE")
     check("a link that arrives late is still taken", shareNotice.list.text:find("|cff40ff40Engineering 210 - delt|r", 1, true) ~= nil, shareNotice.list.text)
 
     open.scripts.OnClick(open)
-    check("a profession the game cannot open is explained and passed over",
-        #opened == 3 and opened[3] == 356 and shareNotice.status.text == "Fikk ikke åpnet Fishing. Den har kanskje ikke noe vindu."
-        and open:IsEnabled() and open.label.text == "Åpne neste: Mining" and closed == 1, shareNotice.status.text .. " | " .. open.label.text)
-
-    open.scripts.OnClick(open)
     fire("TRADE_SKILL_SHOW")
     flushNow()
     check("a window with another name is filed under the profession that was asked for (Mining's window is called Smelting)",
-        #opened == 4 and opened[4] == 186 and roDB().seen["Player-1-Tester"].Mining.link == "2656:9999" and roDB().seen["Player-1-Tester"].Smelting == nil
-        and shareNotice.status.text == "Mining er delt." and closed == 2, shareNotice.status.text)
-    check("with nothing left to open, the button says so and is greyed out",
+        #opened == 3 and opened[3] == 186 and roDB().seen["Player-1-Tester"].Mining.link == "2656:9999" and roDB().seen["Player-1-Tester"].Smelting == nil
+        and shareNotice.status.text == "Mining er delt." and closed == 2 and open.label.text == "Åpne neste: Tailoring", shareNotice.status.text)
+
+    open.scripts.OnClick(open)
+    check("a profession the game cannot open is explained and passed over",
+        #opened == 4 and opened[4] == 197 and shareNotice.status.text == "Fikk ikke åpnet Tailoring. Den har kanskje ikke noe vindu."
+        and closed == 2, shareNotice.status.text .. " | " .. open.label.text)
+    check("with nothing left to open, the button says so and is greyed out; Fishing was never tried",
         not open:IsEnabled() and open.label.text == "Ingen flere å åpne"
-        and shareNotice.list.text == "|cff40ff40Cooking 150 - delt|r\n|cff40ff40Engineering 210 - delt|r\nFishing 29 - ikke åpnet ennå\n|cff40ff40Mining 230 - delt|r",
+        and shareNotice.list.text == "|cff40ff40Cooking 150 - delt|r\n|cff40ff40Engineering 210 - delt|r\n|cff9d9d9dFishing 29 - samleyrke, ingenting å dele|r"
+            .. "\n|cff40ff40Mining 230 - delt|r\nTailoring 120 - ikke åpnet ennå"
+        and table.concat(opened, ",") == "185,202,186,197",
         open.label.text .. " | " .. shareNotice.list.text)
     open.scripts.OnClick(open)
     check("...and pressing it does nothing", #opened == 4)
@@ -3378,7 +3404,7 @@ do
     clearChat()
     dw("debug")
     check("/dw debug shows whether the addon can open professions, and the game's number for each",
-        has("kan åpne for deg (OpenTradeSkill): true | nummer: Cooking=185, Engineering=202, Fishing=356, Mining=186"), chatText())
+        has("kan åpne for deg (OpenTradeSkill): true | nummer: Cooking=185, Engineering=202, Fishing=356, Mining=186, Tailoring=197"), chatText())
     clearChat()
 
     C_TradeSkillUI.OpenTradeSkill = nil
@@ -3389,12 +3415,305 @@ do
     shareNotice.ok.scripts.OnClick(shareNotice.ok)
     C_TradeSkillUI = nil
     GetProfessions = realGetProfessions
-    MY_PROFESSIONS[4] = nil
+    MY_PROFESSIONS[3], MY_PROFESSIONS[4] = nil, nil
 end
 roDB().seen = {}
 fire("GUILD_ROSTER_UPDATE")
 flush()
 sentNow(RO_PREFIX)
+
+-- ---- Recipe lists: the addon shares what each member can make ----
+;(function()
+    local savedSpell = C_Spell
+    local spellNames = { [2657] = "Smelt Copper", [2659] = "Smelt Bronze", [3304] = "Smelt Tin", [9901] = "Some Blacksmithing Recipe" }
+    C_Spell = { GetSpellName = function(id) return spellNames[id] end }
+    local function onlyC(list)
+        local out = {}
+        for _, m in ipairs(list) do if m:sub(1, 1) == "C" then out[#out + 1] = m end end
+        return out
+    end
+
+    -- The game: our Mining window (line 186). One listed recipe belongs to
+    -- Blacksmithing (164): the game can still be showing the previous list.
+    local LEARNED = { [2657] = true, [2659] = true, [3304] = false, [9901] = true }
+    local LINE_OF = { [2657] = 186, [2659] = 186, [3304] = 186, [9901] = 164 }
+    local changing, extra = false, {}
+    C_TradeSkillUI = {
+        GetBaseProfessionInfo = function() return { professionName = "Mining", skillLevel = 230, maxSkillLevel = 300, professionID = 186 } end,
+        GetTradeSkillListLink = function() return "|cffffd000|Htrade:Player-1-Tester:2575:186|h[Mining]|h|r" end,
+        IsTradeSkillLinked = function() return false end,
+        IsDataSourceChanging = function() return changing end,
+        GetAllRecipeIDs = function()
+            local all = { 2657, 2659, 3304, 9901 }
+            for _, id in ipairs(extra) do all[#all + 1] = id end
+            return all
+        end,
+        GetRecipeInfo = function(id) return { recipeID = id, learned = LEARNED[id] == true or extra[1] ~= nil and id >= 100000 } end,
+        IsRecipeInSkillLine = function(id, line)
+            assert(type(id) == "number" and type(line) == "number", "IsRecipeInSkillLine(recipeID, skillLineID)")
+            return (LINE_OF[id] or 186) == line
+        end,
+    }
+    changing = true
+    fire("TRADE_SKILL_SHOW")
+    check("while the game is still building the window's list, no recipes are read",
+        roDB().crafts["Player-1-Tester"] == nil or roDB().crafts["Player-1-Tester"].Mining == nil)
+    changing = false
+    fire("TRADE_SKILL_LIST_UPDATE")
+    local mine = roDB().crafts["Player-1-Tester"] and roDB().crafts["Player-1-Tester"].Mining
+    check("opening your own profession reads the recipes you have learned there, and only those of that profession",
+        mine ~= nil and mine.ids == "21t,21v" and mine.t == SERVER_NOW, mine and mine.ids)
+    flush()
+    do
+        local c = onlyC(sentNow(RO_PREFIX))
+        check("...and sends the list to the guild in a message of its own (spell ids written in base 36)",
+            #c == 1 and c[1] == ("C\tPlayer-1-Tester\tMining\t%d\t1\t1\t21t,21v"):format(SERVER_NOW), table.concat(c, " ; "))
+    end
+    fire("TRADE_SKILL_LIST_UPDATE")
+    flush()
+    check("nothing is sent again while the list is the same", #onlyC(sentNow(RO_PREFIX)) == 0)
+    LEARNED[3304] = true
+    fire("TRADE_SKILL_LIST_UPDATE")
+    flush()
+    do
+        local c = onlyC(sentNow(RO_PREFIX))
+        check("a newly learned recipe sends the list again, marked newer even within the same second",
+            #c == 1 and c[1] == ("C\tPlayer-1-Tester\tMining\t%d\t1\t1\t21t,21v,2js"):format(SERVER_NOW + 1)
+            and roDB().crafts["Player-1-Tester"].Mining.t == SERVER_NOW + 1, table.concat(c, " ; "))
+    end
+
+    -- A gathering profession never gets a recipe list, even when the game
+    -- still shows another profession's recipes.
+    C_TradeSkillUI.GetBaseProfessionInfo = function() return { professionName = "Fishing", skillLevel = 29, maxSkillLevel = 75, professionID = 356 } end
+    C_TradeSkillUI.GetTradeSkillListLink = function() return nil end
+    fire("TRADE_SKILL_SHOW")
+    check("a gathering profession gets no recipe list", roDB().crafts["Player-1-Tester"].Fishing == nil)
+    roDB().seen["Player-1-Tester"].Fishing = nil
+    C_TradeSkillUI.GetBaseProfessionInfo = function() return { professionName = "Mining", skillLevel = 230, maxSkillLevel = 300, professionID = 186 } end
+    C_TradeSkillUI.GetTradeSkillListLink = function() return "|cffffd000|Htrade:Player-1-Tester:2575:186|h[Mining]|h|r" end
+    fire("TRADE_SKILL_SHOW")
+    flush()
+    sentNow(RO_PREFIX)
+
+    -- The reminder: where the game can list recipes, a profession counts as
+    -- shared once its recipes are read (the link alone is not enough).
+    roDB().seen["Player-1-Tester"].Cooking = { level = 150, max = 225, link = "2550:185" }
+    roPanel.mineChip.scripts.OnClick(roPanel.mineChip)
+    check("in the reminder, a profession is shared once its recipes are read, not just its link",
+        shareNotice.list.text == "Cooking 150 - ikke åpnet ennå\nEngineering 210 - ikke åpnet ennå\n|cff40ff40Mining 230 - delt|r", shareNotice.list.text)
+    shareNotice.ok.scripts.OnClick(shareNotice.ok)
+    roDB().seen["Player-1-Tester"].Cooking = nil
+
+    -- Someone asks for everything: the list goes along. Asking only for what
+    -- changed after it does not send it.
+    roReceive("R", "Nykommer-Stormrage")
+    flush()
+    check("someone who asks for everything also gets the recipe lists", #onlyC(sentNow(RO_PREFIX)) == 1)
+    roReceive("R\t" .. (SERVER_NOW + 100), "Nykommer-Stormrage")
+    flush()
+    check("...but not when they only ask for what changed after the list did", #onlyC(sentNow(RO_PREFIX)) == 0)
+
+    -- A long list is split so every message stays within the game's 255 characters.
+    for index = 1, 150 do extra[index] = 100000 + index * 7 end
+    fire("TRADE_SKILL_LIST_UPDATE")
+    flush()
+    local long = onlyC(sentNow(RO_PREFIX))
+    do
+        local fits = #long >= 4
+        for index, m in ipairs(long) do
+            fits = fits and #m <= 255 and m:find(("^C\tPlayer%%-1%%-Tester\tMining\t%d\t%d\t%d\t"):format(SERVER_NOW + 2, index, #long)) ~= nil
+        end
+        check("a long recipe list is split into numbered parts, each within 255 characters", fits, #long .. " parts")
+    end
+    -- The same parts, as if they came from Borin, in reverse order.
+    for index = #long, 1, -1 do
+        local text = long[index]:gsub("Player%-1%-Tester", "Player-1-Borin")
+        roReceive(text, "Borin-Stormrage")
+        if index == #long then
+            check("one part alone stores nothing", roDB().crafts["Player-1-Borin"] == nil)
+        end
+    end
+    check("all parts together give the whole list, whatever order they came in",
+        roDB().crafts["Player-1-Borin"] ~= nil and roDB().crafts["Player-1-Borin"].Mining.ids == roDB().crafts["Player-1-Tester"].Mining.ids
+        and roDB().crafts["Player-1-Borin"].Mining.t == SERVER_NOW + 2)
+    roDB().crafts["Player-1-Borin"] = nil
+    extra = {}
+    fire("TRADE_SKILL_LIST_UPDATE")
+    flush()
+    sentNow(RO_PREFIX)
+
+    -- Altine's addon sends her Alchemy recipes. One recipe is answered by the
+    -- game itself (GetRecipeSchematic); the others come from the Wowhead data.
+    local t1 = SERVER_NOW - 500
+    roReceive(("C\tPlayer-1-Altine\tAlchemy\t%d\t2\t2\t%s"):format(t1, "93ci"), "Altine-Stormrage") -- 424242 in base 36
+    check("an incomplete list is not stored", roDB().crafts["Player-1-Altine"] == nil)
+    roReceive(("C\tPlayer-1-Altine\tAlchemy\t%d\t1\t2\t%s"):format(t1, "1sr,1su"), "Altine-Stormrage")  -- 2331, 2334
+    check("a member's recipe list is stored once all its parts have come",
+        roDB().crafts["Player-1-Altine"] ~= nil and roDB().crafts["Player-1-Altine"].Alchemy.ids == "1sr,1su,93ci" and roDB().crafts["Player-1-Altine"].Alchemy.t == t1,
+        roDB().crafts["Player-1-Altine"] and roDB().crafts["Player-1-Altine"].Alchemy.ids)
+    roReceive(("C\tPlayer-1-Altine\tAlchemy\t%d\t1\t1\t1sr"):format(t1 - 10), "Altine-Stormrage")
+    check("an older list does not replace a newer one", roDB().crafts["Player-1-Altine"].Alchemy.ids == "1sr,1su,93ci")
+    clearChat()
+    for _, bad in ipairs({
+        "C\tPlayer-1-Altine\tAlchemy\tsoon\t1\t1\t1sr",
+        ("C\tPlayer-1-Altine\tAlchemy\t%d\t3\t2\t1sr"):format(t1 + 1),
+        ("C\tPlayer-1-Altine\tAlchemy\t%d\t1\t99\t1sr"):format(t1 + 1),
+        ("C\tPlayer-1-Altine\tAlchemy\t%d\t1\t1\t|cffff0000evil|r"):format(t1 + 1),
+        ("C\tPlayer-1-Tester\tMining\t%d\t1\t1\t1sr"):format(SERVER_NOW + 50),
+        "C\tAltine\tAlchemy",
+        "C",
+    }) do
+        roReceive(bad, "Altine-Stormrage")
+    end
+    flush()
+    check("broken recipe messages, and lists claimed for our own character, are ignored without errors",
+        chatText() == "" and roDB().crafts["Player-1-Altine"].Alchemy.ids == "1sr,1su,93ci" and roDB().crafts["Player-1-Tester"].Mining.ids == "21t,21v,2js", chatText())
+
+    -- Her Alchemy can now be opened in the list, and shows what she can make.
+    C_TradeSkillUI = {
+        GetRecipeSchematic = function(id, isRecraft)
+            assert(type(id) == "number" and isRecraft == false, "GetRecipeSchematic(recipeID, false)")
+            if id ~= 424242 then return nil end
+            return { recipeID = id, name = "Forge Iron Sword", outputItemID = 7, reagentSlotSchematics = {
+                { reagents = { { itemID = 20 } }, quantityRequired = 3, required = true },
+                { reagents = { { itemID = 21 } }, quantityRequired = 1, required = false },  -- optional: not listed
+            } }
+        end,
+    }
+    flush()
+    local button = roRow("Altine").buttons[1]
+    check("a profession with a shared recipe list can be opened", button.linked and colour(button.text.color, 1.00, 0.82, 0.00))
+    button.scripts.OnClick(button)
+    local rv = DragonworldRecipes
+    local function rvRows()
+        local out = {}
+        for _, row in ipairs(DragonworldRecipeScroll.scrollChild.children) do
+            if row:IsShown() then out[#out + 1] = row end
+        end
+        return out
+    end
+    local function rvDescribe()
+        local parts = {}
+        for _, row in ipairs(rvRows()) do parts[#parts + 1] = row.name.text .. " [" .. row.reagents.text .. "]" end
+        return table.concat(parts, " | ")
+    end
+    check("the recipe window lists what she can make A-Z, with what each recipe needs",
+        rv:IsVisible() and rv.title.text == "Altine - Alchemy 300/300" and not rv.empty:IsShown()
+        and rv.info.text == "3 oppskrifter. Oppdatert DATE(" .. t1 .. ")."
+        and rvDescribe() == "Elixir of Minor Fortitude [2 Earthroot, 1 Peacebloom, 1 Empty Vial] | Forge Iron Sword [3 Copper Ore] | Minor Mana Potion [1 Mageroyal, 1 Peacebloom, 1 Empty Vial]",
+        rvDescribe())
+    do
+        local sword = rvRows()[2]
+        check("a recipe the game knows shows the item's icon and quality colour", sword.icon.texture == 1007 and colour(sword.name.color, 1, 1, 1))
+        check("the game's window is only offered when the member shared its link", not rv.gameButton:IsShown() == (roDB().professions["Player-1-Altine"].links.Alchemy == nil))
+        sword.scripts.OnEnter(sword)
+        local text = table.concat(GameTooltip.lines, " / ")
+        check("hovering a recipe shows the item, what it needs, and what a click does",
+            GameTooltip.lines[1] == "Iron Sword" and text:find("Trenger: / 3 x Copper Ore", 1, true) ~= nil
+            and text:find(ns.strings.nb.RC_TIP_WHISPER:format("Altine"), 1, true) ~= nil and text:find(ns.strings.nb.RC_TIP_LINK, 1, true) ~= nil, text)
+        sword.scripts.OnLeave(sword)
+
+        local told, inserted
+        local savedTell, savedInsert, savedModified = ChatFrame_SendTell, ChatEdit_InsertLink, IsModifiedClick
+        ChatFrame_SendTell = function(name) told = name end
+        ChatEdit_InsertLink = function(link) inserted = link; return true end
+        IsModifiedClick = function() return false end
+        sword.scripts.OnClick(sword, "LeftButton")
+        check("clicking a recipe whispers the member, with the item ready in the chat line",
+            told == roRow("Altine").member.key and inserted == "|cnIQ1:|Hitem:7::::::::60:::::|h[Iron Sword]|h|r", tostring(told) .. " " .. tostring(inserted))
+        told, inserted = nil, nil
+        IsModifiedClick = function(what) return what == "CHATLINK" end
+        sword.scripts.OnClick(sword, "LeftButton")
+        check("shift-clicking only links the item in chat", told == nil and inserted == "|cnIQ1:|Hitem:7::::::::60:::::|h[Iron Sword]|h|r")
+        ChatFrame_SendTell, ChatEdit_InsertLink, IsModifiedClick = savedTell, savedInsert, savedModified
+    end
+    typeInto(rv.searchBox, "MANA")
+    check("searching narrows the list, ignoring capitals", rvDescribe() == "Minor Mana Potion [1 Mageroyal, 1 Peacebloom, 1 Empty Vial]", rvDescribe())
+    typeInto(rv.searchBox, "zzz")
+    check("...and says so when nothing matches", #rvRows() == 0 and rv.empty:IsShown() and rv.empty.text == ns.strings.nb.RC_NO_MATCH)
+    typeInto(rv.searchBox, "")
+
+    -- A newer list arriving while the window is open shows up in it.
+    roReceive(("C\tPlayer-1-Altine\tAlchemy\t%d\t1\t1\t1sr"):format(t1 + 5), "Altine-Stormrage")
+    flush()
+    check("a newer list replaces the old one, and the open window follows",
+        roDB().crafts["Player-1-Altine"].Alchemy.ids == "1sr" and rvDescribe() == "Minor Mana Potion [1 Mageroyal, 1 Peacebloom, 1 Empty Vial]", rvDescribe())
+    ns.SetLanguage("en", true)
+    check("the recipe window follows the language", rv.info.text == "1 recipes. Updated DATE(" .. (t1 + 5) .. ")." and rv.close.label.text == "Close"
+        and rv.searchLabel.text == "Search:", rv.info.text)
+    ns.SetLanguage("nb", true)
+    rv.close.scripts.OnClick(rv.close)
+
+    -- Your own recipes, from your own card. No whispering yourself.
+    roRow("Tester").scripts.OnMouseUp(roRow("Tester"), "LeftButton")
+    local card = DragonworldMemberCard
+    check("your own card can open your recipe list", card.professionChips[3].label.text == "Mining 230/300" and not card.professionChips[3].dimmed)
+    card.professionChips[3].scripts.OnClick(card.professionChips[3])
+    check("...which lists what you can make", rv:IsVisible() and rv.title.text == "Tester - Mining 230/300"
+        and rvDescribe() == "Smelt Bronze [] | Smelt Copper [] | Smelt Tin []" and not rv.whisper:IsShown(), rvDescribe())
+    do
+        local told
+        local savedTell = ChatFrame_SendTell
+        ChatFrame_SendTell = function(name) told = name end
+        rvRows()[1].scripts.OnClick(rvRows()[1], "LeftButton")
+        check("clicking your own recipe whispers nobody", told == nil)
+        ChatFrame_SendTell = savedTell
+    end
+    rv.close.scripts.OnClick(rv.close)
+    card.close.scripts.OnClick(card.close)
+
+    -- A member with five professions: all of them on the card, in three columns.
+    roReceive("P\tPlayer-1-Altine\tAlchemy:300:300;Cooking:100:150;First Aid:150:225;Fishing:50:75;Herbalism:285:300", "Altine-Stormrage")
+    flush()
+    roRow("Altine").scripts.OnMouseUp(roRow("Altine"), "LeftButton")
+    do
+        local chips = card.professionChips
+        local width = chips[1].width
+        check("five professions all fit on the card, in three columns with smaller text",
+            chips[5] ~= nil and chips[5]:IsShown() and chips[5].label.text == "Herbalism 285" and chips[5].label.fontTemplate == "GameFontHighlightSmall"
+            and chips[5].fullText == "Herbalism 285/300" and width == 122 and select(4, chips[4]:GetPoint()) == 16 and select(4, chips[3]:GetPoint()) == 16 + 2 * 128,
+            tostring(chips[5] and chips[5].label.text) .. " " .. tostring(width))
+        chips[5]:Fire("OnEnter")
+        check("hovering one shows it in full, and that a gathering profession has nothing to show",
+            GameTooltip.lines[1] == "Herbalism 285/300" and GameTooltip.lines[2] == ns.strings.nb.RO_TIP_GATHER, table.concat(GameTooltip.lines, " / "))
+        chips[5]:Fire("OnLeave")
+        card.close.scripts.OnClick(card.close)
+    end
+    roReceive("P\tPlayer-1-Altine\tAlchemy:300:300;Herbalism:285:300", "Altine-Stormrage")
+    flush()
+    roRow("Altine").scripts.OnMouseUp(roRow("Altine"), "LeftButton")
+    check("with four or fewer, the card goes back to two columns with the full text",
+        card.professionChips[1].label.text == "Alchemy 300/300" and card.professionChips[1].width == 187 and not card.professionChips[3]:IsShown())
+    card.close.scripts.OnClick(card.close)
+
+    clearChat()
+    dw("debug")
+    check("/dw debug shows which recipe lists are shared, and how many lists came from others",
+        has("oppskrifter delt: Mining=3") and has("oppskriftslister fra andre: 1"), chatText())
+    clearChat()
+
+    -- If the game places none of the learned recipes in the profession, it is
+    -- the game's answer that is off (a sub-line we do not know): all count.
+    C_TradeSkillUI = {
+        GetBaseProfessionInfo = function() return { professionName = "Mining", skillLevel = 230, maxSkillLevel = 300, professionID = 186 } end,
+        IsTradeSkillLinked = function() return false end,
+        GetAllRecipeIDs = function() return { 2657, 9901 } end,
+        GetRecipeInfo = function() return { learned = true } end,
+        IsRecipeInSkillLine = function() return false end,
+    }
+    fire("TRADE_SKILL_LIST_UPDATE")
+    check("if the game puts none of the learned recipes in the profession, all of them are taken",
+        roDB().crafts["Player-1-Tester"].Mining.ids == "21t,7n1", roDB().crafts["Player-1-Tester"].Mining.ids)
+
+    roDB().crafts = {}
+    roDB().sent["Player-1-Tester"].sc = nil
+    roDB().seen = {}
+    C_TradeSkillUI = nil
+    C_Spell = savedSpell
+    fire("GUILD_ROSTER_UPDATE")
+    flush()
+    sentNow(RO_PREFIX)
+end)()
 
 ns.SetLanguage("en", true)
 check("Medlemmer follows the language",

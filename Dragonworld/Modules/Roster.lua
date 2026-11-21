@@ -13,11 +13,16 @@
 --   * Har klienten spillets gamle guild-oversikt over professions, brukes den
 --     i tillegg for dem addonen ikke har hørt fra.
 --
--- Se hva et medlem kan lage: når du åpner en av dine egne professions, tar
--- addonen vare på spillets lenke til den (den samme som når man deler en
--- profession i chatten) og sender den til guilden. I listen er slike
--- professions gule. Et klikk åpner spillets eget vindu med oppskriftene,
--- akkurat som et klikk på lenken i chatten.
+-- Se hva et medlem kan lage: når du åpner en av dine egne professions, leser
+-- addonen hvilke oppskrifter du kan, og sender listen til guilden (C-meldinger).
+-- I listen er slike professions gule, og et klikk viser oppskriftene i
+-- addonens eget vindu (RecipeWindow.lua), også når medlemmet er avlogget.
+-- Spillets lenke til professionen (den samme som når man deler en profession
+-- i chatten) sendes fortsatt, og kan åpnes derfra med en knapp; mellom to
+-- spillere åpnet den ingenting i Forever.
+--
+-- Samleyrker (Fishing, Skinning, Herbalism) har ingen oppskrifter, og regnes
+-- ikke som "ikke åpnet".
 --
 -- Egne professions leses på tre måter, fordi spillet ikke alltid oppgir dem
 -- likt: karakterens profession-liste, håndverkssystemets liste, og det som
@@ -39,6 +44,14 @@ local SEP = "\t"
 local ACTIVE_DAYS = 30
 local MAX_PROFESSIONS = 8
 local MAX_LINK_BYTES = 40
+local MAX_RECIPES = 600   -- flere oppskrifter enn dette i én profession godtas ikke
+local MAX_PARTS = 20      -- en oppskriftsliste sendes i høyst så mange meldinger
+
+-- Samleyrker: de har ingen oppskrifter, så det er ingenting å dele eller vise.
+-- Kjennes igjen på spillets nummer for professionen, eller på det engelske
+-- navnet når vi bare har navnet (fra andres meldinger).
+local GATHERING_LINES = { [182] = true, [356] = true, [393] = true } -- Herbalism, Fishing, Skinning
+local GATHERING_NAMES = { Herbalism = true, Fishing = true, Skinning = true }
 
 -- Lagrede data. Settes i OnLoad nederst.
 --   db.professions[nøkkel] = {
@@ -50,11 +63,17 @@ local MAX_LINK_BYTES = 40
 --   ID er den "name:" fulgt av navnet uten mellomrom og realm.
 --   db.seen[nøkkel][navn] = { level, max, link }: det vi har sett i ditt eget
 --   håndverksvindu.
+--   db.crafts[spillerens ID][navn] = { t = servertid, ids = "1zk,2b0,..." }:
+--   oppskriftene medlemmet kan lage i den professionen (spellID-er i 36-tall,
+--   sortert). Våre egne leses fra håndverksvinduet; de andres kommer i
+--   C-meldinger. t er når listen sist ble endret; nyeste vinner.
 --
 -- Spillets lenke til en profession ser slik ut: "trade:<spillerens ID>:2018:164".
 -- Vi lagrer og sender bare det som står etter ID-en, og setter lenken sammen
--- igjen når noen klikker.
-local db = { professions = {}, seen = {} }
+-- igjen når noen klikker. Lenken åpner spillets eget vindu, men bare når
+-- spillet går med på det (det gjorde det ikke mellom to spillere i Forever),
+-- så oppskriftslisten er det som vises; lenken er en ekstra knapp.
+local db = { professions = {}, seen = {}, crafts = {} }
 
 -- Småting -----------------------------------------------------------------------
 
@@ -98,6 +117,123 @@ end
 -- tall, kolon og bindestrek, så ingen kan smugle inn noe annet.
 local function ValidLinkRest(rest)
     return type(rest) == "string" and #rest > 0 and #rest <= MAX_LINK_BYTES and rest:find("^[%w:%-]+$") ~= nil
+end
+
+-- Navnene klienten din bruker på samleyrkene, i tillegg til de engelske.
+local localGatheringNames
+
+local function IsGathering(profession)
+    if type(profession) ~= "table" then
+        return false
+    end
+    if type(profession.line) == "number" and GATHERING_LINES[profession.line] then
+        return true
+    end
+    local name = profession.name
+    if type(name) ~= "string" then
+        return false
+    end
+    if GATHERING_NAMES[name] then
+        return true
+    end
+    -- Slås opp én gang per økt.
+    if not localGatheringNames and C_TradeSkillUI and C_TradeSkillUI.GetProfessionInfoBySkillLineID then
+        local names = {}
+        for line in pairs(GATHERING_LINES) do
+            local ok, info = pcall(C_TradeSkillUI.GetProfessionInfoBySkillLineID, line)
+            -- Bare når spillet bekrefter at svaret gjelder akkurat den linjen.
+            if ok and type(info) == "table" and Text(info.professionName) ~= "" and info.professionID == line then
+                names[CleanName(info.professionName)] = true
+            end
+        end
+        localGatheringNames = names
+    end
+    return localGatheringNames ~= nil and localGatheringNames[name] == true
+end
+
+-- Oppskriftslister ----------------------------------------------------------------
+--
+-- En oppskrift er spellID-en spillet bruker for den. I meldingene skrives de i
+-- 36-tall ("2660" blir "21w"), så flere får plass i hver melding.
+
+local DIGITS = "0123456789abcdefghijklmnopqrstuvwxyz"
+
+local function ToBase36(number)
+    local text = ""
+    repeat
+        local digit = number % 36
+        text = DIGITS:sub(digit + 1, digit + 1) .. text
+        number = math.floor(number / 36)
+    until number == 0
+    return text
+end
+
+-- Gjør en liste med spellID-er om til lagret tekst: sortert, uten doble.
+local function EncodeRecipes(ids)
+    local seen, sorted = {}, {}
+    for _, id in ipairs(ids) do
+        if type(id) == "number" and id > 0 and id == math.floor(id) and not seen[id] and #sorted < MAX_RECIPES then
+            seen[id] = true
+            sorted[#sorted + 1] = id
+        end
+    end
+    table.sort(sorted)
+    local parts = {}
+    for index, id in ipairs(sorted) do
+        parts[index] = ToBase36(id)
+    end
+    return table.concat(parts, ",")
+end
+
+local function DecodeRecipes(text)
+    local ids = {}
+    if type(text) ~= "string" then
+        return ids
+    end
+    for token in text:gmatch("[0-9a-z]+") do
+        local id = #token <= 6 and tonumber(token, 36)
+        if id and id > 0 and #ids < MAX_RECIPES then
+            ids[#ids + 1] = id
+        end
+    end
+    return ids
+end
+
+-- Oppskriftslistene for én spiller (nøkkel = spillerens faste ID).
+local function CraftsOf(key, create)
+    if type(db.crafts) ~= "table" then
+        db.crafts = {}
+    end
+    local crafts = db.crafts[key]
+    if type(crafts) ~= "table" then
+        if not create then
+            return nil
+        end
+        crafts = {}
+        db.crafts[key] = crafts
+    end
+    return crafts
+end
+
+local function CraftsEntry(key, name)
+    local crafts = type(key) == "string" and CraftsOf(key, false)
+    local entry = crafts and crafts[name]
+    if type(entry) == "table" and type(entry.t) == "number" and type(entry.ids) == "string" and entry.ids ~= "" then
+        return entry
+    end
+    return nil
+end
+
+-- Hvem som vil vite når en oppskriftsliste er kommet (oppskriftsvinduet).
+local recipeListeners = {}
+
+local function RecipesChanged()
+    for _, callback in ipairs(recipeListeners) do
+        local ok, problem = pcall(callback)
+        if not ok then
+            DW.PrintError(L.ERROR, problem)
+        end
+    end
 end
 
 -- Egne professions --------------------------------------------------------------
@@ -185,6 +321,75 @@ local function ReadListedProfessions()
     return byName, Add
 end
 
+-- Hører oppskriften til professionen med dette nummeret? Spillet kan vise
+-- navnet til én profession mens listen fortsatt er den forrige, så hver
+-- oppskrift sjekkes for seg. Kan ikke spillet svare, godtas den.
+local function RecipeInLine(ui, id, line)
+    if type(line) ~= "number" then
+        return true
+    end
+    local saidNo = false
+    if ui.IsRecipeInSkillLine then
+        local ok, yes = pcall(ui.IsRecipeInSkillLine, id, line)
+        if ok and yes == true then
+            return true
+        end
+        saidNo = ok and yes == false
+    end
+    -- Oppskrifter kan ligge i en under-linje (f.eks. per utvidelse); da er
+    -- professionen "foreldre"-linjen.
+    if ui.GetProfessionInfoByRecipeID then
+        local ok, info = pcall(ui.GetProfessionInfoByRecipeID, id)
+        if ok and type(info) == "table" then
+            local own, parent = Number(info.professionID), Number(info.parentProfessionID)
+            if own > 0 or parent > 0 then
+                return own == line or parent == line
+            end
+        end
+    end
+    return not saidNo
+end
+
+-- Oppskriftene du kan i professionen som står i håndverksvinduet, som en
+-- sortert liste med spellID-er. nil når spillet ikke gir noen (vinduet er
+-- ikke ferdig lastet, eller funksjonene finnes ikke).
+local function ReadOpenRecipes(line)
+    local ui = C_TradeSkillUI
+    if not (ui and ui.GetAllRecipeIDs and ui.GetRecipeInfo) then
+        return nil
+    end
+    if ui.IsDataSourceChanging then
+        local ok, changing = pcall(ui.IsDataSourceChanging)
+        if ok and changing == true then
+            return nil
+        end
+    end
+    local ok, all = pcall(ui.GetAllRecipeIDs)
+    if not ok or type(all) ~= "table" then
+        return nil
+    end
+    local learned, inLine = {}, {}
+    for _, id in ipairs(all) do
+        if type(id) == "number" and not DW.IsSecret(id) and id > 0 then
+            local fine, info = pcall(ui.GetRecipeInfo, id)
+            if fine and type(info) == "table" and info.learned == true then
+                learned[#learned + 1] = id
+                if RecipeInLine(ui, id, line) then
+                    inLine[#inLine + 1] = id
+                end
+            end
+        end
+    end
+    if #learned == 0 then
+        return nil -- alle crafting-professions har minst én oppskrift; listen er ikke klar
+    end
+    -- Sier spillet at ingen av dem hører til professionen, er det svaret
+    -- som er feil (f.eks. en under-linje vi ikke kjenner): ta alle. En liste
+    -- som var fra forrige profession, rettes uansett neste gang vinduet
+    -- oppdateres.
+    return #inLine > 0 and inLine or learned
+end
+
 -- Professionen addonen akkurat nå har bedt spillet åpne (se "Åpne neste"
 -- lenger ned), eller nil.
 local opening
@@ -270,7 +475,33 @@ local function RememberOpenTradeSkill()
         max = max,
         link = linkRest or (type(before) == "table" and ValidLinkRest(before.link) and before.link) or nil,
     }
+
+    -- Oppskriftene du kan, så guilden kan se dem (ikke for samleyrker).
+    local line = (listed[name] and listed[name].line) or windowLine or linkLine
+    if key:find("^Player%-") and not IsGathering({ name = name, line = line }) then
+        local ids = ReadOpenRecipes(line)
+        if ids then
+            local text = EncodeRecipes(ids)
+            local crafts = CraftsOf(key, true)
+            local old = crafts[name]
+            if type(old) ~= "table" or old.ids ~= text or type(old.t) ~= "number" then
+                -- Alltid nyere enn forrige gang, selv om klokka står stille.
+                local t = math.max(DW.ServerNow(), (type(old) == "table" and type(old.t) == "number") and (old.t + 1) or 0)
+                crafts[name] = { t = t, ids = text }
+                RecipesChanged()
+            end
+        end
+    end
     return true
+end
+
+-- Er denne av dine egne professions delt? Med oppskriftslister må listen
+-- være lest; i en klient uten dem holder det med lenken, som før.
+local function MineShared(name, links)
+    if C_TradeSkillUI and C_TradeSkillUI.GetAllRecipeIDs then
+        return CraftsEntry(MyStoreKey(), name) ~= nil
+    end
+    return links[name] ~= nil
 end
 
 local function ReadMyProfessions()
@@ -357,6 +588,32 @@ local function ParseLinks(text)
     return links
 end
 
+-- En oppskriftsliste som meldinger: "C <ID> <profession> <tid> <del> <antall> <oppskrifter>".
+-- Listen deles opp så hver melding holder seg under spillets 255 tegn.
+local function CraftMessages(key, name, entry)
+    local head = ("C%s%s%s%s%s%d%s"):format(SEP, key, SEP, name, SEP, entry.t, SEP)
+    local budget = 255 - #head - 6 -- plass til "12\t12\t"
+    local chunks, current = {}, ""
+    for token in entry.ids:gmatch("[0-9a-z]+") do
+        if current ~= "" and #current + 1 + #token > budget then
+            chunks[#chunks + 1] = current
+            current = ""
+        end
+        current = current == "" and token or (current .. "," .. token)
+    end
+    if current ~= "" then
+        chunks[#chunks + 1] = current
+    end
+    local messages = {}
+    if #chunks > MAX_PARTS then
+        return messages
+    end
+    for index, chunk in ipairs(chunks) do
+        messages[index] = ("%s%d%s%d%s%s"):format(head, index, SEP, #chunks, SEP, chunk)
+    end
+    return messages
+end
+
 -- Leser egne professions og tar vare på dem. Returnerer teksten til meldingen
 -- om professions, nøkkelen, og teksten til meldingen om lenker.
 local function StoreMine()
@@ -427,6 +684,24 @@ local function Publish(since)
         mine.sl = mine.lt
         Send("L" .. SEP .. key .. SEP .. links)
     end
+
+    -- Oppskriftslistene, for de professions karakteren har nå.
+    if not key:find("^Player%-") then
+        return
+    end
+    if type(mine.sc) ~= "table" then
+        mine.sc = {}
+    end
+    local stored = db.professions[key]
+    for _, profession in ipairs(type(stored) == "table" and stored.list or {}) do
+        local entry = CraftsEntry(key, profession.name)
+        if entry and (mine.sc[profession.name] ~= entry.t or (since ~= nil and entry.t > since)) then
+            mine.sc[profession.name] = entry.t
+            for _, message in ipairs(CraftMessages(key, profession.name, entry)) do
+                Send(message)
+            end
+        end
+    end
 end
 
 local replyScheduled = false
@@ -449,6 +724,54 @@ local function ScheduleReply(since)
             Publish(from)
         end
     end)
+end
+
+-- Deler av oppskriftslister som ikke er komplette ennå, bare i minnet:
+-- incoming["<ID>\t<profession>"] = { t, n, got, parts = { [del] = tekst } }
+local incoming = {}
+
+-- Et medlem sender (en del av) oppskriftslisten for én profession. Når alle
+-- delene er kommet, og listen er nyere enn den vi har, lagres den.
+local function ReceiveCrafts(text)
+    local guid, name, t, part, total, ids = text:match("^C\t(Player%-[%w%-]+)\t([^\t]+)\t(%d+)\t(%d+)\t(%d+)\t([0-9a-z,]*)$")
+    t, part, total = tonumber(t or ""), tonumber(part or ""), tonumber(total or "")
+    if not guid or not t or not part or not total or total < 1 or total > MAX_PARTS or part < 1 or part > total then
+        return
+    end
+    name = CleanName(name)
+    if name == "" or guid == DW.MyGUID() then
+        return
+    end
+    local have = CraftsEntry(guid, name)
+    if have and have.t >= t then
+        return -- vi har denne eller en nyere
+    end
+
+    local slot = guid .. SEP .. name
+    local pending = incoming[slot]
+    if pending and t < pending.t then
+        return -- en eldre liste mens en nyere er på vei
+    end
+    if not pending or pending.t ~= t or pending.n ~= total then
+        pending = { t = t, n = total, got = 0, parts = {} }
+        incoming[slot] = pending
+    end
+    if not pending.parts[part] then
+        pending.parts[part] = ids
+        pending.got = pending.got + 1
+    end
+    if pending.got < total then
+        return
+    end
+
+    incoming[slot] = nil
+    local list = DecodeRecipes(table.concat(pending.parts, ","))
+    if #list == 0 then
+        return
+    end
+    CraftsOf(guid, true)[name] = { t = t, ids = EncodeRecipes(list) }
+    QueueRefresh()
+    RecipesChanged()
 end
 
 DW.OnGuildMessage(PREFIX, function(text, sender)
@@ -481,6 +804,8 @@ DW.OnGuildMessage(PREFIX, function(text, sender)
             entry.links = ParseLinks(rest)
             QueueRefresh()
         end
+    elseif kind == "C" then
+        ReceiveCrafts(text)
     elseif kind == "R" then
         ScheduleReply(DW.SyncRequestSince(text))
     end
@@ -570,6 +895,37 @@ local function OpenProfession(member, profession)
     return true
 end
 
+-- Oppskriftene et medlem har delt for en profession, som en liste med
+-- spellID-er, og når listen sist ble endret. nil hvis ingen er delt.
+local function RecipesOf(member, profession)
+    if type(member) ~= "table" or type(profession) ~= "table" or type(member.guid) ~= "string" then
+        return nil
+    end
+    local entry = CraftsEntry(member.guid, profession.name)
+    if not entry then
+        return nil
+    end
+    return DecodeRecipes(entry.ids), entry.t
+end
+
+-- Er det noe å vise for professionen: en oppskriftsliste, eller spillets lenke?
+local function CanShow(member, profession)
+    if IsGathering(profession) then
+        return false
+    end
+    return RecipesOf(member, profession) ~= nil or LinkData(member, profession) ~= nil
+end
+
+-- Viser hva medlemmet kan lage, i addonens eget oppskriftsvindu
+-- (RecipeWindow.lua). Finnes ikke det, åpnes spillets lenke som før.
+local function ShowProfession(member, profession)
+    if DW.ShowRecipes then
+        DW.ShowRecipes(member, profession)
+        return true
+    end
+    return OpenProfession(member, profession)
+end
+
 -- Påminnelsen om å åpne professionene -----------------------------------------------
 --
 -- Addonen får først vite om en profession, og lenken til den, når spilleren
@@ -607,7 +963,7 @@ end
 local function NextToOpen()
     local list, links = MyStored()
     for _, profession in ipairs(list) do
-        if profession.line and not links[profession.name] and not tried[profession.name] then
+        if profession.line and not IsGathering(profession) and not MineShared(profession.name, links) and not tried[profession.name] then
             return profession
         end
     end
@@ -631,7 +987,9 @@ local function RefreshNotice()
     local lines = {}
     for _, profession in ipairs(list) do
         local name = ("%s %d"):format(profession.name, profession.level)
-        if links[profession.name] then
+        if IsGathering(profession) then
+            lines[#lines + 1] = "|cff9d9d9d" .. L.RO_SHARE_GATHER:format(name) .. "|r"
+        elseif MineShared(profession.name, links) then
             lines[#lines + 1] = "|cff40ff40" .. L.RO_SHARE_DONE:format(name) .. "|r"
         else
             lines[#lines + 1] = L.RO_SHARE_TODO:format(name)
@@ -701,7 +1059,7 @@ local function OpenNextProfession()
         RememberOpenTradeSkill()
         StoreMine()
         local _, links = MyStored()
-        if links[run.name] then
+        if MineShared(run.name, links) then
             opening = nil
             noticeStatus = { key = "RO_SHARE_GOT", name = run.name }
             if C_TradeSkillUI and C_TradeSkillUI.CloseTradeSkill then
@@ -1006,9 +1364,9 @@ local function OpenMemberMenu(owner, member)
         root:CreateTitle(member.name)
         for _, profession in ipairs(member.professions) do
             local entry = root:CreateButton(ProfessionLabel(profession), function()
-                OpenProfession(member, profession)
+                ShowProfession(member, profession)
             end)
-            if entry and entry.SetEnabled and not LinkData(member, profession) then
+            if entry and entry.SetEnabled and not CanShow(member, profession) then
                 entry:SetEnabled(false)
             end
         end
@@ -1043,7 +1401,7 @@ local function GetProfessionButton(row, index)
 
     button:SetScript("OnClick", function(self)
         if self.member and self.profession and self.linked then
-            OpenProfession(self.member, self.profession)
+            ShowProfession(self.member, self.profession)
         end
     end)
     button:SetScript("OnEnter", function(self)
@@ -1055,6 +1413,8 @@ local function GetProfessionButton(row, index)
         GameTooltip:AddLine(ProfessionLabel(self.profession), 1.00, 0.82, 0.00)
         if self.linked then
             GameTooltip:AddLine(L.RO_TIP_OPEN:format(self.member.name), 1, 1, 1, true)
+        elseif IsGathering(self.profession) then
+            GameTooltip:AddLine(L.RO_TIP_GATHER, 0.75, 0.75, 0.75, true)
         else
             GameTooltip:AddLine(L.RO_TIP_NO_LINK:format(self.member.name), 0.75, 0.75, 0.75, true)
         end
@@ -1092,7 +1452,7 @@ local function LayoutProfessions(row, member)
         end
 
         button.member, button.profession = member, profession
-        button.linked = LinkData(member, profession) ~= nil
+        button.linked = CanShow(member, profession)
         ColourProfession(button, false)
         button:SetWidth(width)
         button:ClearAllPoints()
@@ -1538,11 +1898,25 @@ DW.OnProfileChanged(function()
     QueueRefresh()
 end)
 
--- For medlemskortet (MemberCard.lua): åpne et medlems profession, og om det går.
+-- For medlemskortet (MemberCard.lua) og oppskriftsvinduet (RecipeWindow.lua).
 -- member er en rad fra listen her (den har professions og det som er delt).
+--   DW.OpenMemberProfession: spillets eget vindu, via lenken (som før)
+--   DW.CanOpenMemberProfession: finnes lenken
+--   DW.ShowMemberProfession / DW.CanShowMemberProfession: oppskriftsvinduet,
+--       og om det er noe å vise der
+--   DW.MemberRecipes: oppskriftene (spellID-er) og når listen ble endret
+--   DW.IsGatheringProfession: samleyrke uten oppskrifter
+--   DW.OnRecipesChanged: kalles når en oppskriftsliste er kommet eller endret
 DW.OpenMemberProfession = OpenProfession
 function DW.CanOpenMemberProfession(member, profession)
     return LinkData(member, profession) ~= nil
+end
+DW.ShowMemberProfession = ShowProfession
+DW.CanShowMemberProfession = CanShow
+DW.MemberRecipes = RecipesOf
+DW.IsGatheringProfession = IsGathering
+function DW.OnRecipesChanged(callback)
+    recipeListeners[#recipeListeners + 1] = callback
 end
 
 -- Feilsøking: hva spillet faktisk oppgir om professions på denne karakteren.
@@ -1604,6 +1978,25 @@ DW.AddDebug("professions", function(add)
     end
     table.sort(numbers)
     add("kan åpne for deg (OpenTradeSkill): " .. text(CanOpenForPlayer()) .. " | nummer: " .. table.concat(numbers, ", "))
+    local ui = C_TradeSkillUI
+    local recipeCounts = {}
+    for name, entry in pairs(key and CraftsOf(key, false) or {}) do
+        if type(entry) == "table" then
+            recipeCounts[#recipeCounts + 1] = name .. "=" .. #DecodeRecipes(entry.ids)
+        end
+    end
+    table.sort(recipeCounts)
+    add("oppskrifter delt: " .. (#recipeCounts > 0 and table.concat(recipeCounts, ", ") or "ingen")
+        .. " | GetAllRecipeIDs: " .. text(ui ~= nil and ui.GetAllRecipeIDs ~= nil)
+        .. " | IsRecipeInSkillLine: " .. text(ui ~= nil and ui.IsRecipeInSkillLine ~= nil)
+        .. " | GetRecipeSchematic: " .. text(ui ~= nil and ui.GetRecipeSchematic ~= nil))
+    local others = 0
+    for guid in pairs(type(db.crafts) == "table" and db.crafts or {}) do
+        if guid ~= key then
+            others = others + 1
+        end
+    end
+    add("oppskriftslister fra andre: " .. others)
     add("spillets guild-oversikt: " .. text(GetNumGuildTradeSkill and select(2, pcall(GetNumGuildTradeSkill))))
 end)
 
@@ -1639,6 +2032,9 @@ DW.RegisterModule({
         end
         if type(saved.reminded) ~= "table" then
             saved.reminded = {}
+        end
+        if type(saved.crafts) ~= "table" then
+            saved.crafts = {}
         end
         db = saved
     end,
