@@ -27,6 +27,8 @@ local GLOW_TEXTURE = "Interface\\SpellActivationOverlay\\IconAlert"
 local GLOW_COORDS = { 0.0078125, 0.5078125, 0.27734375, 0.52734375 }
 local GLOW_SCALE = 1.4
 DW.ACTION_ICON = DW.MEDIA .. "button" -- guildlogoen som ikon (Media\button.tga)
+-- Den samme gløden brukes av fanen i guildvinduet (Minimap.lua).
+DW.SQUARE_GLOW = { texture = GLOW_TEXTURE, coords = GLOW_COORDS, scale = GLOW_SCALE }
 
 -- Makroen -----------------------------------------------------------------------
 

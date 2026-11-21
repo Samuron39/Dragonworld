@@ -554,7 +554,8 @@ SetItemRef = realSetItemRef
 
 -- Widgets ------------------------------------------------------------------------
 local frames = {}
-local TEMPLATES = { BackdropTemplate = true, UIPanelCloseButton = true, UICheckButtonTemplate = true, ScrollFrameTemplate = true, InputBoxTemplate = true }
+local TEMPLATES = { BackdropTemplate = true, UIPanelCloseButton = true, UICheckButtonTemplate = true, ScrollFrameTemplate = true, InputBoxTemplate = true,
+                    LargeSideTabButtonTemplate = true }
 local FRAME_TYPES = { Frame = true, Button = true, CheckButton = true, ScrollFrame = true, GameTooltip = true, EditBox = true, ScrollingMessageFrame = true }
 local FONTS = { GameFontNormal = true, GameFontNormalSmall = true, GameFontNormalLarge = true, GameFontNormalHuge = true,
                 GameFontHighlight = true, GameFontHighlightSmall = true, GameFontHighlightLarge = true, GameFontDisable = true, GameFontDisableSmall = true }
@@ -771,8 +772,43 @@ function CreateFrame(kind, name, parent, template)
     end
     if parent then table.insert(parent.children, f) end
     frames[#frames + 1] = f
+    if TEMPLATE_BUILDERS[template] then TEMPLATE_BUILDERS[template](f) end
     return f
 end
+
+-- Templates whose parts the addon uses, built like the game's (a global: the main chunk is out of locals).
+TEMPLATE_BUILDERS = {
+    -- The game's side tab (SharedUIPanelTemplates.xml with SidePanelTabButtonMixin): an icon, a
+    -- "selected" texture, a click handler on mouse up, and a tooltip from tooltipText or a setup function.
+    LargeSideTabButtonTemplate = function(f)
+        f:SetSize(43, 55)
+        f.Background = f:CreateTexture(nil, "BACKGROUND")
+        f.Icon = f:CreateTexture(nil, "ARTWORK")
+        f.SelectedTexture = f:CreateTexture(nil, "OVERLAY")
+        f.TabGlow = f:CreateTexture(nil, "OVERLAY")
+        function f:SetTabGlowAnimationPlaying(playing) self.glowPlaying = playing and true or false end
+        function f:IsTabGlowAnimationPlaying() return self.glowPlaying == true end
+        function f:UpdateIconInterior()
+            if self.fillToInterior then
+                self.Icon:SetTexCoord(0.03125, 0.96875, 0.03125, 0.96875)
+                self.Icon:SetSize(self.interiorExtent or 50, self.interiorExtent or 50)
+            end
+        end
+        function f:SetChecked(checked) self.SelectedTexture:SetShown(checked); self:UpdateIconInterior() end
+        function f:SetCustomOnMouseUpHandler(handler) self.customMouseUpHandler = handler end
+        f.scripts.OnMouseUp = function(self, button, upInside)
+            if self.customMouseUpHandler then self.customMouseUpHandler(self, button, upInside) end
+        end
+        f.scripts.OnEnter = function(self)
+            if not self.tooltipText then return end
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            local setup = self.GetTooltipTextSetupFunction and self:GetTooltipTextSetupFunction()
+            if not setup or not setup(GameTooltip) then GameTooltip:SetText(self.tooltipText) end
+            GameTooltip:Show()
+        end
+        f.scripts.OnLeave = function() GameTooltip:Hide() end
+    end,
+}
 
 UIParent = CreateFrame("Frame", "UIParent")
 UISpecialFrames = {}
@@ -843,6 +879,7 @@ local function newTooltip(name)
         self.colors[#self.lines] = r and { r, g, b } or nil
     end
     function t:Reset() self.lines = {}; self.colors = {}; self:Fire("OnTooltipCleared") end
+    function t:SetText(text, r, g, b) assert(type(text) == "string"); self:Reset(); self.lines[1] = text; self.colors[1] = r and { r, g, b } or nil end
     function t:SetOwner(owner, anchor) assert(type(owner) == "table" and type(anchor) == "string"); self.owner = owner; self:Reset() end
     function t:IsOwned(frame) return self.owner == frame end
     -- An action bar slot: the game writes what is there (a macro's name).
@@ -2861,7 +2898,10 @@ check("panel text is Norwegian",
     and roPanel.statusChips.active.label.text == "Aktive" and roPanel.statusChips.inactive.label.text == "Inaktive"
     and roPanel.professionChip.label.text == "Profession: Alle" and roPanel.searchLabel.text == "Søk:"
     and roPanel.headerName.text == "Navn" and roPanel.headerLast.text == "Sist pålogget" and roPanel.footer.text == ns.strings.nb.RO_FOOTER)
-check("every member is listed A-Z, online or not, with level, rank and how long since they were on",
+check("it opens showing who is online (the guild leader's choice)",
+    roNames() == "Altine,Tester" and roPanel.statusChips.online.selected and not roPanel.statusChips.all.selected and roPanel.count.text == "Viser 2 av 6", roNames())
+roPanel.statusChips.all.scripts.OnClick(roPanel.statusChips.all)
+check("with All, every member is listed A-Z, online or not, with level, rank and how long since they were on",
     roDescribe() == "Altine 58 Officer [] Pålogget | Borin 42 Member [] 3 d | Cedric 20 Member [] 2 mnd | Dagny 60 Initiate [] 1 år | Eira 35 Member [] 6 t"
     .. " | Tester 60 Guild Master [Cooking 150, Engineering 210, Mining 225] Pålogget", roDescribe())
 check("the count shows how many are listed out of the whole guild", roPanel.count.text == "Viser 6 av 6" and roPanel.statusChips.all.selected)
@@ -6374,6 +6414,190 @@ end)()
     clearChat()
 
     click(rsChip)
+end)()
+
+-- =============== the Dragonworld tab in the game's guild window (Minimap.lua) ===============
+;(function()
+    local function click(button) button.scripts.OnClick(button) end
+    local wasShown = win:IsShown()
+    for _, alert in ipairs(ns.ALERTS) do ns.MarkAlertSeen(alert.kind) end
+    check("no guild window yet, no tab", DragonworldGuildTab == nil)
+
+    -- The game's "Guild & Communities" window, as Blizzard_Communities builds it:
+    -- tabs down the right side, shown by UpdateCommunitiesTabs.
+    local window = CreateFrame("Frame", "CommunitiesFrame", UIParent)
+    local function tab(key)
+        local t = CreateFrame("Button", nil, window)
+        t:SetSize(32, 32)
+        t:SetFrameLevel(510)
+        t:Hide()
+        window[key] = t
+        return t
+    end
+    local chat, roster, benefits, info, play = tab("ChatTab"), tab("RosterTab"), tab("GuildBenefitsTab"), tab("GuildInfoTab"), tab("GuildPreferredPlaySettingsTab")
+    local guildSelected, playSettings = true, true
+    function window:UpdateCommunitiesTabs()
+        chat:Show()
+        roster:Show()
+        benefits:Hide()
+        info:SetShown(guildSelected)
+        play:SetShown(guildSelected and playSettings)
+    end
+    window:Hide()
+    fire("ADDON_LOADED", "Blizzard_Communities")
+    local gt = DragonworldGuildTab
+    check("when the game loads its guild window, a Dragonworld tab is made in it, built like the game's own tabs",
+        gt ~= nil and gt.parent == window and gt.width == 32 and gt.height == 32 and gt.border.texture == "Interface\\SpellBook\\SpellBook-SkillLineTab"
+        and gt.border.width == 64 and gt.icon.texture == ns.ACTION_ICON and gt.icon.width == 30 and gt.level == 510 and not gt:IsShown())
+
+    window:Show()
+    window:UpdateCommunitiesTabs()
+    local point, relTo, relPoint, x, y = gt:GetPoint(1)
+    check("it sits under the lowest of the game's tabs, 20 below it like the others",
+        gt:IsShown() and point == "TOPLEFT" and relTo == play and relPoint == "BOTTOMLEFT" and x == 0 and y == -20)
+    playSettings = false
+    window:UpdateCommunitiesTabs()
+    check("...and moves up when that tab is not there", gt:IsShown() and select(2, gt:GetPoint(1)) == info)
+    guildSelected = false
+    window:UpdateCommunitiesTabs()
+    check("with a community other than the guild selected, it is hidden", not gt:IsShown())
+    guildSelected = true
+    window:UpdateCommunitiesTabs()
+    check("back on the guild, it is there again", gt:IsShown())
+
+    gt.scripts.OnEnter(gt)
+    check("hovering it says what it is", GameTooltip:IsShown() and GameTooltip.lines[1] == "Dragonworld" and GameTooltip.lines[2] == ns.L.GUILD_TAB_TIP,
+        table.concat(GameTooltip.lines, " / "))
+    gt.scripts.OnLeave(gt)
+
+    if win:IsShown() then ns.ToggleMainWindow() end
+    click(gt)
+    check("clicking it opens Dragonworld", win:IsShown())
+    click(gt)
+    check("...and clicking it again closes it", not win:IsShown())
+    check("it blinks like the action bar button (the soft square glow around it)",
+        gt.glow ~= nil and gt.glow.blend == "ADD" and gt.glow.desaturated and gt.glow.texture == "Interface\\SpellActivationOverlay\\IconAlert"
+        and math.abs(gt.glow.width - 32 * 1.4) < 0.001)
+    ns.TestBlink(5)
+    ns.alertPulse.scripts.OnUpdate(ns.alertPulse, 1.2)
+    check("...and lights up when the buttons blink", gt.glow:IsShown())
+    ns.TestBlink(0)
+
+    window:Hide()
+
+    -- The game's Professions window (in Forever: ProfessionsFrame in Blizzard_Professions): the
+    -- overview tab at the top right, then one tab per profession, 2 apart.
+    check("the professions window is not loaded yet, so there is nothing to add to", ProfessionsFrame == nil)
+    local pf = CreateFrame("Frame", "ProfessionsFrame", UIParent)
+    pf.ProfessionsOverviewTab = CreateFrame("Frame", nil, pf, "LargeSideTabButtonTemplate")
+    pf.ProfessionsOverviewTab:SetFrameLevel(600)
+    pf.rightProfessionTabs = {}
+    for i = 1, 7 do
+        local t = CreateFrame("Frame", nil, pf, "LargeSideTabButtonTemplate")
+        t:Hide()
+        pf.rightProfessionTabs[i] = t
+    end
+    local professionCount = 3
+    function pf:RefreshRightTabs()
+        for i, t in ipairs(self.rightProfessionTabs) do t:SetShown(i <= professionCount) end
+    end
+    pf:Hide()
+    fire("ADDON_LOADED", "Blizzard_Professions")
+    local function shortcut(id)
+        for _, child in ipairs(pf.children) do if child.module == id then return child end end
+    end
+    local profTab, matTab = shortcut("professions"), shortcut("materialer")
+    check("when the game loads its Professions window, Dragonworld adds shortcuts to Professions and Materials, built with the game's own side tab",
+        profTab ~= nil and matTab ~= nil and profTab.template == "LargeSideTabButtonTemplate" and profTab.Icon.texture == "Interface\\Icons\\INV_Misc_Book_09"
+        and matTab.Icon.texture == "Interface\\Icons\\INV_Ore_Copper_01" and profTab.Icon.width == 50 and not profTab.SelectedTexture:IsShown()
+        and profTab.badge.texture == ns.ICON and profTab.level == 600 and not profTab:IsVisible() and not matTab:IsVisible())
+
+    pf:Show()
+    pf:RefreshRightTabs()
+    local point, relTo, relPoint, x, y = profTab:GetPoint(1)
+    check("they sit under the game's last profession tab, 2 apart like the game's",
+        profTab:IsShown() and matTab:IsShown() and point == "TOPLEFT" and relTo == pf.rightProfessionTabs[3] and relPoint == "BOTTOMLEFT" and x == 0 and y == -2
+        and select(2, matTab:GetPoint(1)) == profTab and select(5, matTab:GetPoint(1)) == -2)
+    professionCount = 5
+    pf:RefreshRightTabs()
+    check("...and move down when the character has more professions", select(2, profTab:GetPoint(1)) == pf.rightProfessionTabs[5])
+    professionCount = 0
+    pf:RefreshRightTabs()
+    check("...or up under the overview tab when it has none", select(2, profTab:GetPoint(1)) == pf.ProfessionsOverviewTab)
+
+    profTab.scripts.OnEnter(profTab)
+    check("hovering a shortcut says it is Dragonworld's, and what the tab does",
+        GameTooltip:IsShown() and GameTooltip.lines[1] == "Dragonworld: " .. ns.ModuleTitle(ns.modules.professions)
+        and GameTooltip.lines[2] == ns.ModuleNotes(ns.modules.professions), table.concat(GameTooltip.lines, " / "))
+    profTab.scripts.OnLeave(profTab)
+
+    if win:IsShown() then ns.ToggleMainWindow() end
+    matTab.scripts.OnMouseUp(matTab, "RightButton", true)
+    check("a right click does nothing", not win:IsShown())
+    matTab.scripts.OnMouseUp(matTab, "LeftButton", true)
+    check("a click on Materials opens Dragonworld on the Materials tab", win:IsShown() and chipByID.materialer.selected)
+    profTab.scripts.OnMouseUp(profTab, "LeftButton", true)
+    check("...and on Professions, the Professions tab", win:IsShown() and chipByID.professions.selected)
+    pf:Hide()
+
+    -- The game's Looking For Group window (in Forever: LFGParentFrame in
+    -- Blizzard_GroupFinder_VanillaStyle): three side tabs, 2 apart.
+    check("the Looking For Group window is not loaded yet", LFGParentFrame == nil)
+    local lfg = CreateFrame("Frame", "LFGParentFrame", UIParent)
+    for _, key in ipairs({ "ListingTab", "BrowsingTab", "WhoListingTab" }) do
+        lfg[key] = CreateFrame("Frame", nil, lfg, "LargeSideTabButtonTemplate")
+        lfg[key]:SetFrameLevel(700)
+    end
+    local updates = 0
+    function lfg:UpdateTabs() updates = updates + 1 end
+    lfg:Hide()
+    fire("ADDON_LOADED", "Blizzard_GroupFinder_VanillaStyle")
+    local dgTab
+    for _, child in ipairs(lfg.children) do if child.module == "dungeons" then dgTab = child end end
+    lfg:Show()
+    lfg:UpdateTabs()
+    point, relTo, relPoint, x, y = dgTab:GetPoint(1)
+    check("when the game loads Looking For Group, a Dungeons shortcut comes under its three tabs, built the same way",
+        dgTab ~= nil and dgTab.template == "LargeSideTabButtonTemplate" and dgTab.Icon.texture == "Interface\\Icons\\Ability_DualWield"
+        and dgTab.badge.texture == ns.ICON and dgTab.level == 700 and dgTab:IsVisible()
+        and point == "TOPLEFT" and relTo == lfg.WhoListingTab and relPoint == "BOTTOMLEFT" and x == 0 and y == -2 and updates == 1)
+    local others = 0
+    for _, child in ipairs(lfg.children) do if child.module and child ~= dgTab then others = others + 1 end end
+    check("...and only that one there", others == 0)
+    dgTab.scripts.OnEnter(dgTab)
+    check("hovering it says it is Dragonworld's Dungeons", GameTooltip.lines[1] == "Dragonworld: " .. ns.ModuleTitle(ns.modules.dungeons))
+    dgTab.scripts.OnLeave(dgTab)
+    if win:IsShown() then ns.ToggleMainWindow() end
+    dgTab.scripts.OnMouseUp(dgTab, "LeftButton", true)
+    check("a click opens Dragonworld on the Dungeons tab", win:IsShown() and chipByID.dungeons.selected)
+    fire("ADDON_LOADED", "Blizzard_GroupFinder_VanillaStyle")
+    local count = 0
+    for _, child in ipairs(lfg.children) do if child.module then count = count + 1 end end
+    check("loading the window again does not make a second one", count == 1)
+
+    -- It blinks when someone in the guild is up for dungeons (the same alert as the minimap button).
+    if win:IsShown() then ns.ToggleMainWindow() end
+    for _, alert in ipairs(ns.ALERTS) do ns.MarkAlertSeen(alert.kind) end
+    ns.RefreshAlerts()
+    check("nothing new: the Dungeons shortcut does not glow", not dgTab.glowPlaying)
+    SERVER_NOW = SERVER_NOW + 600
+    fire("CHAT_MSG_ADDON", "DragonworldSt", "S\tPlayer-1-Altine\tD\t" .. SERVER_NOW .. "\t\tL", "GUILD", "Altine-Stormrage")
+    flush()
+    check("someone in the guild up for dungeons makes the Dungeons shortcut glow, with the game's own tab glow in the dungeon green",
+        ns.IsBlinking() and dgTab.glowPlaying and dgTab.TabGlow.desaturated and dgTab.TabGlow.vertexColor[1] == 0.30
+        and dgTab.TabGlow.vertexColor[2] == 1.00 and dgTab.TabGlow.vertexColor[3] == 0.45)
+    check("...but not the Professions or Materials shortcuts", not profTab.glowPlaying and not matTab.glowPlaying)
+    dgTab.scripts.OnEnter(dgTab)
+    local tip = table.concat(GameTooltip.lines, " / ")
+    check("hovering it lists who is up for dungeons", tip:find(ns.L.AL_HEADER, 1, true) ~= nil and tip:find("Altine", 1, true) ~= nil, tip)
+    dgTab.scripts.OnLeave(dgTab)
+    check("...without counting it as seen", dgTab.glowPlaying and ns.IsBlinking())
+    dgTab.scripts.OnMouseUp(dgTab, "LeftButton", true)
+    flush()
+    check("opening Dungeons from it counts as seen: the glow stops", chipByID.dungeons.selected and not dgTab.glowPlaying)
+    lfg:Hide()
+
+    if win:IsShown() ~= wasShown then ns.ToggleMainWindow() end
 end)()
 
 -- ================== Prestasjoner (Modules\Achievements.lua) =====================

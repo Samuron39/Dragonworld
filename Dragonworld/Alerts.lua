@@ -142,6 +142,7 @@ end
 
 local active = {}   -- det som er nytt nå, og som det skal blinkes for
 local blinking = false
+local changeListeners = {} -- DW.OnAlertsChanged
 local clock, sinceCheck = 0, 0
 
 local pulse = CreateFrame("Frame")
@@ -249,11 +250,37 @@ function DW.RefreshAlerts()
     if not blinking then
         Paint(nil, 0)
     end
+    for _, callback in ipairs(changeListeners) do
+        local ok, problem = pcall(callback)
+        if not ok then
+            DW.PrintError(L.ERROR, problem)
+        end
+    end
 end
 
 -- Det som er nytt nå, også når blinkingen er av (til tooltip).
 function DW.ActiveAlerts()
     return active
+end
+
+-- For knapper som bare blinker for én ting (Dungeons-snarveien i Looking For
+-- Group): er det nytt av den sorten, og blinker det nå?
+function DW.IsAlertBlinking(kind)
+    if not blinking then
+        return false
+    end
+    for _, alert in ipairs(active) do
+        if alert.kind == kind then
+            return true
+        end
+    end
+    return false
+end
+
+-- Registrerer en funksjon som kalles hver gang addonen har sett etter hva som
+-- er nytt (og blinkingen kan ha startet eller stoppet).
+function DW.OnAlertsChanged(callback)
+    changeListeners[#changeListeners + 1] = callback
 end
 
 function DW.IsBlinking()
@@ -314,6 +341,21 @@ local function CollectLines(list)
         end
     end
     return lines
+end
+
+-- Linjene for det nye av én sort, i sin farge, til en knapp som bare gjelder
+-- den (uten at det regnes som sett).
+function DW.AddAlertLinesFor(tooltip, kind)
+    local alert = ALERT_BY_KIND[kind]
+    if not alert or not DW.IsAlertBlinking(kind) then
+        return
+    end
+    tooltip:AddLine(" ")
+    tooltip:AddLine(L.AL_HEADER, 1.00, 0.82, 0.00)
+    local color = alert.color or { 1, 1, 1 }
+    for _, line in ipairs(CollectLines({ alert })) do
+        tooltip:AddLine(line.text, color[1], color[2], color[3], true)
+    end
 end
 
 -- Legger listen (fra sist musen kom over knappen) i tooltipen. Brukes også

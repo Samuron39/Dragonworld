@@ -37,6 +37,7 @@ strings.en = {
     -- Knappen ved minimapet
     MINIMAP_CLICK = "Click to open Dragonworld.",
     MINIMAP_DRAG = "Drag to move the button.",
+    GUILD_TAB_TIP = "Opens the Dragonworld guild addon. It blinks when something is new; hold the mouse here to see what.",
 
     -- Første oppsett, steg 2 (etter språkvalget)
     SETUP_TITLE = "Almost done!",
@@ -685,6 +686,7 @@ strings.nb = {
 
     MINIMAP_CLICK = "Klikk for å åpne Dragonworld.",
     MINIMAP_DRAG = "Dra for å flytte knappen.",
+    GUILD_TAB_TIP = "Åpner guild-addonen Dragonworld. Den blinker når noe er nytt; hold musen her for å se hva.",
 
     -- Første oppsett, steg 2 (etter språkvalget)
     SETUP_TITLE = "Nesten ferdig!",
@@ -1323,6 +1325,7 @@ strings.nl = {
 
     MINIMAP_CLICK = "Klik om Dragonworld te openen.",
     MINIMAP_DRAG = "Sleep om de knop te verplaatsen.",
+    GUILD_TAB_TIP = "Opent de gilde-addon Dragonworld. Hij knippert als er iets nieuws is; houd de muis hier om te zien wat.",
 
     -- Første oppsett, steg 2 (etter språkvalget)
     SETUP_TITLE = "Bijna klaar!",

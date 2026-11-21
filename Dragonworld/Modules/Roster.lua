@@ -1197,7 +1197,9 @@ local panel -- lages første gang modulen velges i hovedvinduet
 local rows = {}
 local RefreshPanel
 
-local filterStatus = "all" -- "all", "online", "active" eller "inactive"
+-- "all", "online", "active" eller "inactive". Fanen åpner med dem som er
+-- pålogget (guildlederens ønske); de andre er ett klikk unna.
+local filterStatus = "online"
 local filterProfession     -- navnet på en profession, eller nil for alle
 local searchText = ""
 
