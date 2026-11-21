@@ -5,10 +5,11 @@
 --   * utstyret karakteren har på seg
 --   * talentene
 --   * "om meg": en kort tekst spilleren skriver om seg selv, som andre ser
--- Hver addon sender bare sitt eget: når du logger inn, og når noe endres.
--- Den ber også de andre om deres. Alle tar vare på det de får (det lagres),
--- så et medlem som er avlogget vises slik det var sist dere var pålogget
--- samtidig.
+-- Hver addon sender bare sitt eget, og bare når noe er endret. Ved innlogging
+-- ber den de andre om det som er endret siden sist den var pålogget (se
+-- "Hva vi har fått med oss" i Comm.lua). Alle tar vare på det de får (det
+-- lagres), så et medlem som er avlogget vises slik det var sist dere var
+-- pålogget samtidig.
 --
 -- Legacy-poeng: spillet har ingen dokumentert funksjon for dem, men to
 -- addons andre har laget (AltStable sin Legacy-plugin og LegacyNavigator,
@@ -33,7 +34,9 @@
 --   E nøkkel tid nr/antall tekst      utstyr: "1=12345:0:0,5=..." (plass=gjenstand)
 --   T nøkkel tid nr/antall tekst      talenter: "Navn~poeng~spell-rang,...;..."
 --   A nøkkel tid nr/antall tekst      "om meg"-teksten (tom tekst = slettet)
---   R                                 send meg deres
+--   R tid                             send meg det dere har endret etter tid (servertid)
+--   R                                 send meg alt (første gang, og én gang i uka)
+-- Tiden i P/E/T/A er når den delen sist ble endret.
 -- Lange tekster deles i biter og settes sammen igjen hos mottakeren.
 
 local ADDON_NAME, DW = ...
@@ -88,6 +91,8 @@ end
 --   gear    = { time, items = { [plass] = "12345:0:0..." } },
 --   talents = { time, trees = { { name, points, talents = { { spell, rank }, ... } }, ... } },
 -- }
+-- Din egen har i tillegg gear.raw og talents.raw (teksten som sendes) og
+-- sent = { [P/E/T/A] = tiden på det som sist ble sendt }.
 local function Profiles()
     if type(DragonworldDB) ~= "table" then
         return {}
@@ -452,7 +457,6 @@ end
 -- Deling ------------------------------------------------------------------------
 
 local Send = DW.CreateSender(PREFIX)
-local lastSent = {} -- [type] = teksten vi sist sendte, så vi ikke gjentar oss
 
 -- Sender en tekst, delt i biter som får plass i en melding.
 local function SendText(kind, key, when, text)
@@ -468,49 +472,85 @@ local function SendText(kind, key, when, text)
     end
 end
 
--- Leser egen karakter, tar vare på det, og sender det som er endret (eller
--- alt, med force).
-local function Publish(force)
+-- Leser egen karakter og tar vare på det. Tiden på hver del er når den sist
+-- ble endret, ikke når den sist ble sendt, så den samme profilen har samme
+-- tid hos alle. Sender det som er endret og ikke sendt ennå, og med since
+-- også alt som er endret etter den tiden (0 = alt), til en som har bedt om
+-- det. Det som er sendt, huskes i profile.sent, også etter utlogging.
+local function Publish(since)
     local key = MyKey()
     if not key then
         return
     end
     local profile = ProfileFor(key, true)
-    local now = Now()
     local changed = false
 
+    -- Alltid nyere enn forrige gang, selv om klokka står stille i ett sekund:
+    -- ellers ville en endring rett etter en sending se ut som allerede sendt.
+    local function Stamp(old)
+        local before = old and tonumber(old.time)
+        return math.max(Now(), before and (before + 1) or 0)
+    end
+
     local points = ReadLegacy()
-    if points and (force or lastSent.P ~= points) then
+    if points then
         local max = ReadLegacyMax()
-        profile.lp = { points = points, max = max, time = now }
-        lastSent.P = points
-        Send(table.concat({ "P", key, ("%d"):format(now), ("%d"):format(points), max and ("%d"):format(max) or "" }, SEP))
-        changed = true
+        local old = type(profile.lp) == "table" and profile.lp or nil
+        if not old or old.points ~= points or not old.time or (max and old.max ~= max) then
+            profile.lp = { points = points, max = max or (old and old.max), time = Stamp(old) }
+            changed = true
+        end
     end
 
     local gear = ReadGear()
-    if gear and gear ~= "" and (force or lastSent.E ~= gear) then
-        profile.gear = { time = now, items = ParseGear(gear) }
-        lastSent.E = gear
-        SendText("E", key, now, gear)
-        changed = true
+    if gear and gear ~= "" then
+        local old = type(profile.gear) == "table" and profile.gear or nil
+        if not old or old.raw ~= gear or not old.time then
+            profile.gear = { time = Stamp(old), items = ParseGear(gear), raw = gear }
+            changed = true
+        end
     end
 
     local talents = TalentsText(ReadTalentTrees())
-    if talents and talents ~= "" and (force or lastSent.T ~= talents) then
-        profile.talents = { time = now, trees = ParseTalents(talents) }
-        lastSent.T = talents
-        SendText("T", key, now, talents)
-        changed = true
+    if talents and talents ~= "" then
+        local old = type(profile.talents) == "table" and profile.talents or nil
+        if not old or old.raw ~= talents or not old.time then
+            profile.talents = { time = Stamp(old), trees = ParseTalents(talents), raw = talents }
+            changed = true
+        end
     end
 
+    -- Send hver del som ikke er sendt med denne tiden, eller som er nyere enn
+    -- det den som spør har.
+    local sent = type(profile.sent) == "table" and profile.sent or {}
+    profile.sent = sent
+    local function Due(kind, part)
+        if type(part) ~= "table" or type(part.time) ~= "number" then
+            return false
+        end
+        return sent[kind] ~= part.time or (since ~= nil and part.time > since)
+    end
+
+    if Due("P", profile.lp) then
+        local lp = profile.lp
+        sent.P = lp.time
+        Send(table.concat({ "P", key, ("%d"):format(lp.time), ("%d"):format(lp.points), lp.max and ("%d"):format(lp.max) or "" }, SEP))
+    end
+    if Due("E", profile.gear) and profile.gear.raw then
+        sent.E = profile.gear.time
+        SendText("E", key, profile.gear.time, profile.gear.raw)
+    end
+    if Due("T", profile.talents) and profile.talents.raw then
+        sent.T = profile.talents.time
+        SendText("T", key, profile.talents.time, profile.talents.raw)
+    end
     -- "Om meg": skrevet av spilleren selv (DW.SetMyAbout). Tidspunktet er når
-    -- det ble skrevet, så den nyeste teksten vinner hos alle.
-    local about = type(profile.about) == "table" and profile.about or nil
-    local aboutText = about and about.text or ""
-    if about and ((force and aboutText ~= "") or aboutText ~= (lastSent.A or "")) then
-        lastSent.A = aboutText
-        SendText("A", key, about.time or now, aboutText)
+    -- det ble skrevet, så den nyeste teksten vinner hos alle. En tom tekst
+    -- (slettet) sendes ikke til en som ber om alt; den har ingenting å slette.
+    local about = profile.about
+    if Due("A", about) and type(about.text) == "string" and not (since == 0 and about.text == "" and sent.A == about.time) then
+        sent.A = about.time
+        SendText("A", key, about.time, about.text)
     end
 
     if changed then
@@ -522,6 +562,7 @@ end
 
 local incoming = {} -- [avsender + type] = en tekst som er på vei, bit for bit
 local replyScheduled = false
+local replySince     -- den tidligste tiden noen har bedt om endringer fra
 
 local function Store(kind, key, when, text)
     local profile = ProfileFor(key, true)
@@ -552,14 +593,20 @@ DW.OnGuildMessage(PREFIX, function(text, sender)
     local kind, key, when = fields[1], fields[2], tonumber(fields[3])
 
     if kind == "R" then
+        -- Noen ber om det som er endret etter en tid (eller alt). Flere som
+        -- ber samtidig, får ett svar, fra den tidligste tiden.
+        local since = DW.SyncRequestSince(text)
+        replySince = math.min(replySince or since, since)
         if replyScheduled then
             return
         end
         replyScheduled = true
         C_Timer.After(1 + math.random() * 6, function()
             replyScheduled = false
+            local from = replySince or 0
+            replySince = nil
             if DW.IsMember() then
-                Publish(true)
+                Publish(from)
             end
         end)
         return
@@ -619,7 +666,7 @@ function DW.ProfileOf(member)
         return nil
     end
     if IsMe(member) and DW.IsMember() then
-        Publish(false)
+        Publish()
         local key = MyKey()
         return key and ProfileFor(key)
     end
@@ -675,7 +722,7 @@ end
 -- Sender det som er endret i din egen profil nå.
 function DW.PublishProfile()
     if DW.IsMember() then
-        Publish(false)
+        Publish()
     end
 end
 
@@ -709,8 +756,10 @@ local function PlanHello()
     C_Timer.After(HELLO_DELAY, function()
         if not helloSent and DW.IsMember() then
             helloSent = true
-            Publish(true)
-            Send("R")
+            -- Bare det som er endret siden sist. De som var avlogget da, får
+            -- det når de logger inn og spør.
+            Publish()
+            Send(DW.SyncRequest())
             -- Se etter igjen litt senere: spillet kan ha lastet legacy-poengene
             -- (og talentene) etter at vi leste første gang.
             PlanChange()
@@ -727,7 +776,7 @@ PlanChange = function()
     C_Timer.After(CHANGE_DELAY, function()
         changeQueued = false
         if DW.IsMember() then
-            Publish(false)
+            Publish()
         end
     end)
 end

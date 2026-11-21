@@ -380,40 +380,73 @@ end
 local Send = DW.CreateSender(PREFIX)
 local QueueRefresh
 
-local lastSent, lastSentLinks -- det vi sist fortalte guilden, så vi ikke gjentar oss
+-- Det vi har fortalt guilden om egne professions, også etter utlogging:
+-- db.sent[nøkkel] = { p, pt, sp, l, lt, sl }
+--   p / l   teksten i P- og L-meldingen sist vi leste
+--   pt / lt servertid da den teksten sist ble endret
+--   sp / sl tiden (pt / lt) på det vi sist sendte
+local function MySent(key)
+    if type(db.sent) ~= "table" then
+        db.sent = {}
+    end
+    local mine = db.sent[key]
+    if type(mine) ~= "table" then
+        mine = {}
+        db.sent[key] = mine
+    end
+    return mine
+end
 
 -- Forteller guilden hvilke professions karakteren har, hvis noe er endret
--- (eller alltid, med force). Meldingen har spillerens faste ID først. Lenkene
--- til professions går i en egen melding, så eldre versjoner av addonen ikke
--- snubler i dem.
-local function Publish(force)
+-- og ikke sendt ennå. Med since sendes også det som er endret etter den
+-- tiden (0 = alt), til en som har bedt om det. Meldingen har spillerens faste
+-- ID først. Lenkene til professions går i en egen melding, så eldre
+-- versjoner av addonen ikke snubler i dem.
+local function Publish(since)
     local text, key, links = StoreMine()
     if not text then
         return
     end
-    if force or text ~= lastSent then
-        lastSent = text
+    local mine = MySent(key)
+    -- Alltid nyere enn forrige gang, selv om klokka står stille i ett sekund:
+    -- ellers ville en endring rett etter en sending se ut som allerede sendt.
+    local function Stamp(before)
+        return math.max(DW.ServerNow(), type(before) == "number" and (before + 1) or 0)
+    end
+    if mine.p ~= text or type(mine.pt) ~= "number" then
+        mine.p, mine.pt = text, Stamp(mine.pt)
+    end
+    if mine.l ~= links or type(mine.lt) ~= "number" then
+        mine.l, mine.lt = links, Stamp(mine.lt)
+    end
+    if mine.sp ~= mine.pt or (since ~= nil and mine.pt > since) then
+        mine.sp = mine.pt
         Send("P" .. SEP .. key .. SEP .. text)
     end
-    if links ~= "" and key:find("^Player%-") and (force or links ~= lastSentLinks) then
-        lastSentLinks = links
+    if links ~= "" and key:find("^Player%-") and (mine.sl ~= mine.lt or (since ~= nil and mine.lt > since)) then
+        mine.sl = mine.lt
         Send("L" .. SEP .. key .. SEP .. links)
     end
 end
 
 local replyScheduled = false
+local replySince -- den tidligste tiden noen har bedt om endringer fra
 
--- Noen ba alle om å si fra. Svar etter en tilfeldig ventetid, så ikke hele
--- guilden svarer i samme øyeblikk.
-local function ScheduleReply()
+-- Noen ba alle om å si fra om det som er endret etter en tid (eller alt).
+-- Svar etter en tilfeldig ventetid, så ikke hele guilden svarer i samme
+-- øyeblikk, og bare med det som er endret etter den tiden.
+local function ScheduleReply(since)
+    replySince = math.min(replySince or since, since)
     if replyScheduled then
         return
     end
     replyScheduled = true
     C_Timer.After(1 + math.random() * 7, function()
         replyScheduled = false
+        local from = replySince or 0
+        replySince = nil
         if DW.IsMember() then
-            Publish(true)
+            Publish(from)
         end
     end)
 end
@@ -449,7 +482,7 @@ DW.OnGuildMessage(PREFIX, function(text, sender)
             QueueRefresh()
         end
     elseif kind == "R" then
-        ScheduleReply()
+        ScheduleReply(DW.SyncRequestSince(text))
     end
 end)
 
@@ -1384,8 +1417,9 @@ end
 
 local helloSent = false
 
--- Én gang per økt, litt etter innlogging: fortell guilden hvilke professions
--- karakteren har, og be de andre om å si fra om sine.
+-- Én gang per økt, litt etter innlogging: fortell guilden det som er endret
+-- i karakterens professions siden sist, og be de andre om det de har endret
+-- siden vi sist var pålogget (se "Hva vi har fått med oss" i Comm.lua).
 local function PlanHello()
     if helloSent or not (C_Timer and C_Timer.After) then
         return
@@ -1393,8 +1427,8 @@ local function PlanHello()
     C_Timer.After(10, function()
         if not helloSent and DW.IsMember() then
             helloSent = true
-            Publish(true)
-            Send("R")
+            Publish()
+            Send(DW.SyncRequest())
         end
     end)
 end
@@ -1411,7 +1445,7 @@ local function PlanPublish()
     C_Timer.After(60, function()
         publishQueued = false
         if DW.IsMember() then
-            Publish(false)
+            Publish()
             QueueRefresh()
         end
     end)

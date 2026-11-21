@@ -160,3 +160,78 @@ frame:SetScript("OnEvent", function(self, event, prefix, text, channel, sender)
 end)
 
 pcall(frame.RegisterEvent, frame, "CHAT_MSG_ADDON")
+
+-- Hva vi har fått med oss ------------------------------------------------------
+--
+-- Profil og professions lagres hos alle, så de trenger ikke sendes på nytt
+-- hver gang noen logger inn. Den som logger inn, spør derfor bare etter det
+-- som er endret siden sist den var pålogget ("R <tid>"), og bare de som har
+-- endret noe etter det, svarer. Første gang, og så én gang i uka, spør den
+-- etter alt ("R"), i tilfelle en melding har gått tapt.
+--
+-- Lagret (for hele kontoen, som profilene og professions):
+--   DragonworldDB.syncedUntil  servertid da vi sist logget ut etter å ha
+--                              spurt og fått svar
+--   DragonworldDB.fullSyncAt   servertid da vi sist spurte etter alt og fikk svar
+
+local FULL_SYNC_EVERY = 7 * 24 * 3600
+local SYNC_MARGIN = 5 * 60 -- spør litt lenger tilbake enn nødvendig, i tilfelle noe kom sent
+local SYNC_SETTLE = 30     -- så lenge de andre får på seg å svare før økten regnes som hørt
+
+-- Servertiden, som er lik for alle spillere. Tidene i "R <tid>" er servertid.
+function DW.ServerNow()
+    local now = GetServerTime and GetServerTime()
+    if type(now) == "number" and not DW.IsSecret(now) then
+        return now
+    end
+    return time()
+end
+
+local sessionSince -- nil = ikke bestemt ennå, false = spør etter alt, tall = spør fra da
+local askedAt      -- GetTime() da vi sist spurte
+
+-- Tiden de andre skal sende endringer fra (servertid), eller nil for alt.
+-- Bestemmes første gang den kalles i en økt, så alle moduler spør likt.
+function DW.SyncSince()
+    if sessionSince == nil then
+        local db = type(DragonworldDB) == "table" and DragonworldDB or nil
+        local heard = db and tonumber(db.syncedUntil)
+        local full = db and tonumber(db.fullSyncAt)
+        local now = DW.ServerNow()
+        if not heard or not full or now - full > FULL_SYNC_EVERY then
+            sessionSince = false
+        else
+            sessionSince = math.max(0, math.min(heard, now) - SYNC_MARGIN)
+        end
+    end
+    return sessionSince or nil
+end
+
+-- Meldingen en modul sender for å be de andre om deres: "R" eller "R <tid>".
+function DW.SyncRequest()
+    askedAt = GetTime()
+    local since = DW.SyncSince()
+    return since and ("R\t%d"):format(since) or "R"
+end
+
+-- Fra en slik melding: tiden avsenderen vil ha endringer fra, 0 for alt.
+-- Eldre versjoner sender bare "R", og de får alt, som før.
+function DW.SyncRequestSince(text)
+    return tonumber((type(text) == "string" and text:match("^R\t(%d+)$")) or "") or 0
+end
+
+-- Ved utlogging (og /reload): har vi spurt og gitt de andre tid til å svare,
+-- har vi fått med oss alt fram til nå. Ellers spør vi fra samme sted neste
+-- gang. En karakter utenfor guilden hører ingenting, og endrer ikke dette.
+local logout = CreateFrame("Frame")
+logout:SetScript("OnEvent", function()
+    if type(DragonworldDB) ~= "table" or not DW.IsMember() or not askedAt or GetTime() - askedAt < SYNC_SETTLE then
+        return
+    end
+    local now = DW.ServerNow()
+    DragonworldDB.syncedUntil = now
+    if sessionSince == false then
+        DragonworldDB.fullSyncAt = now
+    end
+end)
+pcall(logout.RegisterEvent, logout, "PLAYER_LOGOUT")

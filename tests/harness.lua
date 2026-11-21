@@ -4537,7 +4537,7 @@ end)()
         for _, row in ipairs(card.gearRows) do if row:IsShown() then rows[#rows + 1] = row end end
         check("gear: one line per item, with the slot, icon and name in its quality colour",
             #rows == 2 and rows[1].slot.text == "Head" and rows[1].name.text == "Copper Ore" and rows[1].icon.texture == 1020
-            and rows[2].slot.text == "Main Hand" and rows[2].name.text == "Iron Sword" and card.gearWhen.text == "delt DATE(" .. t .. ")" and not card.noGear:IsShown())
+            and rows[2].slot.text == "Main Hand" and rows[2].name.text == "Iron Sword" and card.gearWhen.text == "endret DATE(" .. t .. ")" and not card.noGear:IsShown())
         rows[2]:Fire("OnEnter")
         check("...hovering an item shows it", GameTooltip:IsShown() and GameTooltip.lines[1] == "Iron Sword")
         rows[2]:Fire("OnLeave")
@@ -5796,6 +5796,138 @@ end)()
     clearChat()
 
     click(rsChip)
+end)()
+
+-- ============ asking only for what changed since you were last online ===========
+;(function()
+    local PF, RO = "DragonworldPf", "DragonworldPr"
+    local function pf(text, sender) fire("CHAT_MSG_ADDON", PF, text, "GUILD", sender or "Nykommer-Stormrage") end
+    local function ro(text, sender) fire("CHAT_MSG_ADDON", RO, text, "GUILD", sender or "Nykommer-Stormrage") end
+    local function all(list) return table.concat(list, " ; ") end
+    local function kinds(list)
+        local out = {}
+        for _, text in ipairs(list) do out[#out + 1] = text:sub(1, 1) end
+        return table.concat(out)
+    end
+
+    -- This session asked for everything at login (nothing was remembered), long enough ago for the answers to come.
+    fire("PLAYER_LOGOUT")
+    check("logging out after asking remembers that everything up to now was heard, and that it was a full round",
+        DragonworldDB.syncedUntil == SERVER_NOW and DragonworldDB.fullSyncAt == SERVER_NOW)
+
+    -- Profile. A full request first, so every part counts as sent.
+    local own = DragonworldDB.profiles["Player-1-Tester"]
+    SERVER_NOW = SERVER_NOW + 1000
+    pf("R")
+    flush()
+    local sent = sentNow(PF)
+    check("a plain \"R\" (older versions, or once a week) still gets the whole profile, with the time each part last changed",
+        kinds(sent):find("E") and kinds(sent):find("T") and sent[1] ~= nil
+        and count(sent, "^E\tPlayer%-1%-Tester\t" .. own.gear.time .. "\t") == 1 and own.gear.time < SERVER_NOW - 900, all(sent))
+
+    SERVER_NOW = SERVER_NOW + 1000
+    pf("R\t" .. (SERVER_NOW - 300))
+    flush()
+    check("asked for what changed since someone left, with nothing changed since: no answer at all", #sentNow(PF) == 0)
+
+    ns.SetMyAbout("Tester liker sync")
+    ns.PublishProfile()
+    sent = sentNow(PF)
+    check("a change is sent once, on its own", #sent == 1 and sent[1]:find("^A\t") ~= nil, all(sent))
+    ns.PublishProfile()
+    check("...and not again when nothing more has changed", #sentNow(PF) == 0)
+
+    SERVER_NOW = SERVER_NOW + 60
+    pf("R\t" .. (SERVER_NOW - 300))
+    pf("R\t" .. (SERVER_NOW + 5), "Annen-Stormrage")
+    check("the answer waits a little", #sentNow(PF) == 0)
+    flush()
+    sent = sentNow(PF)
+    check("someone who was away gets only what changed after they left; two requests get one answer, from the earliest time",
+        #sent == 1 and sent[1]:find("^A\tPlayer%-1%-Tester\t%d+\t1/1\tTester liker sync$") ~= nil, all(sent))
+
+    pf("R\t" .. (SERVER_NOW + 5))
+    flush()
+    check("asked from after the change: no answer", #sentNow(PF) == 0)
+
+    -- Professions in the roster work the same way. A shared Mining link, so there is an L message too.
+    local seen = roDB().seen["Player-1-Tester"] or {}
+    roDB().seen["Player-1-Tester"] = seen
+    seen.Mining = { level = MY_PROFESSIONS[1][3], max = MY_PROFESSIONS[1][4], link = "2575:186" }
+    SERVER_NOW = SERVER_NOW + 1000
+    ro("R")
+    flush()
+    sent = sentNow(RO)
+    check("roster: a plain \"R\" still gets the professions and links", kinds(sent) == "PL", all(sent))
+    SERVER_NOW = SERVER_NOW + 1000
+    ro("R\t" .. (SERVER_NOW - 300))
+    flush()
+    check("roster: nothing changed since the asker left, so no answer", #sentNow(RO) == 0)
+    MY_PROFESSIONS[1][3] = MY_PROFESSIONS[1][3] + 1
+    fire("SKILL_LINES_CHANGED")
+    flush()
+    sent = sentNow(RO)
+    check("roster: a skill-up is sent once", #sent == 1 and sent[1]:find("^P\t") ~= nil, all(sent))
+    SERVER_NOW = SERVER_NOW + 60
+    ro("R\t" .. (SERVER_NOW - 300))
+    flush()
+    sent = sentNow(RO)
+    check("roster: someone who was away gets the professions that changed, not the links that didn't", kinds(sent) == "P", all(sent))
+
+    -- The next session. Comm.lua is loaded again on its own, as after a login.
+    local commSource
+    for _, file in ipairs(ADDON_FILES) do
+        if file.name == "Comm.lua" then commSource = file.source end
+    end
+    local made = {}
+    local function session(member)
+        local before = #frames
+        local fake = { L = ns.L, IsSecret = ns.IsSecret, AddDebug = function() end, IsMember = function() return member ~= false end,
+                       NameKey = ns.NameKey, CharacterKey = ns.CharacterKey, PrintError = function() end, DebugText = tostring }
+        assert(load(commSource, "@Comm.lua"))("Dragonworld", fake)
+        made = {}
+        for i = before + 1, #frames do made[#made + 1] = frames[i] end
+        for i = #frames, before + 1, -1 do table.remove(frames, i) end   -- kept out of fire(), so the real addon is untouched
+        return fake
+    end
+    local function logout()
+        for _, f in ipairs(made) do
+            if f.events.PLAYER_LOGOUT then f.scripts.OnEvent(f, "PLAYER_LOGOUT") end
+        end
+    end
+    local now = SERVER_NOW
+
+    DragonworldDB.syncedUntil, DragonworldDB.fullSyncAt = now - 3600, now - 86400
+    local nextLogin = session()
+    check("the next login asks only for what changed since the last logout (five minutes extra, to be safe)",
+        nextLogin.SyncRequest() == "R\t" .. (now - 3600 - 300), nextLogin.SyncRequest())
+    check("...and every module asks the same in that session", nextLogin.SyncRequest() == "R\t" .. (now - 3600 - 300))
+    logout()
+    check("logging out before the others had time to answer: next time asks from the same place", DragonworldDB.syncedUntil == now - 3600)
+    clock = clock + 31
+    logout()
+    check("...after they had time: heard up to now, and the weekly full round is not moved",
+        DragonworldDB.syncedUntil == now and DragonworldDB.fullSyncAt == now - 86400)
+
+    DragonworldDB.syncedUntil, DragonworldDB.fullSyncAt = now - 3600, now - 8 * 86400
+    nextLogin = session()
+    check("once a week it asks for everything again", nextLogin.SyncRequest() == "R")
+    clock = clock + 31
+    logout()
+    check("...and remembers when it did", DragonworldDB.fullSyncAt == now)
+
+    DragonworldDB.syncedUntil = nil
+    check("with nothing remembered (first time), it asks for everything", session().SyncRequest() == "R")
+
+    DragonworldDB.syncedUntil, DragonworldDB.fullSyncAt = now - 3600, now - 86400
+    nextLogin = session(false)
+    nextLogin.SyncRequest()
+    clock = clock + 31
+    logout()
+    check("a character outside the guild hears nothing, so logging out on it changes nothing", DragonworldDB.syncedUntil == now - 3600)
+
+    check("reading a request: a plain R (older versions) means everything",
+        nextLogin.SyncRequestSince("R") == 0 and nextLogin.SyncRequestSince("R\t123") == 123 and nextLogin.SyncRequestSince("R\tabc") == 0)
 end)()
 
 -- ============================== error handling ==================================
