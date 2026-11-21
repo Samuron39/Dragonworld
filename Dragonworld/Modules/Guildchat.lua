@@ -10,8 +10,9 @@
 --              eller ikke: en liste til venstre (nyeste øverst, med antall
 --              uleste), og hele samtalen med den du velger til høyre, med
 --              dato og klokkeslett, så du kan fortsette der dere slapp. Feltet
---              nederst svarer. En samtale kan slettes. De siste 50 samtalene
---              med opptil 200 meldinger hver huskes.
+--              nederst svarer. En samtale kan slettes, eller åpnes i et eget
+--              lite vindu som kan flyttes og endre størrelse (Hviskevinduer).
+--              De siste 50 samtalene med opptil 200 meldinger hver huskes.
 --   Logg:      spillets guildlogg: hvem som er invitert, har blitt med,
 --              sluttet, er kastet ut, forfremmet eller degradert, og hvor
 --              lenge siden. Spillet sender loggen når den bes om
@@ -45,11 +46,19 @@ local ROW_HEIGHT = 40
 --       last   = tiden for siste melding, unread = antall uleste,
 --       messages = { { t, out = true hvis du sendte den, me = ditt navn, text }, ... },
 --   }   (nøkkel = navnet uten realm og mellomrom, små bokstaver)
-local db = { messages = {}, whispers = {} }
+--   db.popouts[nøkkel] = { point, relativePoint, x, y, w, h, open = true } for egne hviskevinduer
+local db = { messages = {}, whispers = {}, popouts = {} }
 
 local panel
 local view = "chat"  -- "chat", "whisper" eller "log"
 local selectedKey    -- samtalen som vises under Hvisking
+local popouts = {}   -- [nøkkel] = et eget vindu med samtalen (se Hviskevinduer)
+local UpdatePopout, ClosePopout
+
+-- Er samtalen åpen i et eget vindu nå?
+local function PopoutShown(key)
+    return popouts[key] ~= nil and popouts[key]:IsShown()
+end
 
 -- Småting -----------------------------------------------------------------------
 
@@ -270,15 +279,17 @@ local function AddWhisper(name, text, out)
     while #conversation.messages > MAX_WHISPERS do
         table.remove(conversation.messages, 1)
     end
-    if not out and not IsShowing(key) then
+    if not out and not IsShowing(key) and not PopoutShown(key) then
         conversation.unread = (conversation.unread or 0) + 1
     end
 
     -- Bare de 50 nyeste samtalene huskes.
     local list = SortedConversations()
     for index = MAX_CONVERSATIONS + 1, #list do
+        ClosePopout(list[index].key)
         db.whispers[list[index].key] = nil
     end
+    UpdatePopout(key)
 
     if panel and panel:IsVisible() then
         if view == "whisper" then
@@ -297,6 +308,21 @@ local function FormatWhisper(conversation, message)
     local name = message.out and (message.me or "?") or conversation.name
     local link = ("|Hplayer:%s|h[%s]|h"):format(name, Colored(name))
     return ("|cff909090[%s]|r %s: %s"):format(date("%d.%m %H:%M", message.t), link, message.text)
+end
+
+-- Hele samtalen i en meldingsrute, nyeste nederst.
+local function ShowConversation(frame, conversation)
+    frame:Clear()
+    local r, g, b = ChatColor("WHISPER", 1.00, 0.50, 1.00)
+    local outR, outG, outB = ChatColor("WHISPER_INFORM", 1.00, 0.50, 1.00)
+    for _, message in ipairs(conversation.messages) do
+        if message.out then
+            frame:AddMessage(FormatWhisper(conversation, message), outR, outG, outB)
+        else
+            frame:AddMessage(FormatWhisper(conversation, message), r, g, b)
+        end
+    end
+    frame:ScrollToBottom()
 end
 
 local function GetRow(index)
@@ -360,30 +386,198 @@ RefreshWhispers = function()
     frame:Clear()
     panel.whisperName:SetText(selected and Colored(selected.name) or "")
     panel.whisperDelete:SetShown(selected ~= nil)
+    panel.whisperPopout:SetShown(selected ~= nil)
     panel.whisperInput:SetShown(selected ~= nil)
     panel.whisperInput.button:SetShown(selected ~= nil)
     if selected then
-        local r, g, b = ChatColor("WHISPER", 1.00, 0.50, 1.00)
-        local outR, outG, outB = ChatColor("WHISPER_INFORM", 1.00, 0.50, 1.00)
-        for _, message in ipairs(selected.messages) do
-            if message.out then
-                frame:AddMessage(FormatWhisper(selected, message), outR, outG, outB)
-            else
-                frame:AddMessage(FormatWhisper(selected, message), r, g, b)
-            end
-        end
+        ShowConversation(frame, selected)
     else
         frame:AddMessage(L.GC_WHISPER_EMPTY, 0.6, 0.6, 0.6)
+        frame:ScrollToBottom()
     end
-    frame:ScrollToBottom()
     panel.views.whisper.label:SetText(WhisperChipText())
 end
 
 local function DeleteConversation()
     if selectedKey then
+        ClosePopout(selectedKey)
         db.whispers[selectedKey] = nil
         selectedKey = nil
         RefreshWhispers()
+    end
+end
+
+-- Hviskevinduer ---------------------------------------------------------------
+-- En samtale kan åpnes i et eget lite vindu ("Eget vindu"), så man kan prate
+-- mens man gjør andre ting. Vinduet kan dras hvor man vil, og gjøres større
+-- eller mindre med håndtaket nede til høyre. Plassering og størrelse huskes
+-- per samtale (db.popouts), og vinduer som var åpne, åpnes igjen etter /reload
+-- og neste innlogging. Meldinger i en åpen samtale er lest, og blinker ikke.
+
+local POPOUT_W, POPOUT_H = 320, 220
+local POPOUT_MIN_W, POPOUT_MIN_H, POPOUT_MAX_W, POPOUT_MAX_H = 220, 140, 700, 520
+
+local function SavePopout(key)
+    local f = popouts[key]
+    if not f then
+        return
+    end
+    local saved = db.popouts[key] or {}
+    db.popouts[key] = saved
+    local point, _, relativePoint, x, y = f:GetPoint(1)
+    if point then
+        saved.point, saved.relativePoint, saved.x, saved.y = point, relativePoint, x, y
+    end
+    saved.w, saved.h = f:GetWidth(), f:GetHeight()
+    saved.open = f:IsShown() or nil
+end
+
+local function Clamp(value, low, high)
+    value = tonumber(value) or low
+    return math.max(low, math.min(high, value))
+end
+
+local function CreatePopout(key)
+    local f = CreateFrame("Frame", nil, UIParent, "BackdropTemplate")
+    f:SetFrameStrata("MEDIUM")
+    f:SetClampedToScreen(true)
+    f:SetBackdrop(DW.PANEL_BACKDROP)
+    f:SetBackdropColor(0.04, 0.04, 0.06, 0.88)
+    f:SetBackdropBorderColor(0.90, 0.72, 0.30, 1)
+    f:EnableMouse(true)
+    f:SetMovable(true)
+    f:SetResizable(true)
+    if f.SetResizeBounds then
+        f:SetResizeBounds(POPOUT_MIN_W, POPOUT_MIN_H, POPOUT_MAX_W, POPOUT_MAX_H)
+    elseif f.SetMinResize then
+        f:SetMinResize(POPOUT_MIN_W, POPOUT_MIN_H)
+    end
+    f:RegisterForDrag("LeftButton")
+    f:SetScript("OnDragStart", function(self)
+        self:StartMoving()
+    end)
+    f:SetScript("OnDragStop", function(self)
+        self:StopMovingOrSizing()
+        SavePopout(key)
+    end)
+
+    local saved = db.popouts[key] or {}
+    if saved.point then
+        f:SetPoint(saved.point, UIParent, saved.relativePoint or saved.point, tonumber(saved.x) or 0, tonumber(saved.y) or 0)
+    else
+        -- Nye vinduer litt forskjøvet, så de ikke legger seg oppå hverandre.
+        local count = 0
+        for _ in pairs(popouts) do
+            count = count + 1
+        end
+        f:SetPoint("CENTER", UIParent, "CENTER", 260 + count * 24, -60 - count * 24)
+    end
+    f:SetSize(Clamp(saved.w or POPOUT_W, POPOUT_MIN_W, POPOUT_MAX_W), Clamp(saved.h or POPOUT_H, POPOUT_MIN_H, POPOUT_MAX_H))
+
+    f.title = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    f.title:SetPoint("TOPLEFT", 12, -9)
+    f.title:SetPoint("RIGHT", -28, 0)
+    f.title:SetJustifyH("LEFT")
+
+    f.close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
+    f.close:SetPoint("TOPRIGHT", 2, 2)
+    f.close:SetScript("OnClick", function()
+        ClosePopout(key)
+    end)
+
+    f.chat = CreateMessageFrame(f, MAX_WHISPERS + 20)
+    f.chat:SetPoint("TOPLEFT", 10, -28)
+    f.chat:SetPoint("BOTTOMRIGHT", -10, 36)
+
+    -- Svar: Enter sender til den du prater med.
+    f.input = CreateFrame("EditBox", nil, f, "InputBoxTemplate")
+    f.input:SetPoint("BOTTOMLEFT", 16, 9)
+    f.input:SetPoint("BOTTOMRIGHT", -24, 9)
+    f.input:SetHeight(22)
+    f.input:SetAutoFocus(false)
+    f.input:SetMaxLetters(MAX_SEND_LETTERS)
+    f.input:SetScript("OnEnterPressed", function(self)
+        local conversation = db.whispers[key]
+        if conversation and Send(self:GetText(), "WHISPER", conversation.name) then
+            self:SetText("")
+        end
+        self:ClearFocus()
+    end)
+    f.input:SetScript("OnEscapePressed", function(self)
+        self:ClearFocus()
+    end)
+
+    -- Håndtaket nede til høyre: dra for å endre størrelsen.
+    f.grip = CreateFrame("Button", nil, f)
+    f.grip:SetSize(16, 16)
+    f.grip:SetPoint("BOTTOMRIGHT", -3, 3)
+    f.grip:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
+    f.grip:SetPushedTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down")
+    f.grip:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight")
+    f.grip:SetScript("OnMouseDown", function()
+        f:StartSizing("BOTTOMRIGHT")
+    end)
+    f.grip:SetScript("OnMouseUp", function()
+        f:StopMovingOrSizing()
+        SavePopout(key)
+    end)
+
+    return f
+end
+
+-- Tegner samtalen i vinduet på nytt (når den er åpen), og regner den som lest.
+UpdatePopout = function(key)
+    local f = popouts[key]
+    local conversation = db.whispers[key]
+    if not f or not f:IsShown() or not conversation then
+        return
+    end
+    f.title:SetText(Colored(conversation.name))
+    ShowConversation(f.chat, conversation)
+    conversation.unread = 0
+end
+
+local function OpenPopout(key)
+    if not db.whispers[key] then
+        return
+    end
+    if not popouts[key] then
+        popouts[key] = CreatePopout(key)
+    end
+    popouts[key]:Show()
+    UpdatePopout(key)
+    SavePopout(key)
+    if DW.RefreshAlerts then
+        DW.RefreshAlerts()
+    end
+    RefreshWhispers()
+end
+DW.OpenWhisperWindow = OpenPopout
+
+ClosePopout = function(key)
+    if popouts[key] then
+        popouts[key]:Hide()
+    end
+    if db.popouts[key] then
+        db.popouts[key].open = nil
+    end
+end
+
+-- Åpner vinduene som var åpne sist (etter /reload og ved innlogging).
+local function RestorePopouts()
+    for key, saved in pairs(db.popouts) do
+        if saved.open and db.whispers[key] then
+            OpenPopout(key)
+        end
+    end
+end
+DW.RestoreWhisperWindows = RestorePopouts
+
+local restored = false
+local function RestoreOnce()
+    if not restored and DW.IsMember() then
+        restored = true
+        RestorePopouts()
     end
 end
 
@@ -492,6 +686,7 @@ local function RefreshPanel()
     panel.chatInput.button.label:SetText(L.GC_SEND)
     panel.whisperInput.button.label:SetText(L.GC_SEND)
     panel.whisperDelete.label:SetText(L.GC_DELETE_CONVERSATION)
+    panel.whisperPopout.label:SetText(L.GC_POPOUT)
     panel.refresh.label:SetText(L.GC_REFRESH)
 
     -- Hver visning har sine egne deler; vis bare den valgte.
@@ -567,6 +762,25 @@ local function CreatePanel(parent)
     f.whisperDelete:SetPoint("TOPRIGHT", -14, -48)
     f.whisperDelete:SetScript("OnClick", DeleteConversation)
 
+    -- Samtalen i et eget vindu.
+    f.whisperPopout = DW.CreateChip(f, 110, 22)
+    f.whisperPopout:SetPoint("RIGHT", f.whisperDelete, "LEFT", -8, 0)
+    f.whisperPopout.label:SetJustifyH("CENTER")
+    f.whisperPopout:SetScript("OnClick", function()
+        if selectedKey then
+            OpenPopout(selectedKey)
+        end
+    end)
+    f.whisperPopout:HookScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_BOTTOM")
+        GameTooltip:AddLine(L.GC_POPOUT)
+        GameTooltip:AddLine(L.GC_POPOUT_TIP, 1, 1, 1, true)
+        GameTooltip:Show()
+    end)
+    f.whisperPopout:HookScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
+
     f.whisperChat = CreateMessageFrame(f, MAX_WHISPERS + 20)
     f.whisperChat:SetPoint("TOPLEFT", rightX, -76)
     f.whisperChat:SetPoint("BOTTOMRIGHT", -14, 46)
@@ -591,7 +805,7 @@ local function CreatePanel(parent)
 
     f.parts = {
         chat = { f.motd, f.chat, f.chatInput, f.chatInput.button },
-        whisper = { scroll, f.whisperName, f.whisperChat, f.whisperDelete, f.whisperInput, f.whisperInput.button },
+        whisper = { scroll, f.whisperName, f.whisperChat, f.whisperDelete, f.whisperPopout, f.whisperInput, f.whisperInput.button },
         log = { f.log, f.refresh },
     }
 
@@ -623,15 +837,24 @@ frame:SetScript("OnEvent", function(self, event, ...)
         if panel and panel:IsVisible() and view == "log" then
             ShowLog()
         end
+    elseif event == "PLAYER_ENTERING_WORLD" then
+        RestoreOnce()
     elseif event == "GUILD_MOTD" then
         if panel and panel:IsVisible() and view == "chat" then
             RefreshMotd()
         end
     end
 end)
-for _, event in ipairs({ "CHAT_MSG_GUILD", "CHAT_MSG_WHISPER", "CHAT_MSG_WHISPER_INFORM", "GUILD_EVENT_LOG_UPDATE", "GUILD_MOTD" }) do
+for _, event in ipairs({ "CHAT_MSG_GUILD", "CHAT_MSG_WHISPER", "CHAT_MSG_WHISPER_INFORM", "GUILD_EVENT_LOG_UPDATE", "GUILD_MOTD", "PLAYER_ENTERING_WORLD" }) do
     pcall(frame.RegisterEvent, frame, event)
 end
+
+-- Guild-navnet kan komme etter innlogging; åpne vinduene når det er klart.
+DW.OnMembershipChanged(function(member)
+    if member then
+        RestoreOnce()
+    end
+end)
 
 DW.OnLanguageChanged(function()
     RefreshPanel()
@@ -665,9 +888,13 @@ end
 -- Hviskinger inn som er nyere enn since, nyeste først: { { conversation, message }, ... }
 local function NewWhispers(since)
     local list = {}
-    for _, conversation in pairs(db.whispers) do
+    for key, conversation in pairs(db.whispers) do
+        -- En samtale som er åpen i et eget vindu, ser man allerede.
         for index = #conversation.messages, 1, -1 do
             local message = conversation.messages[index]
+            if PopoutShown(key) then
+                break
+            end
             if not message.out and (message.at or 0) > since then
                 list[#list + 1] = { conversation = conversation, message = message }
                 break -- én linje per person: den nyeste
@@ -765,6 +992,14 @@ DW.RegisterModule({
     OnLoad = function(self, saved)
         if type(saved.messages) ~= "table" then
             saved.messages = {}
+        end
+        if type(saved.popouts) ~= "table" then
+            saved.popouts = {}
+        end
+        for key, popout in pairs(saved.popouts) do
+            if type(key) ~= "string" or type(popout) ~= "table" then
+                saved.popouts[key] = nil
+            end
         end
         if type(saved.whispers) ~= "table" then
             saved.whispers = {}

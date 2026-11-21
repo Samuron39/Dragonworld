@@ -287,6 +287,8 @@ strings.en = {
     GC_VIEW_WHISPER = "Whispers",
     GC_WHISPER_EMPTY = "No whispers yet. Conversations you have from now on show up here, so you can pick them up again later.",
     GC_DELETE_CONVERSATION = "Delete conversation",
+    GC_POPOUT = "Own window",
+    GC_POPOUT_TIP = "Opens the conversation in a small window you can drag anywhere and resize (drag the corner at the bottom right), so you can chat while you do other things.",
     GC_YOU = "You: ",
 
     -- Introen i første oppsett
@@ -822,6 +824,8 @@ strings.nb = {
     GC_VIEW_WHISPER = "Hvisking",
     GC_WHISPER_EMPTY = "Ingen hviskinger ennå. Samtaler du har fra nå av vises her, så du kan fortsette dem senere.",
     GC_DELETE_CONVERSATION = "Slett samtalen",
+    GC_POPOUT = "Eget vindu",
+    GC_POPOUT_TIP = "Åpner samtalen i et lite vindu du kan dra hvor du vil og endre størrelse på (dra i hjørnet nede til høyre), så du kan prate mens du gjør andre ting.",
     GC_YOU = "Du: ",
 
     -- Introen i første oppsett
@@ -1351,6 +1355,8 @@ strings.nl = {
     GC_VIEW_WHISPER = "Fluisteren",
     GC_WHISPER_EMPTY = "Nog geen fluisterberichten. Gesprekken die je vanaf nu voert verschijnen hier, zodat je ze later kunt voortzetten.",
     GC_DELETE_CONVERSATION = "Gesprek wissen",
+    GC_POPOUT = "Eigen venster",
+    GC_POPOUT_TIP = "Opent het gesprek in een klein venster dat je overal kunt neerzetten en van grootte kunt veranderen (sleep de hoek rechtsonder), zodat je kunt praten terwijl je andere dingen doet.",
     GC_YOU = "Jij: ",
 
     -- Introen i første oppsett

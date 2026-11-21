@@ -664,7 +664,10 @@ function Frame:SetHighlightTexture(t) assert(self.kind == "Button" or self.kind 
 function Frame:SetEnabled(enabled) assert(self.kind == "Button" or self.kind == "CheckButton", "SetEnabled on non-button"); self.enabled = enabled and true or false end
 function Frame:IsEnabled() assert(self.kind == "Button" or self.kind == "CheckButton", "IsEnabled on non-button"); return self.enabled ~= false end
 function Frame:StartMoving() assert(self.movable, "StartMoving on a frame that is not movable"); self.moving = true end
-function Frame:StopMovingOrSizing() self.moving = false end
+function Frame:StopMovingOrSizing() self.moving = false; self.sizing = nil end
+function Frame:SetResizable(on) self.resizable = on and true or false end
+function Frame:SetResizeBounds(minW, minH, maxW, maxH) assert(type(minW) == "number" and type(minH) == "number"); self.resizeBounds = { minW, minH, maxW, maxH } end
+function Frame:StartSizing(corner) assert(self.resizable, "StartSizing on a frame that is not resizable"); self.sizing = corner or "BOTTOMRIGHT" end
 function Frame:CreateFontString(name, layer, template)
     assert(template == nil or FONTS[template], "unknown font " .. tostring(template))
     local fs = setmetatable({ parent = self, shown = true, fontTemplate = template }, FontString)
@@ -5238,6 +5241,77 @@ rsChip.scripts.OnClick(rsChip)
     local kept = 0
     for _ in pairs(whispers) do kept = kept + 1 end
     check("the 50 newest conversations are kept", kept == 50 and whispers.person55 ~= nil and whispers.zed == nil, kept)
+
+    -- A conversation in a window of its own, to chat while doing other things.
+    local function popoutFor(name)
+        for _, child in ipairs(UIParent.children) do
+            if child.grip and child.chat and child.title.text and child.title.text:find(name, 1, true) then return child end
+        end
+    end
+    clockNow = NOW + 9000
+    fire("CHAT_MSG_WHISPER", "Er du der?", "Altine-Stormrage")
+    for _, row in ipairs(gc.whisperRows) do
+        if row:IsShown() and row.key == "altine" then click(row) end
+    end
+    check("an open conversation has a button to open it in its own window",
+        gc.whisperName.text == "|cff40c7ebAltine|r" and gc.whisperPopout:IsShown() and gc.whisperPopout.label.text == "Eget vindu")
+    gc.whisperPopout:Fire("OnEnter")
+    check("...which explains itself", GameTooltip.lines[2] == ns.strings.nb.GC_POPOUT_TIP)
+    gc.whisperPopout:Fire("OnLeave")
+    click(gc.whisperPopout)
+    local popout = popoutFor("Altine")
+    check("Own window: a small window with the whole conversation, that can be moved and resized",
+        popout ~= nil and popout:IsShown() and popout.parent == UIParent and popout.title.text == "|cff40c7ebAltine|r"
+        and lines(popout.chat)[#lines(popout.chat)]:find("Er du der?", 1, true) ~= nil and popout.width == 320 and popout.height == 220
+        and popout.movable and popout.resizable and popout.resizeBounds[1] == 220 and popout.resizeBounds[2] == 140
+        and DragonworldDB.modules.guildchat.popouts.altine.open == true)
+
+    local sent = #guildChat
+    popout.input:TypeText("Ja, kommer!")
+    popout.input.scripts.OnEnterPressed(popout.input)
+    check("the field in the window answers Altine",
+        #guildChat == sent + 1 and guildChat[#guildChat].chatType == "WHISPER" and guildChat[#guildChat].target == "Altine-Stormrage" and popout.input.text == "")
+    fire("CHAT_MSG_WHISPER_INFORM", "Ja, kommer!", "Altine-Stormrage")
+    click(gc.views.chat) -- the module now shows something else
+    local count = #lines(popout.chat)
+    fire("CHAT_MSG_WHISPER", "Flott", "Altine-Stormrage")
+    local whisperItems = table.concat(ns.ALERTS[2].Items(0), " / ")
+    check("new lines show up in the window at once; they are read, and do not blink",
+        #lines(popout.chat) == count + 1 and lines(popout.chat)[count + 1]:find("Flott", 1, true) ~= nil
+        and whispers.altine.unread == 0 and not whisperItems:find("Altine", 1, true), whisperItems)
+
+    popout.scripts.OnDragStart(popout)
+    check("dragging the window moves it", popout.moving == true)
+    popout:ClearAllPoints()
+    popout:SetPoint("TOPLEFT", UIParent, "TOPLEFT", 40, -50)
+    popout.scripts.OnDragStop(popout)
+    local saved = DragonworldDB.modules.guildchat.popouts.altine
+    check("...and where it is put is remembered", not popout.moving and saved.point == "TOPLEFT" and saved.x == 40 and saved.y == -50)
+    popout.grip.scripts.OnMouseDown(popout.grip)
+    check("the corner at the bottom right resizes it", popout.sizing == "BOTTOMRIGHT" and popout.grip.normalTexture == "Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
+    popout:SetSize(400, 300)
+    popout.grip.scripts.OnMouseUp(popout.grip)
+    check("...and the size is remembered", popout.sizing == nil and saved.w == 400 and saved.h == 300)
+
+    click(popout.close)
+    check("closing it hides it, and keeps where it was", not popout:IsShown() and saved.open == nil and saved.point == "TOPLEFT")
+    click(gc.views.whisper)
+    for _, row in ipairs(gc.whisperRows) do
+        if row:IsShown() and row.key == "altine" then click(row) end
+    end
+    click(gc.whisperPopout)
+    check("opening it again puts it back where it was, the same size", popout:IsShown() and select(1, popout:GetPoint(1)) == "TOPLEFT" and popout.width == 400)
+
+    -- Windows that were open come back after /reload or the next login.
+    DragonworldDB.modules.guildchat.popouts.person55 = { point = "CENTER", relativePoint = "CENTER", x = 10, y = 20, w = 300, h = 200, open = true }
+    ns.RestoreWhisperWindows()
+    local cedricWindow = popoutFor("Person55")
+    check("windows that were open open again where they were, the same size",
+        cedricWindow ~= nil and cedricWindow:IsShown() and select(4, cedricWindow:GetPoint(1)) == 10 and cedricWindow.width == 300)
+
+    click(gc.whisperDelete)
+    check("deleting a conversation closes its window", not popout:IsShown())
+    click(cedricWindow.close)
     time = realTime
     click(gc.views.chat)
 
