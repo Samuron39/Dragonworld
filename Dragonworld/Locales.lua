@@ -600,7 +600,7 @@ strings.en = {
     RC_TIP_WHISPER = "Click to whisper %s about it.",
     RC_TIP_LINK = "Shift-click to link it in chat.",
     RC_OPEN_GAME = "The game's window",
-    RC_OPEN_GAME_TIP = "Tries to open the game's own profession window, like a click on a profession link in chat. Between two players the game may not open it.",
+    RC_OPEN_GAME_TIP = "Opens the game's own window for your profession, like a click on a profession link in chat.",
     RC_WHISPER = "Whisper",
     RC_CLOSE = "Close",
 
@@ -1218,7 +1218,7 @@ strings.nb = {
     RC_TIP_WHISPER = "Klikk for å hviske %s om den.",
     RC_TIP_LINK = "Shift-klikk for å lenke den i chatten.",
     RC_OPEN_GAME = "Spillets vindu",
-    RC_OPEN_GAME_TIP = "Prøver å åpne spillets eget profession-vindu, slik et klikk på en profession-lenke i chatten gjør. Mellom to spillere er det ikke sikkert spillet åpner det.",
+    RC_OPEN_GAME_TIP = "Åpner spillets eget vindu for professionen din, slik et klikk på en profession-lenke i chatten gjør.",
     RC_WHISPER = "Hvisk",
     RC_CLOSE = "Lukk",
 
@@ -1835,7 +1835,7 @@ strings.nl = {
     RC_TIP_WHISPER = "Klik om %s erover te fluisteren.",
     RC_TIP_LINK = "Shift-klik om het in de chat te linken.",
     RC_OPEN_GAME = "Venster van het spel",
-    RC_OPEN_GAME_TIP = "Probeert het eigen beroepenvenster van het spel te openen, zoals een klik op een beroepslink in de chat. Tussen twee spelers opent het spel het misschien niet.",
+    RC_OPEN_GAME_TIP = "Opent het eigen venster van het spel voor je beroep, zoals een klik op een beroepslink in de chat.",
     RC_WHISPER = "Fluister",
     RC_CLOSE = "Sluiten",
 

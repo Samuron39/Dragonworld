@@ -18,8 +18,8 @@
 -- I listen er slike professions gule, og et klikk viser oppskriftene i
 -- addonens eget vindu (RecipeWindow.lua), også når medlemmet er avlogget.
 -- Spillets lenke til professionen (den samme som når man deler en profession
--- i chatten) sendes fortsatt, og kan åpnes derfra med en knapp; mellom to
--- spillere åpnet den ingenting i Forever.
+-- i chatten) sendes fortsatt. Mellom to spillere åpner den ingenting i
+-- Forever, så den brukes bare for dine egne (en knapp i oppskriftsvinduet).
 --
 -- Samleyrker (Fishing, Skinning, Herbalism) har ingen oppskrifter, og regnes
 -- ikke som "ikke åpnet".
@@ -72,7 +72,7 @@ local GATHERING_NAMES = { Herbalism = true, Fishing = true, Skinning = true }
 -- Vi lagrer og sender bare det som står etter ID-en, og setter lenken sammen
 -- igjen når noen klikker. Lenken åpner spillets eget vindu, men bare når
 -- spillet går med på det (det gjorde det ikke mellom to spillere i Forever),
--- så oppskriftslisten er det som vises; lenken er en ekstra knapp.
+-- så oppskriftslisten er det som vises; lenken er en ekstra knapp for dine egne.
 local db = { professions = {}, seen = {}, crafts = {} }
 
 -- Småting -----------------------------------------------------------------------
@@ -908,12 +908,19 @@ local function RecipesOf(member, profession)
     return DecodeRecipes(entry.ids), entry.t
 end
 
--- Er det noe å vise for professionen: en oppskriftsliste, eller spillets lenke?
+-- Er det noe å vise for professionen: en oppskriftsliste, eller (bare for
+-- dine egne) spillets lenke. Spillet åpner ikke en annen spillers profession
+-- fra lenken i Forever (prøvd begge veier 21.11.2026), så for andre teller
+-- bare oppskriftslisten.
 local function CanShow(member, profession)
     if IsGathering(profession) then
         return false
     end
-    return RecipesOf(member, profession) ~= nil or LinkData(member, profession) ~= nil
+    if RecipesOf(member, profession) ~= nil then
+        return true
+    end
+    local me = DW.MyGUID()
+    return me ~= nil and type(member) == "table" and member.guid == me and LinkData(member, profession) ~= nil
 end
 
 -- Viser hva medlemmet kan lage, i addonens eget oppskriftsvindu

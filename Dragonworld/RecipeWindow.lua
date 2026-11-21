@@ -9,9 +9,9 @@
 --
 -- Listen kommer fra medlemmets egen addon (Roster.lua leser den når de åpner
 -- professionen sin, og sender den til guilden), så den vises også når
--- medlemmet er avlogget. Spillets eget vindu kan åpnes med en knapp når
--- medlemmet har delt lenken til professionen, men mellom to spillere åpnet
--- den ingenting i Forever.
+-- medlemmet er avlogget. For dine egne professions er det også en knapp som
+-- åpner spillets eget vindu; for andres åpner spillet ingenting fra lenken i
+-- Forever (prøvd begge veier), så der er den borte.
 --
 -- Hva en oppskrift lager og trenger spør vi spillet om først
 -- (GetRecipeSchematic), så Wowhead-dataene i ProfessionData.lua, og til slutt
@@ -306,7 +306,9 @@ Refresh = function()
     view.gameButton.label:SetText(L.RC_OPEN_GAME)
     view.whisper.label:SetText(L.RC_WHISPER)
     view.close.label:SetText(L.RC_CLOSE)
-    view.gameButton:SetShown(DW.CanOpenMemberProfession ~= nil and DW.CanOpenMemberProfession(member, profession))
+    -- Spillets eget vindu åpner bare dine egne professions (Forever åpner
+    -- ingenting fra en annen spillers lenke), så knappen er bare der da.
+    view.gameButton:SetShown(IsMe(member) and DW.CanOpenMemberProfession ~= nil and DW.CanOpenMemberProfession(member, profession))
     view.whisper:SetShown(CanWhisper(member))
 
     local ids, changed = nil, nil
@@ -447,8 +449,9 @@ local function CreateView(window)
         GameTooltip:Hide()
     end)
 
+    -- Samme plass som knappen over: den ene er for deg selv, den andre for andre.
     f.whisper = DW.CreateChip(f, 110, 26)
-    f.whisper:SetPoint("BOTTOMLEFT", 194, 12)
+    f.whisper:SetPoint("BOTTOMLEFT", 16, 12)
     f.whisper.label:SetJustifyH("CENTER")
     f.whisper:SetScript("OnClick", function()
         if member then

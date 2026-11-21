@@ -3118,12 +3118,33 @@ do
     button.scripts.OnLeave(button)
 end
 
--- Altine's addon sends the game's links to her professions.
+-- Altine's addon sends the game's links to her professions. In Forever the
+-- game opens nothing from another player's link, so a link alone (from an
+-- older version) does not make her profession clickable.
 roReceive("L\tPlayer-1-Altine\tAlchemy:2259:171;Herbalism:bad|link;;Evil", "Altine-Stormrage")
 flush()
 check("links from a member are stored; broken ones are dropped",
     roDB().professions["Player-1-Altine"].links.Alchemy == "2259:171" and roDB().professions["Player-1-Altine"].links.Herbalism == nil and chatText() == "", chatText())
-check("a shared profession is marked as one that can be opened", shownProfs(roRow("Altine")) == "Alchemy 300*, Herbalism 280"
+check("a link alone does not make another member's profession clickable", shownProfs(roRow("Altine")) == "Alchemy 300, Herbalism 280"
+    and colour(roRow("Altine").buttons[1].text.color, 0.90, 0.90, 0.90), shownProfs(roRow("Altine")))
+do
+    local button = roRow("Altine").buttons[1]
+    button.scripts.OnClick(button)
+    check("...clicking it opens nothing", (DragonworldRecipes == nil or not DragonworldRecipes:IsShown()) and #itemRefs == 0)
+    button.scripts.OnEnter(button)
+    check("...and hovering says it is not shared yet", GameTooltip.lines[2] == ns.strings.nb.RO_TIP_NO_LINK:format("Altine"), table.concat(GameTooltip.lines, " / "))
+    button.scripts.OnLeave(button)
+    local herb = roRow("Altine").buttons[2]
+    herb.scripts.OnEnter(herb)
+    check("a gathering profession is never clickable, and hovering says there is nothing to show",
+        not herb.linked and GameTooltip.lines[2] == ns.strings.nb.RO_TIP_GATHER, table.concat(GameTooltip.lines, " / "))
+    herb.scripts.OnLeave(herb)
+end
+
+-- Her recipe list arrives (more about these lists further down).
+roReceive(("C\tPlayer-1-Altine\tAlchemy\t%d\t1\t1\t1sr"):format(SERVER_NOW - 1000), "Altine-Stormrage")
+flush()
+check("with her recipe list, her profession is marked as one that can be opened", shownProfs(roRow("Altine")) == "Alchemy 300*, Herbalism 280"
     and colour(roRow("Altine").buttons[1].text.color, 1.00, 0.82, 0.00), shownProfs(roRow("Altine")))
 do
     local button = roRow("Altine").buttons[1]
@@ -3133,25 +3154,17 @@ do
     check("...and it goes back to yellow", colour(button.text.color, 1.00, 0.82, 0.00) and not GameTooltip:IsShown())
     button.scripts.OnClick(button)
     local rv = DragonworldRecipes
-    check("clicking it opens the recipe window; with only the game's link shared (an older version) it says what is missing",
-        rv ~= nil and rv:IsVisible() and rv.title.text == "Altine - Alchemy 300/300" and rv.empty:IsShown()
-        and rv.empty.text == ns.strings.nb.RC_NONE:format("Altine", "Alchemy") and #itemRefs == 0, rv and rv.title.text)
-    check("...and offers the game's own window", rv.gameButton:IsShown() and rv.gameButton.label.text == "Spillets vindu" and rv.close.label.text == "Lukk")
-    rv.gameButton.scripts.OnClick(rv.gameButton)
-    check("that button does what a click on the profession link in chat does",
-        #itemRefs == 1 and itemRefs[1].link == "trade:Player-1-Altine:2259:171"
-        and itemRefs[1].text == "|cffffd000|Htrade:Player-1-Altine:2259:171|h[Alchemy]|h|r", itemRefs[1] and itemRefs[1].text)
+    check("clicking it opens the recipe window", rv ~= nil and rv:IsVisible() and rv.title.text == "Altine - Alchemy 300/300"
+        and not rv.empty:IsShown() and #itemRefs == 0, rv and rv.title.text)
+    check("...without the game's window button (the game opens nothing for another player), but with Whisper",
+        not rv.gameButton:IsShown() and rv.whisper:IsShown() and rv.whisper.label.text == "Hvisk" and rv.close.label.text == "Lukk")
     rv.close.scripts.OnClick(rv.close)
     check("Close closes the recipe window", not rv:IsShown())
-    local herb = roRow("Altine").buttons[2]
-    herb.scripts.OnEnter(herb)
-    check("a gathering profession is never clickable, and hovering says there is nothing to show",
-        not herb.linked and GameTooltip.lines[2] == ns.strings.nb.RO_TIP_GATHER, table.concat(GameTooltip.lines, " / "))
-    herb.scripts.OnLeave(herb)
 end
 roReceive("P\tPlayer-1-Altine\tAlchemy:300:300;Herbalism:285:300", "Altine-Stormrage")
 flush()
-check("the links stay when the member's skill is updated", shownProfs(roRow("Altine")) == "Alchemy 300*, Herbalism 285", shownProfs(roRow("Altine")))
+check("the links and the recipe list stay when the member's skill is updated", shownProfs(roRow("Altine")) == "Alchemy 300*, Herbalism 285"
+    and roDB().professions["Player-1-Altine"].links.Alchemy == "2259:171", shownProfs(roRow("Altine")))
 
 -- Clicking the row opens the member card, which lists every profession.
 roRow("Altine").scripts.OnMouseUp(roRow("Altine"), "LeftButton")
@@ -3164,7 +3177,7 @@ do
     card.professionChips[1].scripts.OnClick(card.professionChips[1])
     check("clicking a shared one on the card opens the recipe window on top of the card",
         DragonworldRecipes:IsVisible() and DragonworldRecipes.title.text == "Altine - Alchemy 300/300" and card:IsVisible()
-        and DragonworldRecipes:GetFrameLevel() > card:GetFrameLevel() and #itemRefs == 1)
+        and DragonworldRecipes:GetFrameLevel() > card:GetFrameLevel() and #itemRefs == 0)
     DragonworldRecipes.close.scripts.OnClick(DragonworldRecipes.close)
     card.professionChips[2].scripts.OnClick(card.professionChips[2])
     check("...a gathering one opens nothing", not DragonworldRecipes:IsShown())
@@ -3180,21 +3193,6 @@ do
     check("hovering a row mentions what a click does", GameTooltip.lines[#GameTooltip.lines] == ns.strings.nb.RO_TIP_CLICK_ROW)
     row.scripts.OnLeave(row)
 end
-
--- If the game will not open it for us, the link is put in chat to be clicked there.
-clearChat()
-SetItemRef = function() error("blocked") end
-roRow("Altine").buttons[1].scripts.OnClick(roRow("Altine").buttons[1])
-DragonworldRecipes.gameButton.scripts.OnClick(DragonworldRecipes.gameButton)
-check("if opening fails, the link is put in the player's chat instead",
-    has("Fikk ikke åpnet professionen til Altine direkte.") and has("|Htrade:Player-1-Altine:2259:171|h[Alchemy]|h"), chatText())
-clearChat()
-SetItemRef = nil
-DragonworldRecipes.gameButton.scripts.OnClick(DragonworldRecipes.gameButton)
-check("...also in a client without that function", has("|Htrade:Player-1-Altine:2259:171|h[Alchemy]|h"), chatText())
-SetItemRef = realSetItemRef
-DragonworldRecipes.close.scripts.OnClick(DragonworldRecipes.close)
-clearChat()
 
 -- A link filed under a name (older version, no id) cannot be opened.
 roReceive("L\tPlayer-1-Borin\tSkinning:8613:393", "Borin-Stormrage")
@@ -3222,6 +3220,30 @@ roRow("Tester").scripts.OnMouseUp(roRow("Tester"), "LeftButton")
 check("your own card can open it too, also the profession that did not fit in the row",
     DragonworldMemberCard:IsVisible() and DragonworldMemberCard.professionChips[3]:IsShown() and DragonworldMemberCard.professionChips[3].label.text == "Mining 230/300"
     and not DragonworldMemberCard.professionChips[3].dimmed and DragonworldMemberCard.professionChips[1].dimmed and DragonworldMemberCard.professionChips[2].dimmed)
+DragonworldMemberCard.professionChips[3].scripts.OnClick(DragonworldMemberCard.professionChips[3])
+do
+    local rv = DragonworldRecipes
+    check("for your own profession the recipe window offers the game's own window, and no whispering yourself",
+        rv:IsVisible() and rv.title.text == "Tester - Mining 230/300" and rv.gameButton:IsShown() and rv.gameButton.label.text == "Spillets vindu"
+        and not rv.whisper:IsShown())
+    rv.gameButton.scripts.OnClick(rv.gameButton)
+    check("that button does what a click on the profession link in chat does",
+        #itemRefs == 1 and itemRefs[1].link == "trade:Player-1-Tester:2575:186"
+        and itemRefs[1].text == "|cffffd000|Htrade:Player-1-Tester:2575:186|h[Mining]|h|r", itemRefs[1] and itemRefs[1].text)
+    -- If the game will not open it for us, the link is put in chat to be clicked there.
+    clearChat()
+    SetItemRef = function() error("blocked") end
+    rv.gameButton.scripts.OnClick(rv.gameButton)
+    check("if opening fails, the link is put in the player's chat instead",
+        has("Fikk ikke åpnet professionen til Tester direkte.") and has("|Htrade:Player-1-Tester:2575:186|h[Mining]|h"), chatText())
+    clearChat()
+    SetItemRef = nil
+    rv.gameButton.scripts.OnClick(rv.gameButton)
+    check("...also in a client without that function", has("|Htrade:Player-1-Tester:2575:186|h[Mining]|h"), chatText())
+    SetItemRef = realSetItemRef
+    clearChat()
+    rv.close.scripts.OnClick(rv.close)
+end
 DragonworldMemberCard.close.scripts.OnClick(DragonworldMemberCard.close)
 C_TradeSkillUI.GetTradeSkillListLink = function() return nil end
 fire("TRADE_SKILL_LIST_UPDATE")
@@ -3546,7 +3568,7 @@ sentNow(RO_PREFIX)
     -- game itself (GetRecipeSchematic); the others come from the Wowhead data.
     local t1 = SERVER_NOW - 500
     roReceive(("C\tPlayer-1-Altine\tAlchemy\t%d\t2\t2\t%s"):format(t1, "93ci"), "Altine-Stormrage") -- 424242 in base 36
-    check("an incomplete list is not stored", roDB().crafts["Player-1-Altine"] == nil)
+    check("an incomplete list is not stored (the older one stays)", roDB().crafts["Player-1-Altine"].Alchemy.ids == "1sr")
     roReceive(("C\tPlayer-1-Altine\tAlchemy\t%d\t1\t2\t%s"):format(t1, "1sr,1su"), "Altine-Stormrage")  -- 2331, 2334
     check("a member's recipe list is stored once all its parts have come",
         roDB().crafts["Player-1-Altine"] ~= nil and roDB().crafts["Player-1-Altine"].Alchemy.ids == "1sr,1su,93ci" and roDB().crafts["Player-1-Altine"].Alchemy.t == t1,
@@ -3605,7 +3627,7 @@ sentNow(RO_PREFIX)
     do
         local sword = rvRows()[2]
         check("a recipe the game knows shows the item's icon and quality colour", sword.icon.texture == 1007 and colour(sword.name.color, 1, 1, 1))
-        check("the game's window is only offered when the member shared its link", not rv.gameButton:IsShown() == (roDB().professions["Player-1-Altine"].links.Alchemy == nil))
+        check("the game's window is never offered for another member's profession", not rv.gameButton:IsShown())
         sword.scripts.OnEnter(sword)
         local text = table.concat(GameTooltip.lines, " / ")
         check("hovering a recipe shows the item, what it needs, and what a click does",
