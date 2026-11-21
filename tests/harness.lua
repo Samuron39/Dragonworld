@@ -87,7 +87,7 @@ C_Item = {
     GetItemInfoInstant = function(id)
         local it = ITEMS[id]
         if not it then return nil end
-        return id, "Type", "Sub", "", 1000 + id, it.classID, it.sub or 0
+        return id, "Type", "Sub", it.equip or "", 1000 + id, it.classID, it.sub or 0  -- 4th: where it is worn (INVTYPE_...)
     end,
     RequestLoadItemDataByID = function(id) assert(type(id) == "number") end,
 }
@@ -3672,7 +3672,7 @@ sentNow(RO_PREFIX)
     check("your own card can open your recipe list", card.professionChips[3].label.text == "Mining 230/300" and not card.professionChips[3].dimmed)
     card.professionChips[3].scripts.OnClick(card.professionChips[3])
     check("...which lists what you can make", rv:IsVisible() and rv.title.text == "Tester - Mining 230/300"
-        and rvDescribe() == "Smelt Bronze [] | Smelt Copper [] | Smelt Tin []" and not rv.whisper:IsShown(), rvDescribe())
+        and rvDescribe() == "Smelt Bronze [] | Smelt Copper [] | Smelt Tin []" and not rv.whisper:IsShown() and not rv.slotChip:IsShown(), rvDescribe())
     do
         local told
         local savedTell = ChatFrame_SendTell
@@ -3707,6 +3707,54 @@ sentNow(RO_PREFIX)
     check("with four or fewer, the card goes back to two columns with the full text",
         card.professionChips[1].label.text == "Alchemy 300/300" and card.professionChips[1].width == 187 and not card.professionChips[3]:IsShown())
     card.close.scripts.OnClick(card.close)
+
+    -- The slot filter: head, chest, belt ... (where the made item is worn).
+    ITEMS[40] = { name = "Test Leather Vest", quality = 2, classID = 4, equip = "INVTYPE_ROBE", bind = 0 }
+    ITEMS[41] = { name = "Test Leather Belt", quality = 2, classID = 4, equip = "INVTYPE_WAIST", bind = 0 }
+    ITEMS[42] = { name = "Test Leather Tunic", quality = 1, classID = 4, equip = "INVTYPE_CHEST", bind = 0 }
+    local MAKES = { [500001] = 40, [500002] = 41, [500003] = 42 }
+    C_TradeSkillUI = {
+        GetRecipeSchematic = function(id, isRecraft)
+            assert(type(id) == "number" and isRecraft == false, "GetRecipeSchematic(recipeID, false)")
+            local out = MAKES[id]
+            if out then return { recipeID = id, name = ITEMS[out].name, outputItemID = out, reagentSlotSchematics = {} } end
+        end,
+    }
+    roReceive(("C\tPlayer-1-Altine\tAlchemy\t%d\t1\t1\tapsx,apsy,apsz,1sr"):format(t1 + 10), "Altine-Stormrage")
+    flush()
+    roRow("Altine").buttons[1].scripts.OnClick(roRow("Altine").buttons[1])
+    check("a list with things worn in different places gets a slot filter, set to all",
+        rv:IsVisible() and rv.slotChip:IsShown() and rv.slotChip.label.text == "Plass: Alle"
+        and rvDescribe() == "Minor Mana Potion [1 Mageroyal, 1 Peacebloom, 1 Empty Vial] | Test Leather Belt [] | Test Leather Tunic [] | Test Leather Vest []",
+        rvDescribe())
+    lastMenu = nil
+    rv.slotChip.scripts.OnClick(rv.slotChip)
+    do
+        local names = {}
+        for _, radio in ipairs(lastMenu and lastMenu.radios or {}) do names[#names + 1] = radio.text end
+        check("its menu lists only the slots the list has, in the character sheet's order, with how many",
+            lastMenu ~= nil and lastMenu.titles[1] == "Plass" and table.concat(names, ",") == "Alle,Bryst (2),Belte (1),Annet (tas ikke på) (1)"
+            and lastMenu.radios[1].selected(), table.concat(names, ","))
+    end
+    lastMenu.radios[2].click()
+    check("choosing Chest shows the chest pieces, robes included", rvDescribe() == "Test Leather Tunic [] | Test Leather Vest []"
+        and rv.slotChip.label.text == "Plass: Bryst", rvDescribe())
+    typeInto(rv.searchBox, "vest")
+    check("the filter and the search work together", rvDescribe() == "Test Leather Vest []", rvDescribe())
+    typeInto(rv.searchBox, "belt")
+    check("...and say so when nothing matches both", #rvRows() == 0 and rv.empty:IsShown() and rv.empty.text == "Ingen oppskrifter passer søket eller filteret.")
+    typeInto(rv.searchBox, "")
+    rv.slotChip.scripts.OnClick(rv.slotChip)
+    lastMenu.radios[3].click()
+    check("choosing Belt shows the belt", rvDescribe() == "Test Leather Belt []" and rv.slotChip.label.text == "Plass: Belte", rvDescribe())
+    ns.SetLanguage("en", true)
+    check("the filter follows the language", rv.slotChip.label.text == "Slot: Belt", rv.slotChip.label.text)
+    ns.SetLanguage("nb", true)
+    rv.close.scripts.OnClick(rv.close)
+    roRow("Altine").buttons[1].scripts.OnClick(roRow("Altine").buttons[1])
+    check("opening the window again starts with all slots", rv.slotChip.label.text == "Plass: Alle" and #rvRows() == 4)
+    rv.close.scripts.OnClick(rv.close)
+    ITEMS[40], ITEMS[41], ITEMS[42] = nil, nil, nil
 
     clearChat()
     dw("debug")

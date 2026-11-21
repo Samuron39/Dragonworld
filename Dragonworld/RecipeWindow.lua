@@ -3,7 +3,8 @@
 -- vinduet opp over hovedvinduet med alt medlemmet kan lage i den professionen:
 --   * hva oppskriften lager (ikon og navn i gjenstandens farge)
 --   * hva den trenger
---   * søk i listen
+--   * søk i listen, og filter på plass (hode, bryst, belte ...) når listen
+--     har ting som tas på forskjellige steder
 -- Hold over en oppskrift for gjenstanden. Klikk for å hviske medlemmet om den
 -- (med lenken klar i chatten), shift-klikk for å lenke den i chatten.
 --
@@ -31,7 +32,39 @@ local view
 local member, profession -- det som vises
 local rows = {}
 local searchText = ""
+local slotFilter         -- nøkkelen til en plass under (f.eks. "CHEST"), eller nil for alle
 local waitingFor = {}    -- gjenstander vi har bedt spillet laste
+
+-- Plassene filteret kan velge, i rekkefølgen på karakterarket. locs er
+-- spillets koder for hvor en gjenstand sitter (fra GetItemInfoInstant).
+-- Det som ikke tas på (potions, kits, materialer, enchants) er "Annet".
+-- Navnene står i Locales.lua som RC_SLOT_<nøkkel>.
+local SLOTS = {
+    { key = "HEAD", locs = { "INVTYPE_HEAD" } },
+    { key = "NECK", locs = { "INVTYPE_NECK" } },
+    { key = "SHOULDER", locs = { "INVTYPE_SHOULDER" } },
+    { key = "BACK", locs = { "INVTYPE_CLOAK" } },
+    { key = "CHEST", locs = { "INVTYPE_CHEST", "INVTYPE_ROBE" } },
+    { key = "SHIRT", locs = { "INVTYPE_BODY", "INVTYPE_TABARD" } },
+    { key = "WRIST", locs = { "INVTYPE_WRIST" } },
+    { key = "HANDS", locs = { "INVTYPE_HAND" } },
+    { key = "WAIST", locs = { "INVTYPE_WAIST" } },
+    { key = "LEGS", locs = { "INVTYPE_LEGS" } },
+    { key = "FEET", locs = { "INVTYPE_FEET" } },
+    { key = "FINGER", locs = { "INVTYPE_FINGER" } },
+    { key = "TRINKET", locs = { "INVTYPE_TRINKET" } },
+    { key = "WEAPON", locs = { "INVTYPE_WEAPON", "INVTYPE_2HWEAPON", "INVTYPE_WEAPONMAINHAND", "INVTYPE_WEAPONOFFHAND" } },
+    { key = "OFFHAND", locs = { "INVTYPE_SHIELD", "INVTYPE_HOLDABLE" } },
+    { key = "RANGED", locs = { "INVTYPE_RANGED", "INVTYPE_RANGEDRIGHT", "INVTYPE_THROWN", "INVTYPE_RELIC", "INVTYPE_AMMO" } },
+    { key = "BAG", locs = { "INVTYPE_BAG", "INVTYPE_QUIVER" } },
+    { key = "OTHER", locs = {} },
+}
+local SLOT_OF_LOC = {}
+for _, slot in ipairs(SLOTS) do
+    for _, loc in ipairs(slot.locs) do
+        SLOT_OF_LOC[loc] = slot.key
+    end
+end
 
 -- Gjenstander og oppskrifter -------------------------------------------------------
 
@@ -119,6 +152,15 @@ local function RecipeDetails(id)
         local ok, texture = pcall(C_Spell.GetSpellTexture, id)
         if ok and texture and not DW.IsSecret(texture) then
             info.icon = texture
+        end
+    end
+
+    -- Hvor det oppskriften lager sitter på karakteren (til filteret).
+    info.slot = "OTHER"
+    if info.itemID and C_Item and C_Item.GetItemInfoInstant then
+        local ok, _, _, _, loc = pcall(C_Item.GetItemInfoInstant, info.itemID)
+        if ok and type(loc) == "string" and not DW.IsSecret(loc) and SLOT_OF_LOC[loc] then
+            info.slot = SLOT_OF_LOC[loc]
         end
     end
 
@@ -316,15 +358,24 @@ Refresh = function()
         ids, changed = DW.MemberRecipes(member, profession)
     end
 
-    -- Oppskriftene som passer søket, sortert på navn.
+    -- Oppskriftene som passer søket og plassen, sortert på navn. Telle
+    -- også hvor mange det er per plass, til menyen.
     local needle = searchText:lower():gsub("^%s+", ""):gsub("%s+$", "")
-    local list = {}
+    local list, counts, kinds = {}, {}, 0
     for _, id in ipairs(ids or {}) do
         local info = RecipeDetails(id)
-        if needle == "" or info.name:lower():find(needle, 1, true) then
+        if not counts[info.slot] then
+            kinds = kinds + 1
+        end
+        counts[info.slot] = (counts[info.slot] or 0) + 1
+        if (needle == "" or info.name:lower():find(needle, 1, true)) and (not slotFilter or info.slot == slotFilter) then
             list[#list + 1] = { id = id, info = info }
         end
     end
+    view.slotCounts = counts
+    -- Filteret vises bare når listen har mer enn én slags ting.
+    view.slotChip.label:SetText(L.RC_SLOT_LABEL:format(slotFilter and L["RC_SLOT_" .. slotFilter] or L.RC_SLOT_ALL))
+    view.slotChip:SetShown(kinds > 1 or slotFilter ~= nil)
     table.sort(list, function(a, b)
         if a.info.name ~= b.info.name then
             return a.info.name < b.info.name
@@ -369,6 +420,48 @@ Refresh = function()
         view.empty:SetText(L.RC_NO_MATCH)
     end
     view.empty:SetShown(not ids or #list == 0)
+end
+
+local function SetSlot(key)
+    slotFilter = key
+    Refresh()
+end
+
+-- Menyen for plass: "Alle", og hver plass listen har noe i, med antall.
+local function OpenSlotMenu(owner)
+    local counts = view.slotCounts or {}
+    local present = {}
+    for _, slot in ipairs(SLOTS) do
+        if counts[slot.key] then
+            present[#present + 1] = slot.key
+        end
+    end
+
+    if not (MenuUtil and MenuUtil.CreateContextMenu) then
+        -- Uten meny: neste plass for hvert klikk, og til slutt alle.
+        local nextKey = present[1]
+        for index, key in ipairs(present) do
+            if key == slotFilter then
+                nextKey = present[index + 1]
+            end
+        end
+        SetSlot(nextKey)
+        return
+    end
+
+    local function IsSelected(data)
+        return (slotFilter or false) == data
+    end
+    local function Select(data)
+        SetSlot(data or nil)
+    end
+    MenuUtil.CreateContextMenu(owner, function(_, root)
+        root:CreateTitle(L.RC_SLOT_TITLE)
+        root:CreateRadio(L.RC_SLOT_ALL, IsSelected, Select, false)
+        for _, key in ipairs(present) do
+            root:CreateRadio(("%s (%d)"):format(L["RC_SLOT_" .. key], counts[key]), IsSelected, Select, key)
+        end
+    end)
 end
 
 local function CreateView(window)
@@ -416,6 +509,13 @@ local function CreateView(window)
     end)
     f.searchLabel = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     f.searchLabel:SetPoint("RIGHT", f.searchBox, "LEFT", -10, 0)
+
+    -- Filter på plass (hode, bryst, belte ...), under søkefeltet.
+    f.slotChip = DW.CreateChip(f, 186, 22)
+    f.slotChip:SetPoint("TOPRIGHT", -34, -40)
+    f.slotChip:SetScript("OnClick", function(self)
+        OpenSlotMenu(self)
+    end)
 
     local scroll = CreateFrame("ScrollFrame", "DragonworldRecipeScroll", f, "ScrollFrameTemplate")
     scroll:SetPoint("TOPLEFT", 16, -64)
@@ -484,6 +584,7 @@ function DW.ShowRecipes(who, which)
     end
     member, profession = who, which
     searchText = ""
+    slotFilter = nil
     view.searchBox:SetText("")
     view:Show()
     Refresh()
