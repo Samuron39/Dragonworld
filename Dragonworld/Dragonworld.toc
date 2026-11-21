@@ -1,0 +1,29 @@
+## Interface: 16001
+## Title: Dragonworld
+## Notes: Guild addon for Dragonworld. English, Norsk, Nederlands.
+## Version: 0.15.0
+## IconTexture: Interface\AddOns\Dragonworld\Media\icon
+## SavedVariables: DragonworldDB
+
+Locales.lua
+Core.lua
+Comm.lua
+Status.lua
+Profile.lua
+Version.lua
+Update.lua
+Alerts.lua
+ActionButton.lua
+MainWindow.lua
+Minimap.lua
+Modules\Ryddesekk.lua
+Modules\Materialer.lua
+Modules\Keybinds.lua
+Modules\Events.lua
+Modules\Roster.lua
+Modules\Guildbank.lua
+Modules\Forslag.lua
+Modules\Dungeons.lua
+Modules\ProfessionData.lua
+Modules\Professions.lua
+MemberCard.lua

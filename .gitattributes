@@ -1,0 +1,9 @@
+* text=auto eol=lf
+# Windows-filene til oppdateringsprogrammet lagres nøyaktig som de er (CRLF, BOM).
+*.cmd -text
+*.ps1 -text
+*.tga binary
+*.ico binary
+*.jpg binary
+*.png binary
+*.webp binary

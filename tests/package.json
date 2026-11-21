@@ -1,0 +1,1 @@
+{ "name": "dragonworld-tests", "private": true, "description": "Runs the Dragonworld addon against a fake WoW API. Usage: npm install, then: node run.js ..\\Dragonworld", "dependencies": { "fengari": "0.1.4" } }

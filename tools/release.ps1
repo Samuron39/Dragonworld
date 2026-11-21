@@ -1,0 +1,118 @@
+﻿# Legger ut en ny versjon av Dragonworld til guilden.
+#
+#   pwsh tools\release.ps1 [-Notes "hva som er nytt"] [-NoInstall]
+#
+# Gjør alt i én operasjon, i denne rekkefølgen:
+#   1. Versjonen er den i Dragonworld.toc. Er den alt lagt ut (taggen finnes),
+#      økes siste tall med én (0.15.0 -> 0.15.1) og skrives tilbake i .toc.
+#   2. Kjører testene (node tests\run.js Dragonworld). Feiler de, stopper alt.
+#   3. Skriver versjonen i Dragonworld\Version.lua (DW.RELEASE). Det er den
+#      addonene sammenligner i spillet; først nå får guilden beskjed om den.
+#   4. Committer alt, lager taggen vX.Y.Z og pusher til GitHub.
+#   5. Lager Dragonworld.zip (mappen Dragonworld fra taggen) og en GitHub
+#      release med den. Oppdateringsprogrammet henter alltid siste release.
+#   6. Kopierer addonen inn i spillet (med mindre -NoInstall).
+#
+# Versjoner som bare testes i spillet underveis trenger ikke dette: de har
+# fortsatt forrige DW.RELEASE, så ingen i guilden blir bedt om å oppdatere.
+
+param(
+    [string]$Notes = '',
+    [switch]$NoInstall
+)
+
+$ErrorActionPreference = 'Stop'
+$Root = Split-Path -Parent $PSScriptRoot
+$Addon = Join-Path $Root 'Dragonworld'
+$Toc = Join-Path $Addon 'Dragonworld.toc'
+$VersionFile = Join-Path $Addon 'Version.lua'
+$Dist = Join-Path $Root 'dist'
+$Game = 'D:\wow\World of Warcraft\_forever_\Interface\AddOns\Dragonworld'
+$CoAuthor = 'Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>'
+
+function Step([string]$text) { Write-Host "==> $text" -ForegroundColor Cyan }
+
+# Kjører et program og stopper hvis det feiler.
+function Invoke-Checked([string]$exe, [string[]]$arguments) {
+    & $exe @arguments
+    if ($LASTEXITCODE -ne 0) { throw "$exe $($arguments -join ' ') feilet (kode $LASTEXITCODE)" }
+}
+
+function Read-Utf8([string]$path) { [System.IO.File]::ReadAllText($path, [System.Text.UTF8Encoding]::new($false)) }
+function Write-Utf8([string]$path, [string]$text) { [System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($false)) }
+
+Push-Location $Root
+try {
+    git remote get-url origin *> $null
+    if ($LASTEXITCODE -ne 0) { throw 'Repoet har ingen remote "origin". Opprett GitHub-repoet først.' }
+
+    # 1. Versjonen.
+    $tocText = Read-Utf8 $Toc
+    if ($tocText -notmatch '(?m)^## Version:\s*(\d+)\.(\d+)\.(\d+)\s*$') { throw 'Fant ikke "## Version: X.Y.Z" i Dragonworld.toc' }
+    $major, $minor, $patch = [int]$Matches[1], [int]$Matches[2], [int]$Matches[3]
+    Invoke-Checked git @('fetch', '--tags', '--quiet', 'origin')
+    while ($true) {
+        $version = "$major.$minor.$patch"
+        git rev-parse -q --verify "refs/tags/v$version" *> $null
+        if ($LASTEXITCODE -ne 0) { break }
+        $patch++
+    }
+    if ($tocText -notmatch "(?m)^## Version:\s*$([regex]::Escape($version))\s*$") {
+        Step "v$major.$minor.$($patch - 1) er alt lagt ut; bruker $version"
+        $tocText = [regex]::Replace($tocText, '(?m)^## Version:.*$', "## Version: $version")
+        Write-Utf8 $Toc $tocText
+    }
+    Step "Legger ut Dragonworld $version"
+
+    # 2. Testene.
+    Step 'Kjører testene'
+    Invoke-Checked node @('tests/run.js', 'Dragonworld')
+
+    # 3. Versjonen guilden sammenligner med.
+    $versionText = Read-Utf8 $VersionFile
+    $versionText = [regex]::Replace($versionText, 'DW\.RELEASE\s*=\s*"[^"]*"', "DW.RELEASE = `"$version`"")
+    Write-Utf8 $VersionFile $versionText
+
+    # 4. Commit, tag, push.
+    Step 'Committer og pusher'
+    Invoke-Checked git @('add', '-A')
+    git diff --cached --quiet
+    if ($LASTEXITCODE -ne 0) {
+        Invoke-Checked git @('commit', '--quiet', '-m', "Dragonworld $version", '-m', $CoAuthor)
+    }
+    Invoke-Checked git @('tag', '-a', "v$version", '-m', "Dragonworld $version")
+    Invoke-Checked git @('push', '--quiet', 'origin', 'HEAD')
+    Invoke-Checked git @('push', '--quiet', 'origin', "v$version")
+
+    # 5. Zip og release.
+    Step 'Lager release på GitHub'
+    New-Item -ItemType Directory -Force -Path $Dist | Out-Null
+    $zip = Join-Path $Dist 'Dragonworld.zip'
+    if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
+    Invoke-Checked git @('archive', '--format=zip', '--prefix=Dragonworld/', '-o', $zip, "v${version}:Dragonworld")
+    if (-not $Notes) { $Notes = "Dragonworld $version" }
+    $Notes += "`n`nInstall/update: see the README. In game, the addon tells you when a newer version is out."
+    Invoke-Checked gh @('release', 'create', "v$version", $zip, '--title', "Dragonworld $version", '--notes', $Notes)
+
+    # 6. Inn i spillet.
+    if (-not $NoInstall -and (Test-Path -LiteralPath (Split-Path -Parent $Game))) {
+        Step "Installerer i $Game"
+        New-Item -ItemType Directory -Force -Path $Game | Out-Null
+        Get-ChildItem -LiteralPath $Addon -Recurse -File | ForEach-Object {
+            $relative = $_.FullName.Substring($Addon.Length).TrimStart('\')
+            $destination = Join-Path $Game $relative
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null
+            Copy-Item -LiteralPath $_.FullName -Destination $destination -Force
+        }
+        Get-ChildItem -LiteralPath $Game -Recurse -File | ForEach-Object {
+            $relative = $_.FullName.Substring($Game.Length).TrimStart('\')
+            if (-not (Test-Path -LiteralPath (Join-Path $Addon $relative))) { Remove-Item -LiteralPath $_.FullName -Force }
+        }
+    }
+
+    $url = (gh release view "v$version" --json url --jq .url)
+    Write-Host ''
+    Write-Host "Dragonworld $version er lagt ut: $url" -ForegroundColor Green
+} finally {
+    Pop-Location
+}
