@@ -4,7 +4,8 @@
 -- høyre i hovedvinduet, og vises:
 --   * som et lite ikon ved navnet i Medlemmer,
 --   * i fanen Dungeons, for dem som er åpne for dungeons, med hvilke dungeons
---     de vil ta og hvorfor (quest, loot, xp).
+--     de vil ta, hvorfor (quest, loot, xp) og hvilken rolle (tank, healer,
+--     dps; høyst to).
 --
 -- Slik deles det:
 --   * Addonen sender statusen din til guilden når du endrer den, og når du
@@ -18,8 +19,12 @@
 -- brukes i meldingene; nye får nye numre, gamle numre skal aldri endres.
 --
 -- Meldinger (navn DragonworldSt, felter skilt med tabulator):
---   S nøkkel status tid dungeons formål   min status ("-" = ingen),
---                                          dungeons som "1,4,12", formål som "QLX"
+--   S nøkkel status tid dungeons formål roller
+--                                          min status ("-" = ingen),
+--                                          dungeons som "1,4,12", formål som "QLX",
+--                                          roller som "TH" (høyst to av T, H, D).
+--                                          Rollefeltet sendes bare når det har
+--                                          noe; eldre versjoner leser det ikke.
 --   R                                     send meg statusen deres
 --
 -- All tekst ligger i Locales.lua (navnene som begynner med ST_).
@@ -50,6 +55,23 @@ DW.PURPOSES = {
     { code = "L", key = "ST_PURPOSE_LOOT" },
     { code = "X", key = "ST_PURPOSE_XP" },
 }
+
+-- Hvilken rolle man kan ta i en dungeon. Man velger én, eller to (f.eks. tank
+-- og dps). coords er hvor ikonet ligger i spillets rolle-bilde (64x64), samme
+-- utsnitt som spillet selv bruker for de små runde rolleikonene.
+DW.ROLES = {
+    { code = "T", key = "ST_ROLE_TANK", coords = "0:19:22:41" },
+    { code = "H", key = "ST_ROLE_HEALER", coords = "20:39:1:20" },
+    { code = "D", key = "ST_ROLE_DPS", coords = "20:39:22:41" },
+}
+DW.MAX_ROLES = 2
+local ROLE_TEXTURE = "Interface\\LFGFrame\\UI-LFG-ICON-PORTRAITROLES"
+
+-- Ikonet for en rolle som tekst, så det kan stå i en linje eller et verktøytips.
+function DW.RoleIcon(role, size)
+    size = size or 14
+    return ("|T%s:%d:%d:0:0:64:64:%s|t"):format(ROLE_TEXTURE, size, size, role.coords)
+end
 
 -- Dungeons og raids. Nivåene er dem DungeonJournal oppgir (spillets
 -- "Looking For Group"-nivåer der den har dem). Raidene er ikke i
@@ -168,6 +190,28 @@ local function ParsePurposes(text)
     return set
 end
 
+local function RolesText(set)
+    local out = ""
+    for _, role in ipairs(DW.ROLES) do
+        if set and set[role.code] then
+            out = out .. role.code
+        end
+    end
+    return out
+end
+
+-- Høyst to roller, også om en melding skulle ha flere.
+local function ParseRoles(text)
+    local set, count = {}, 0
+    for _, role in ipairs(DW.ROLES) do
+        if count < DW.MAX_ROLES and (text or ""):find(role.code, 1, true) then
+            set[role.code] = true
+            count = count + 1
+        end
+    end
+    return set
+end
+
 -- Lytting ---------------------------------------------------------------------
 
 local listeners = {}
@@ -189,7 +233,9 @@ end
 -- Din egen status -----------------------------------------------------------------
 
 -- Lagret per karakter: DragonworldDB.status["Navn-Realm"] =
---   { code, time, dungeons = { [id] = true }, purposes = { [kode] = true } }
+--   { code, time, dungeons = { [id] = true }, purposes = { [kode] = true },
+--     roles = { [kode] = true } }
+-- Rollene huskes også når statusen er av, så de er valgt neste gang.
 local function MyEntry()
     if type(DragonworldDB) ~= "table" then
         return nil
@@ -212,6 +258,9 @@ local function MyEntry()
     if type(entry.purposes) ~= "table" then
         entry.purposes = {}
     end
+    if type(entry.roles) ~= "table" then
+        entry.roles = {}
+    end
     if not STATUS_BY_CODE[entry.code or ""] then
         entry.code = nil
     end
@@ -232,15 +281,21 @@ local function SendMine()
     if not key or not entry then
         return
     end
-    Send(table.concat({
+    local fields = {
         "S", key, entry.code or "-", ("%d"):format(entry.time or Now()),
         entry.code == "D" and DungeonsText(entry.dungeons) or "",
         entry.code == "D" and PurposesText(entry.purposes) or "",
-    }, SEP))
+    }
+    local roles = entry.code == "D" and RolesText(entry.roles) or ""
+    if roles ~= "" then
+        fields[#fields + 1] = roles
+    end
+    Send(table.concat(fields, SEP))
 end
 
 -- Setter statusen din (code = nil slår den av). For "D" kan wish gi hvilke
--- dungeons og formål: { dungeons = { [id] = true }, purposes = { [kode] = true } }.
+-- dungeons, formål og roller:
+--   { dungeons = { [id] = true }, purposes = { [kode] = true }, roles = { [kode] = true } }.
 function DW.SetMyStatus(code, wish)
     local entry = MyEntry()
     if not entry then
@@ -254,6 +309,9 @@ function DW.SetMyStatus(code, wish)
     if wish then
         entry.dungeons = ParseDungeons(DungeonsText(wish.dungeons))
         entry.purposes = ParsePurposes(PurposesText(wish.purposes))
+        if wish.roles then
+            entry.roles = ParseRoles(RolesText(wish.roles))
+        end
     end
     SendMine()
     Changed()
@@ -261,7 +319,7 @@ end
 
 -- Andres status ------------------------------------------------------------------
 
-local others = {} -- [nøkkel] = { code, time, dungeons, purposes }; bare i minnet
+local others = {} -- [nøkkel] = { code, time, dungeons, purposes, roles }; bare i minnet
 
 -- Statusen til et medlem fra DW.ReadGuildRoster(): koden og oppføringen, eller
 -- nil. For deg selv er det din egen.
@@ -323,6 +381,7 @@ DW.OnGuildMessage(PREFIX, function(text)
             time = when,
             dungeons = ParseDungeons(fields[5]),
             purposes = ParsePurposes(fields[6]),
+            roles = ParseRoles(fields[7]),
         }
         Changed()
     elseif fields[1] == "R" then
@@ -385,13 +444,14 @@ end)
 DW.AddDebug("status", function(add)
     local code, entry = DW.GetMyStatus()
     add("min status: " .. DW.DebugText(code) .. " | nøkkel: " .. DW.DebugText(MyStatusKey())
-        .. " | dungeons: " .. (entry and DungeonsText(entry.dungeons) or "") .. " | formål: " .. (entry and PurposesText(entry.purposes) or ""))
+        .. " | dungeons: " .. (entry and DungeonsText(entry.dungeons) or "") .. " | formål: " .. (entry and PurposesText(entry.purposes) or "")
+        .. " | roller: " .. (entry and RolesText(entry.roles) or ""))
     local count = 0
     for key, known in pairs(others) do
         if known.code then
             count = count + 1
             if count <= 10 then
-                add(("  %s: %s %s"):format(key, known.code, DungeonsText(known.dungeons)))
+                add(("  %s: %s %s %s"):format(key, known.code, DungeonsText(known.dungeons), RolesText(known.roles)))
             end
         end
     end

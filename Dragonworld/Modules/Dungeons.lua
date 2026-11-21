@@ -1,11 +1,13 @@
 -- Dragonworld - Dungeons
 -- Viser alle i guilden som er pålogget og har sagt at de er åpne for
--- dungeons, med hvilke dungeons de vil ta og hvorfor (quest-run, loot, xp).
--- Herfra kan man hviske til dem eller invitere dem.
+-- dungeons, med rolle (tank, healer, dps), hvilke dungeons de vil ta og
+-- hvorfor (quest-run, loot, xp). Herfra kan man hviske til dem eller invitere
+-- dem.
 --
 -- Her ligger også vinduet man får opp når man trykker "Dungeon" øverst i
--- hovedvinduet: der velger man dungeons og formål, og lagrer. Selve statusen,
--- dungeon-listen og delingen med guilden ligger i Status.lua.
+-- hovedvinduet: der velger man rolle (én eller to), dungeons og formål, og
+-- lagrer. Selve statusen, dungeon-listen og delingen med guilden ligger i
+-- Status.lua.
 --
 -- All tekst ligger i Locales.lua (navnene som begynner med DG_).
 
@@ -48,6 +50,37 @@ local function PurposesText(purposes)
         end
     end
     return #parts > 0 and table.concat(parts, ", ") or L.DG_ANY_REASON
+end
+
+-- Rolleikonene til en oppføring, f.eks. tank + dps. Tomt om de ikke har valgt
+-- noen (eldre versjon av addonen).
+local function RoleIcons(roles, size)
+    local parts = {}
+    for _, role in ipairs(DW.ROLES) do
+        if roles and roles[role.code] then
+            parts[#parts + 1] = DW.RoleIcon(role, size)
+        end
+    end
+    return table.concat(parts, " ")
+end
+
+-- Rollene med ikon og navn, til verktøytips: "[ikon] Tank, [ikon] Healer".
+local function RolesText(roles)
+    local parts = {}
+    for _, role in ipairs(DW.ROLES) do
+        if roles and roles[role.code] then
+            parts[#parts + 1] = DW.RoleIcon(role) .. " " .. L[role.key]
+        end
+    end
+    return table.concat(parts, ", ")
+end
+
+local function CountOf(set)
+    local count = 0
+    for _ in pairs(set or {}) do
+        count = count + 1
+    end
+    return count
 end
 
 local function MyWish()
@@ -112,7 +145,7 @@ end
 -- Velgeren ------------------------------------------------------------------------
 
 local picker
-local pickDungeons, pickPurposes = {}, {}
+local pickDungeons, pickPurposes, pickRoles = {}, {}, {}
 local OpenTab -- åpner fanen etter at man har lagret
 
 local function RefreshPicker()
@@ -122,6 +155,20 @@ local function RefreshPicker()
     local level = MyLevel()
     picker.title:SetText(L.DG_PICK_TITLE)
     picker.hint:SetText(L.DG_PICK_HINT:format(level))
+    picker.roleLabel:SetText(L.DG_ROLE)
+    -- Har man valgt to roller, går den tredje ikke an før man fjerner en.
+    local full = CountOf(pickRoles) >= DW.MAX_ROLES
+    for _, check in ipairs(picker.roleChecks) do
+        local chosen = pickRoles[check.role.code] and true or false
+        check.label:SetText(DW.RoleIcon(check.role, 16) .. " " .. L[check.role.key])
+        check:SetChecked(chosen)
+        check:SetEnabled(chosen or not full)
+        if chosen or not full then
+            check.label:SetTextColor(1, 1, 1)
+        else
+            check.label:SetTextColor(0.55, 0.55, 0.55)
+        end
+    end
     picker.whyLabel:SetText(L.DG_WHY)
     for _, check in ipairs(picker.purposeChecks) do
         check.label:SetText(L[check.purpose.key])
@@ -169,14 +216,37 @@ local function CreatePicker(window)
     p.hint:SetWidth(width - 32)
     p.hint:SetJustifyH("LEFT")
 
+    -- Rolle: tank, healer, dps. Én eller to.
+    p.roleLabel = p:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    p.roleLabel:SetPoint("TOPLEFT", 16, -62)
+    p.roleChecks = {}
+    for index, role in ipairs(DW.ROLES) do
+        local check = CreateFrame("CheckButton", nil, p, "UICheckButtonTemplate")
+        check:SetSize(22, 22)
+        check:SetPoint("TOPLEFT", 76 + (index - 1) * 100, -58)
+        check.role = role
+        check.label = check:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        check.label:SetPoint("LEFT", check, "RIGHT", 2, 0)
+        check:SetScript("OnClick", function(self)
+            if self:GetChecked() and CountOf(pickRoles) < DW.MAX_ROLES then
+                pickRoles[self.role.code] = true
+            else
+                pickRoles[self.role.code] = nil
+            end
+            p.error:SetText("")
+            RefreshPicker()
+        end)
+        p.roleChecks[index] = check
+    end
+
     -- Hvorfor: quest-run, loot, xp. Man kan krysse av flere.
     p.whyLabel = p:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    p.whyLabel:SetPoint("TOPLEFT", 16, -62)
+    p.whyLabel:SetPoint("TOPLEFT", 400, -62)
     p.purposeChecks = {}
     for index, purpose in ipairs(DW.PURPOSES) do
         local check = CreateFrame("CheckButton", nil, p, "UICheckButtonTemplate")
         check:SetSize(22, 22)
-        check:SetPoint("TOPLEFT", 110 + (index - 1) * 150, -58)
+        check:SetPoint("TOPLEFT", 474 + (index - 1) * 110, -58)
         check.purpose = purpose
         check.label = check:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
         check.label:SetPoint("LEFT", check, "RIGHT", 2, 0)
@@ -249,7 +319,11 @@ local function CreatePicker(window)
             p.error:SetText(L.DG_NEED_DUNGEON)
             return
         end
-        DW.SetMyStatus("D", { dungeons = pickDungeons, purposes = pickPurposes })
+        if not next(pickRoles) then
+            p.error:SetText(L.DG_NEED_ROLE)
+            return
+        end
+        DW.SetMyStatus("D", { dungeons = pickDungeons, purposes = pickPurposes, roles = pickRoles })
         p:Hide()
         if OpenTab then
             OpenTab()
@@ -281,12 +355,15 @@ function DW.OpenDungeonPicker()
         _G.DragonworldMemberCard:Hide()
     end
     local _, entry = DW.GetMyStatus()
-    pickDungeons, pickPurposes = {}, {}
+    pickDungeons, pickPurposes, pickRoles = {}, {}, {}
     for id in pairs(entry and entry.dungeons or {}) do
         pickDungeons[id] = true
     end
     for code in pairs(entry and entry.purposes or {}) do
         pickPurposes[code] = true
+    end
+    for code in pairs(entry and entry.roles or {}) do
+        pickRoles[code] = true
     end
     picker.error:SetText("")
     RefreshPicker()
@@ -299,12 +376,30 @@ local panel
 local rows = {}
 local RefreshPanel
 local filterDungeon -- id-en til én dungeon, eller nil for alle
+local filterRole    -- koden til én rolle ("T", "H", "D"), eller nil for alle
+
+local ROLE_BY_CODE = {}
+for _, role in ipairs(DW.ROLES) do
+    ROLE_BY_CODE[role.code] = role
+end
+
+local function Matches(entry)
+    if filterDungeon ~= nil and not (entry.dungeons and entry.dungeons[filterDungeon]) then
+        return false
+    end
+    -- De som ikke har valgt rolle (eldre versjon) vises ikke når man filtrerer
+    -- på rolle.
+    if filterRole ~= nil and not (entry.roles and entry.roles[filterRole]) then
+        return false
+    end
+    return true
+end
 
 local function Collect()
     local list = DW.MembersWithStatus("D")
     local shown = {}
     for _, found in ipairs(list) do
-        if filterDungeon == nil or (found.entry.dungeons and found.entry.dungeons[filterDungeon]) then
+        if Matches(found.entry) then
             found.me = IsMe(found.member)
             found.shared = SharedCount(found.entry.dungeons)
             shown[#shown + 1] = found
@@ -353,6 +448,29 @@ local function OpenFilterMenu(owner)
     end)
 end
 
+-- Filter på rolle: alle tre står alltid i menyen.
+local function OpenRoleMenu(owner)
+    local function IsSelected(data)
+        return (filterRole or false) == data
+    end
+    local function Select(data)
+        filterRole = data or nil
+        RefreshPanel()
+    end
+    if not (MenuUtil and MenuUtil.CreateContextMenu) then
+        filterRole = nil
+        RefreshPanel()
+        return
+    end
+    MenuUtil.CreateContextMenu(owner, function(_, root)
+        root:CreateTitle(L.DG_ROLE_FILTER_TITLE)
+        root:CreateRadio(L.DG_ALL, IsSelected, Select, false)
+        for _, role in ipairs(DW.ROLES) do
+            root:CreateRadio(DW.RoleIcon(role) .. " " .. L[role.key], IsSelected, Select, role.code)
+        end
+    end)
+end
+
 local function GetRow(index)
     local row = rows[index]
     if row then
@@ -366,9 +484,16 @@ local function GetRow(index)
 
     row.name = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
     row.name:SetPoint("TOPLEFT", 4, -4)
-    row.name:SetWidth(170)
+    row.name:SetWidth(134)
     row.name:SetJustifyH("LEFT")
     row.name:SetWordWrap(false)
+
+    -- Rolleikonene (én eller to) mellom navnet og leveln.
+    row.roles = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    row.roles:SetPoint("TOPLEFT", 140, -3)
+    row.roles:SetWidth(40)
+    row.roles:SetJustifyH("LEFT")
+    row.roles:SetWordWrap(false)
 
     row.level = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     row.level:SetPoint("TOPLEFT", 178, -6)
@@ -412,6 +537,9 @@ local function GetRow(index)
         end
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
         GameTooltip:AddLine(found.member.name)
+        if next(found.entry.roles or {}) then
+            GameTooltip:AddLine(RolesText(found.entry.roles), 1, 1, 1)
+        end
         GameTooltip:AddLine(PurposesText(found.entry.purposes), 1.00, 0.82, 0.00)
         for _, dungeon in ipairs(DW.DUNGEONS) do
             if found.entry.dungeons and found.entry.dungeons[dungeon.id] then
@@ -443,6 +571,8 @@ RefreshPanel = function()
         filterDungeon = nil
     end
     panel.filter.label:SetText(L.DG_FILTER:format(filterDungeon and DW.DUNGEON_BY_ID[filterDungeon].name or L.DG_ALL))
+    local role = filterRole and ROLE_BY_CODE[filterRole]
+    panel.roleFilter.label:SetText(L.DG_ROLE_FILTER:format(role and (DW.RoleIcon(role) .. " " .. L[role.key]) or L.DG_ALL))
     panel.footer:SetText(L.DG_FOOTER)
 
     local shown, everyone = Collect()
@@ -457,6 +587,7 @@ RefreshPanel = function()
         else
             row.name:SetTextColor(1, 1, 1)
         end
+        row.roles:SetText(RoleIcons(found.entry.roles, 16))
         row.level:SetText(tostring(member.level))
         row.why:SetText(PurposesText(found.entry.purposes))
         row.dungeons:SetText(DungeonsText(found.entry.dungeons))
@@ -502,17 +633,24 @@ local function CreatePanel(parent)
     f.title:SetPoint("TOP", 0, -12)
 
     -- Bli med selv, eller endre hva du har valgt.
-    f.mine = DW.CreateButton(f, 220, 26, "gold")
+    f.mine = DW.CreateButton(f, 200, 26, "gold")
     f.mine:SetPoint("TOPLEFT", 14, -40)
     f.mine:SetScript("OnClick", function()
         DW.OpenDungeonPicker()
     end)
 
     -- Filter: bare dem som vil ta en bestemt dungeon.
-    f.filter = DW.CreateChip(f, 260, 26)
+    f.filter = DW.CreateChip(f, 236, 26)
     f.filter:SetPoint("TOPRIGHT", -14, -40)
     f.filter:SetScript("OnClick", function(self)
         OpenFilterMenu(self)
+    end)
+
+    -- Filter: bare dem som kan ta en bestemt rolle.
+    f.roleFilter = DW.CreateChip(f, 130, 26)
+    f.roleFilter:SetPoint("RIGHT", f.filter, "LEFT", -8, 0)
+    f.roleFilter:SetScript("OnClick", function(self)
+        OpenRoleMenu(self)
     end)
 
     local scroll = CreateFrame("ScrollFrame", "DragonworldDungeonsScroll", f, "ScrollFrameTemplate")
@@ -627,6 +765,9 @@ local function WishLine(found)
         end
     end
     local who = found.member.name
+    if next(entry.roles or {}) then
+        who = who .. " " .. RoleIcons(entry.roles)
+    end
     if #names == 0 then
         return L.AL_DUNGEON_ANY:format(who)
     end

@@ -4293,7 +4293,7 @@ end)()
     end
     check("the Dungeons pill opens a window to choose dungeons, without turning the status on yet",
         picker ~= nil and picker:IsVisible() and picker.strata == "DIALOG" and ns.GetMyStatus() == nil and not pills[2].selected
-        and picker.title.text == "Hvilke dungeons vil du ta?" and picker.hint.text == "Kryss av dungeons, og hvorfor. De hvite passer leveln din (60).")
+        and picker.title.text == "Hvilke dungeons vil du ta?" and picker.hint.text == "Velg rolle (én eller to), dungeons og hvorfor. De hvite passer leveln din (60).")
     check("every dungeon from DungeonJournal is listed with its levels, and the two raids",
         #picker.dungeonChecks == 37 and checkFor("Hall of Thanes").label.text == "Hall of Thanes (13-20)"
         and checkFor("Molten Core").label.text == "Molten Core (raid, 60)" and checkFor("Shaper's Terrace").label.text == "Shaper's Terrace (58-60)")
@@ -4301,6 +4301,15 @@ end)()
         colour(checkFor("Scholomance").label.color, 1, 1, 1) and colour(checkFor("Hall of Thanes").label.color, 0.55, 0.55, 0.55))
     check("three reasons to choose from", #picker.purposeChecks == 3 and picker.purposeChecks[1].label.text == "Quest-run"
         and picker.purposeChecks[2].label.text == "Loot" and picker.purposeChecks[3].label.text == "XP" and picker.whyLabel.text == "Hvorfor:")
+    local ROLE_FILE = "|TInterface\\LFGFrame\\UI-LFG-ICON-PORTRAITROLES:"
+    local TANK_ICON, HEALER_ICON, DPS_ICON = ROLE_FILE .. "14:14:0:0:64:64:0:19:22:41|t", ROLE_FILE .. "14:14:0:0:64:64:20:39:1:20|t", ROLE_FILE .. "14:14:0:0:64:64:20:39:22:41|t"
+    local function big(icon) return (icon:gsub(":14:14:", ":16:16:")) end
+    local roleChecks = picker.roleChecks
+    check("three roles to choose from, with the game's role icons, none ticked yet",
+        #roleChecks == 3 and picker.roleLabel.text == "Rolle:"
+        and roleChecks[1].label.text == big(TANK_ICON) .. " Tank" and roleChecks[2].label.text == big(HEALER_ICON) .. " Healer" and roleChecks[3].label.text == big(DPS_ICON) .. " DPS"
+        and not roleChecks[1]:GetChecked() and not roleChecks[2]:GetChecked() and not roleChecks[3]:GetChecked()
+        and roleChecks[1]:IsEnabled() and roleChecks[2]:IsEnabled() and roleChecks[3]:IsEnabled(), roleChecks[1] and roleChecks[1].label.text)
     check("the button to stop is not there while you are not on", not picker.off:IsShown())
     click(picker.save)
     check("saving with no dungeon asks for one", picker.error.text == "Velg minst én dungeon." and picker:IsVisible() and ns.GetMyStatus() == nil)
@@ -4313,14 +4322,28 @@ end)()
     local scholo = checkFor("Scholomance")
     scholo:SetChecked(false); click(scholo)
     click(picker.save)
+    check("saving with dungeons but no role asks for a role", picker.error.text == "Velg rolle: tank, healer eller DPS (høyst to)." and picker:IsVisible() and ns.GetMyStatus() == nil)
+    local function tick(box, on) box:SetChecked(on); click(box) end
+    tick(roleChecks[1], true)
+    check("ticking a role clears the message", picker.error.text == "" and roleChecks[1]:GetChecked())
+    tick(roleChecks[3], true)
+    check("with two roles ticked, the third greys out and cannot be ticked",
+        roleChecks[1]:GetChecked() and roleChecks[3]:GetChecked() and not roleChecks[2]:IsEnabled() and colour(roleChecks[2].label.color, 0.55, 0.55, 0.55)
+        and roleChecks[1]:IsEnabled() and roleChecks[3]:IsEnabled() and colour(roleChecks[1].label.color, 1, 1, 1))
+    tick(roleChecks[2], true)
+    check("...even if it is clicked anyway", not roleChecks[2]:GetChecked() and roleChecks[1]:GetChecked() and roleChecks[3]:GetChecked())
+    tick(roleChecks[3], false)
+    check("unticking one makes the third available again", roleChecks[2]:IsEnabled() and colour(roleChecks[2].label.color, 1, 1, 1) and not roleChecks[3]:GetChecked())
+    tick(roleChecks[2], true)
+    click(picker.save)
     flush()
     sent = stSent()
     local _, entry = ns.GetMyStatus()
-    check("saving turns the status on, with the dungeons and reasons",
+    check("saving turns the status on, with the dungeons, reasons and roles",
         ns.GetMyStatus() == "D" and entry.dungeons[25] and entry.dungeons[101] and not entry.dungeons[34] and entry.purposes.L and entry.purposes.X and not entry.purposes.Q
-        and pills[2].selected and not picker:IsShown())
-    check("...sent to the guild in one message",
-        #sent == 1 and sent[1]:find("^S\tPlayer%-1%-Tester\tD\t%d+\t24,25,26,27,28,29,30,31,32,33,35,101,102\tLX$") ~= nil, all(sent))
+        and entry.roles.T and entry.roles.H and not entry.roles.D and pills[2].selected and not picker:IsShown())
+    check("...sent to the guild in one message, the roles last",
+        #sent == 1 and sent[1]:find("^S\tPlayer%-1%-Tester\tD\t%d+\t24,25,26,27,28,29,30,31,32,33,35,101,102\tLX\tTH$") ~= nil, all(sent))
 
     local dgChip = chipByID.dungeons
     local dg = DragonworldDungeonsScroll.parent
@@ -4337,12 +4360,13 @@ end)()
         local rows = dgRows()
         check("you are on the list, marked as you, without whisper and invite",
             #rows == 1 and rows[1].name.text == "Tester (deg)" and rows[1].level.text == "60" and rows[1].why.text == "Loot, XP"
+            and rows[1].roles.text == big(TANK_ICON) .. " " .. big(HEALER_ICON)
             and rows[1].dungeons.text:find("^|cff40ff40Sunken Temple|r, |cff40ff40Blackrock Depths|r") ~= nil
             and not rows[1].whisper:IsShown() and not rows[1].invite:IsShown(), rows[1] and rows[1].dungeons.text)
     end
 
     -- Altine (online) is up for two dungeons, one of them one we picked too.
-    stReceive("S\tPlayer-1-Altine\tD\t" .. (t + 20) .. "\t30,4\tQ")
+    stReceive("S\tPlayer-1-Altine\tD\t" .. (t + 20) .. "\t30,4\tQ\tDT")
     stReceive("S\tPlayer-1-Borin\tD\t" .. (t + 20) .. "\t30\tL", "Borin-Stormrage")   -- offline
     flush()
     do
@@ -4352,6 +4376,7 @@ end)()
             #rows == 2 and altine.name.text == "Altine" and altine.level.text == "58" and altine.why.text == "Quest-run"
             and altine.dungeons.text == "The Deadmines, |cff40ff40Dire Maul: North|r" and altine.whisper:IsShown() and altine.invite:IsShown()
             and altine.whisper.label.text == "Hvisk" and altine.invite.label.text == "Inviter", altine and altine.dungeons.text)
+        check("...with the roles they chose, in the fixed order tank, healer, dps", altine.roles.text == big(TANK_ICON) .. " " .. big(DPS_ICON), altine.roles.text)
         local told, invited
         local savedTell, savedParty = ChatFrame_SendTell, C_PartyInfo
         ChatFrame_SendTell = function(name) told = name end
@@ -4361,8 +4386,9 @@ end)()
         check("Whisper and Invite use the game's own functions with the member's name", told == "Altine-Stormrage" and invited == "Altine-Stormrage")
         ChatFrame_SendTell, C_PartyInfo = savedTell, savedParty
         altine:Fire("OnEnter")
-        check("hovering lists the dungeons, with ours in green", GameTooltip.lines[1] == "Altine" and GameTooltip.lines[2] == "Quest-run"
-            and GameTooltip.lines[3] == "The Deadmines (17-26)" and GameTooltip.lines[4] == "Dire Maul: North (56-60)", table.concat(GameTooltip.lines, " / "))
+        check("hovering names the roles and lists the dungeons, with ours in green", GameTooltip.lines[1] == "Altine"
+            and GameTooltip.lines[2] == TANK_ICON .. " Tank, " .. DPS_ICON .. " DPS" and GameTooltip.lines[3] == "Quest-run"
+            and GameTooltip.lines[4] == "The Deadmines (17-26)" and GameTooltip.lines[5] == "Dire Maul: North (56-60)", table.concat(GameTooltip.lines, " / "))
         altine:Fire("OnLeave")
     end
     check("the roster shows the dungeon icon for Altine", (function()
@@ -4384,6 +4410,47 @@ end)()
     check("...and Molten Core only you", #dgRows() == 1 and dgRows()[1].name.text == "Tester (deg)")
     lastMenu.radios[1].click()
 
+    -- The role filter: you are tank + healer, Altine tank + dps.
+    check("a role filter sits left of the dungeon filter, showing all to begin with",
+        dg.roleFilter.label.text == "Rolle: Alle" and select(2, dg.roleFilter:GetPoint(1)) == dg.filter and dg.filter.label.text == "Dungeon: Alle")
+    lastMenu = nil
+    click(dg.roleFilter)
+    names = {}
+    for _, radio in ipairs(lastMenu.radios) do names[#names + 1] = radio.text end
+    check("the role menu always offers all three roles, with their icons",
+        lastMenu.owner == dg.roleFilter and lastMenu.titles[1] == "Rolle" and #names == 4 and names[1] == "Alle"
+        and names[2] == TANK_ICON .. " Tank" and names[3] == HEALER_ICON .. " Healer" and names[4] == DPS_ICON .. " DPS"
+        and lastMenu.radios[1].selected(), table.concat(names, ","))
+    local roleMenu = lastMenu
+    roleMenu.radios[3].click()
+    check("filtering on Healer shows only you", #dgRows() == 1 and dgRows()[1].name.text == "Tester (deg)"
+        and dg.roleFilter.label.text == "Rolle: " .. HEALER_ICON .. " Healer" and roleMenu.radios[3].selected() and not roleMenu.radios[1].selected())
+    roleMenu.radios[4].click()
+    check("...DPS only Altine", #dgRows() == 1 and dgRows()[1].name.text == "Altine")
+    roleMenu.radios[2].click()
+    check("...Tank both of you", #dgRows() == 2)
+    click(dg.filter)
+    for _, radio in ipairs(lastMenu.radios) do if radio.text == "The Deadmines" then radio.click() end end
+    check("both filters together: a tank for The Deadmines is Altine", #dgRows() == 1 and dgRows()[1].name.text == "Altine")
+    roleMenu.radios[3].click()
+    check("...and nobody heals The Deadmines, which the tab says", #dgRows() == 0 and dg.empty:IsShown() and dg.empty.text == "Ingen passer filteret akkurat nå.")
+    lastMenu.radios[1].click()
+    roleMenu.radios[1].click()
+    check("back to all on both: everyone again", #dgRows() == 2 and dg.roleFilter.label.text == "Rolle: Alle" and dg.filter.label.text == "Dungeon: Alle")
+
+    stReceive("S\tPlayer-1-Altine\tD\t" .. (t + 21) .. "\t30,4\tQ\tTHD")
+    flush()
+    check("a message with three roles keeps only two", dgRows()[2].roles.text == big(TANK_ICON) .. " " .. big(HEALER_ICON), dgRows()[2].roles.text)
+    stReceive("S\tPlayer-1-Altine\tD\t" .. (t + 22) .. "\t30,4\tQ")
+    flush()
+    check("an older version that sends no roles shows none, and the row still works", dgRows()[2].roles.text == "" and dgRows()[2].name.text == "Altine")
+    dgRows()[2]:Fire("OnEnter")
+    check("...and its tooltip has no roles line", GameTooltip.lines[2] == "Quest-run", table.concat(GameTooltip.lines, " / "))
+    dgRows()[2]:Fire("OnLeave")
+    roleMenu.radios[2].click()
+    check("...and when filtering on a role, someone with no roles is left out", #dgRows() == 1 and dgRows()[1].name.text == "Tester (deg)")
+    roleMenu.radios[1].click()
+
     stReceive("R", "Nykommer-Stormrage")
     flush()
     sent = stSent()
@@ -4393,6 +4460,7 @@ end)()
     click(pills[2])
     check("opening the picker again shows what you chose, and the button to stop",
         picker:IsVisible() and checkFor("Blackrock Depths"):GetChecked() and not checkFor("Scholomance"):GetChecked()
+        and roleChecks[1]:GetChecked() and roleChecks[2]:GetChecked() and not roleChecks[3]:GetChecked() and not roleChecks[3]:IsEnabled()
         and picker.purposeChecks[2]:GetChecked() and not picker.purposeChecks[1]:GetChecked() and picker.off:IsShown() and picker.off.label.text == "Ikke lenger åpen")
     click(picker.cancel)
     check("Cancel changes nothing", not picker:IsShown() and ns.GetMyStatus() == "D")
@@ -4416,7 +4484,7 @@ end)()
     ns.SetLanguage("en", true)
     check("the pills and the Dungeons tab follow the language",
         pills[1].label.text == "Questing" and pills[3].label.text == "Do not disturb" and dg.title.text == "Who wants to run dungeons?"
-        and dgRows()[1].whisper.label.text == "Whisper")
+        and dgRows()[1].whisper.label.text == "Whisper" and dg.roleFilter.label.text == "Role: All")
     ns.SetLanguage("nb", true)
 
     clearChat()
