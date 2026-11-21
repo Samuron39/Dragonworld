@@ -190,18 +190,25 @@ end
 -- Spilleren velger selv rekkefølgen på modul-fanene under Innstillinger. Den
 -- lagres i DragonworldDB.tabOrder (felles for alle karakterene på kontoen).
 
--- Modulene som har en fane, i valgt rekkefølge. Moduler som er nye siden sist
--- kommer nederst, i den rekkefølgen de er registrert.
+-- Rekkefølgen før spilleren har valgt selv (valgt av guildlederen).
+local DEFAULT_TAB_ORDER = {
+    "roster", "dungeons", "guildbank", "events", "professions", "materialer", "ryddesekk", "keybinds", "forslag",
+}
+
+-- Modulene som har en fane, i valgt rekkefølge (eller standardrekkefølgen).
+-- Moduler som er nye siden sist kommer nederst, i den rekkefølgen de er
+-- registrert.
 local function OrderedModuleIDs()
     local list, used = {}, {}
     local saved = type(DragonworldDB) == "table" and DragonworldDB.tabOrder
-    if type(saved) == "table" then
-        for _, id in ipairs(saved) do
-            local module = type(id) == "string" and DW.modules[id]
-            if module and module.CreatePanel and not used[id] then
-                list[#list + 1] = id
-                used[id] = true
-            end
+    if type(saved) ~= "table" then
+        saved = DEFAULT_TAB_ORDER
+    end
+    for _, id in ipairs(saved) do
+        local module = type(id) == "string" and DW.modules[id]
+        if module and module.CreatePanel and not used[id] then
+            list[#list + 1] = id
+            used[id] = true
         end
     end
     for _, module in ipairs(DW.moduleOrder) do

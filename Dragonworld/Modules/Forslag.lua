@@ -10,15 +10,25 @@
 --     De som er pålogget sender det du mangler, og ber om det de mangler.
 --   * Beskrivelsen kan være lengre enn én melding tillater, og sendes da i biter.
 --
--- Bare den som skrev et forslag kan slette det (i vinduet). Et slettet forslag
--- huskes en måned, så slettingen rekker å spre seg, og glemmes så. Det er ingen
--- ekte tilgangskontroll: alle i guilden kan i prinsippet sende hva som helst.
+-- Bare den som skrev et forslag kan slette det: knappen vises bare for dem,
+-- og en sletting tas bare imot når den kommer direkte fra den som skrev
+-- forslaget (ikke videresendt av andre; den sprer seg når forfatteren er
+-- pålogget). Et slettet forslag huskes en måned, og glemmes så.
+--
+-- Admin (Admin.lua, innlogging med kode) kan merke et forslag som utført eller
+-- avvist. Da flyttes det til arkivet, med status, hvem og når; admin kan også
+-- åpne det igjen. Statusen har sitt eget tidsstempel, og nyeste vinner. De
+-- andre i guilden kan ikke sjekke at avsenderen virkelig er admin.
+--
+-- Det er ingen ekte tilgangskontroll: alle i guilden kan i prinsippet sende
+-- hva som helst.
 --
 -- Meldingene (navn DragonworldSug, felter skilt med tabulator):
 --   F id endret slettet type modul deler overskrift   et forslag
 --   N id endret nr tekst                              en bit av beskrivelsen
 --   B id spiller,enig,tid ...                         hvem som er enige
---   H id,endret,antall,nyeste ...   og så   Q         hva jeg har
+--   S id status tid hvem                              status: D utført, R avvist, O åpen igjen
+--   H id,endret,antall,nyeste ...   og så   Q         hva jeg har ("nyeste" tar med statusen)
 --   G id ...                                          send meg disse
 --
 -- All tekst ligger i Locales.lua (navnene som begynner med SUG_).
@@ -43,6 +53,7 @@ local HELLO_DELAY = 12        -- etter innlogging
 local NOTE_WAIT = 20          -- så lenge vi venter på resten av en beskrivelse
 
 local NEW, IMPROVE = "N", "I" -- typene: ny ting, forbedring av noe som finnes
+local DONE, REJECTED, OPEN = "D", "R", "O" -- statusene admin kan sette
 
 -- Lagrede data. Settes i OnLoad nederst.
 --   db.items[id] = {
@@ -53,6 +64,8 @@ local NEW, IMPROVE = "N", "I" -- typene: ny ting, forbedring av noe som finnes
 --       deleted  = true hvis det er slettet,
 --       votes    = { ["Navn-Realm"] = { v = 1 (enig) eller 0 (angret), updated } },
 --       noteParts = bitene av beskrivelsen mens de er på vei,
+--       status   = "D" (utført), "R" (avvist) eller "O"/nil (åpent),
+--       statusAt = når statusen sist ble satt, statusBy = navnet på admin,
 --   }
 --   db.seq = teller som gjør hver id unik
 local db = { items = {} }
@@ -149,10 +162,12 @@ local function Syncable(item)
     return not item.stub and (not item.deleted or item.updated > Now() - KEEP_DELETED)
 end
 
--- Antall "enig"-oppføringer og tidsstempelet på den nyeste. Brukes til å
--- oppdage at to medlemmer har ulike svar på samme forslag.
+-- Antall "enig"-oppføringer og tidsstempelet på den nyeste av dem og
+-- statusen. Brukes til å oppdage at to medlemmer har ulike svar eller ulik
+-- status på samme forslag. (Statusen er tatt med i "nyeste", så eldre
+-- versjoner av addonen, som ikke kjenner den, forstår listen likt.)
 local function Digest(item)
-    local count, newest = 0, 0
+    local count, newest = 0, tonumber(item.statusAt) or 0
     for _, vote in pairs(item.votes) do
         count = count + 1
         if vote.updated > newest then
@@ -160,6 +175,11 @@ local function Digest(item)
         end
     end
     return count, newest
+end
+
+-- Er forslaget ferdigbehandlet (i arkivet)?
+local function IsArchived(item)
+    return item.status == DONE or item.status == REJECTED
 end
 
 -- Hvor mange som er enige, og hvem (sortert).
@@ -204,11 +224,17 @@ local Send = DW.CreateSender(PREFIX)
 
 -- Versjoner vi har sett sendt (av oss eller andre) siden noen sist ba om dem.
 -- Brukes til å la være å sende det en annen allerede har sendt.
-local seen = { items = {}, votes = {} }
+local seen = { items = {}, votes = {}, status = {} }
 
 local function MarkSeenItem(id, updated)
     if updated > (seen.items[id] or -1) then
         seen.items[id] = updated
+    end
+end
+
+local function MarkSeenStatus(id, statusAt)
+    if statusAt > (seen.status[id] or -1) then
+        seen.status[id] = statusAt
     end
 end
 
@@ -267,6 +293,15 @@ local function SendVotes(item, players)
     Flush()
 end
 
+-- Sender statusen (utført, avvist, åpen igjen), hvis forslaget har fått en.
+local function SendStatus(item)
+    if not item.statusAt then
+        return
+    end
+    Send(table.concat({ "S", item.id, item.status or OPEN, Num(item.statusAt), item.statusBy or "" }, SEP))
+    MarkSeenStatus(item.id, item.statusAt)
+end
+
 -- Sender en liste med tekstbiter fordelt på så få meldinger som mulig.
 local function SendList(kind, entries)
     local parts, size = { kind }, #kind
@@ -300,6 +335,7 @@ local function Offer(id, withItem, withVotes)
         -- Fra nå av teller vi hva andre rekker å sende før oss.
         seen.items[id] = nil
         seen.votes[id] = nil
+        seen.status[id] = nil
     end
     offer.item = offer.item or withItem
     offer.votes = offer.votes or withVotes
@@ -333,6 +369,9 @@ local function RunExchange()
                 end
                 if any then
                     SendVotes(item, players)
+                end
+                if item.statusAt and (seen.status[id] or -1) < item.statusAt then
+                    SendStatus(item)
                 end
             end
         end
@@ -443,6 +482,33 @@ local function ApplyVote(id, player, v, updated)
     return true
 end
 
+-- Tar imot en status fra admin. Returnerer true hvis noe ble endret.
+local function ApplyStatus(id, status, statusAt, by)
+    if (status ~= DONE and status ~= REJECTED and status ~= OPEN) or statusAt > Now() + DAY or #by > 40 or #id > 80 then
+        return false
+    end
+    local item = db.items[id]
+    if not item then
+        -- Status på et forslag vi ikke kjenner. Ta vare på den, og be om forslaget.
+        item = { id = id, stub = true, updated = 0, votes = {} }
+        db.items[id] = item
+        wanted[id] = true
+    end
+    if item.statusAt and statusAt <= item.statusAt then
+        return false
+    end
+    item.status = (status ~= OPEN) and status or nil
+    item.statusAt = statusAt
+    item.statusBy = Clean(by, 40)
+    return true
+end
+
+-- Kommer meldingen fra den som skrev forslaget?
+local function FromAuthor(id, sender)
+    local author = AuthorOf(id)
+    return author ~= nil and DW.NameKey(author) == DW.NameKey(sender)
+end
+
 local function OnMessage(text, sender)
     local fields = Split(text, SEP)
     local kind = fields[1]
@@ -450,9 +516,14 @@ local function OnMessage(text, sender)
 
     if kind == "F" and #fields >= 8 then
         local id, updated, parts = fields[2], tonumber(fields[3]), tonumber(fields[7])
+        local deleted = fields[4] == "1"
         if id ~= "" and updated and parts then
+            -- Sendt av noen, så vi trenger ikke sende den samme versjonen.
             MarkSeenItem(id, updated)
-            changed = ApplyItem(id, updated, fields[4] == "1", fields[5], fields[6], parts, fields[8])
+        end
+        -- En sletting tas bare imot fra den som skrev forslaget.
+        if id ~= "" and updated and parts and (not deleted or FromAuthor(id, sender)) then
+            changed = ApplyItem(id, updated, deleted, fields[5], fields[6], parts, fields[8])
             -- Kommer ikke resten av beskrivelsen, ber vi om forslaget på nytt.
             local item = db.items[id]
             if changed and item.noteParts then
@@ -484,6 +555,13 @@ local function OnMessage(text, sender)
                     end
                 end
             end
+        end
+
+    elseif kind == "S" and #fields >= 4 then
+        local id, statusAt = fields[2], tonumber(fields[4])
+        if id ~= "" and statusAt then
+            MarkSeenStatus(id, statusAt)
+            changed = ApplyStatus(id, fields[3], statusAt, fields[5] or "")
         end
 
     elseif kind == "H" then
@@ -555,6 +633,7 @@ local formOpen = false
 local formKind = NEW
 local formModule = ""
 local filterKind -- nil for alle, ellers NEW eller IMPROVE
+local view = "active" -- "active" (åpne forslag) eller "archive" (utført og avvist)
 
 -- Lager et nytt forslag, sier seg enig i det selv, og sender det til guilden.
 local function CreateSuggestion(kind, module, title, note)
@@ -590,6 +669,19 @@ local function DeleteSuggestion(item)
     SendItem(item)
 end
 
+-- Admin: merker forslaget som utført (DONE), avvist (REJECTED) eller åpent
+-- igjen (OPEN), og sender det til guilden.
+local function SetStatus(item, status)
+    if not DW.IsAdmin() then
+        return
+    end
+    local _, name = DW.CharacterKey()
+    item.status = (status ~= OPEN) and status or nil
+    item.statusAt = math.max(Now(), (item.statusAt or 0) + 1)
+    item.statusBy = name or "?"
+    SendStatus(item)
+end
+
 -- Sier seg enig, eller trekker det tilbake.
 local function ToggleVote(item)
     local me = MyKey()
@@ -603,11 +695,14 @@ local function ToggleVote(item)
     SendVotes(item, { [me] = true })
 end
 
--- Forslagene som vises, med de flest er enige i øverst, deretter de nyeste.
-local function VisibleItems()
+-- Forslagene som vises. Åpne: de flest er enige i øverst, deretter de nyeste.
+-- Arkivet: sist behandlet øverst.
+local function VisibleItems(whichView)
+    local archive = (whichView or view) == "archive"
     local list = {}
     for _, item in pairs(db.items) do
-        if type(item) == "table" and not item.stub and not item.deleted and (filterKind == nil or item.kind == filterKind) then
+        if type(item) == "table" and not item.stub and not item.deleted and IsArchived(item) == archive
+            and (filterKind == nil or item.kind == filterKind) then
             list[#list + 1] = item
         end
     end
@@ -616,6 +711,9 @@ local function VisibleItems()
         agree[item] = Agreeing(item)
     end
     table.sort(list, function(a, b)
+        if archive and (a.statusAt or 0) ~= (b.statusAt or 0) then
+            return (a.statusAt or 0) > (b.statusAt or 0)
+        end
         if agree[a] ~= agree[b] then
             return agree[a] > agree[b]
         end
@@ -689,13 +787,37 @@ local function RefreshDetail(item)
     d.votes:SetText(count > 0 and L.SUG_AGREE_NAMES:format(count, table.concat(names, ", ")) or L.SUG_AGREE_NONE)
     d.note:SetText(item.noteParts and L.SUG_NOTE_COMING or (item.note ~= "" and item.note or L.SUG_NO_NOTE))
 
+    -- Status (i arkivet): utført i grønt, avvist i rødt, med hvem og når.
+    local archived = IsArchived(item)
+    if archived then
+        d.status:SetText(L.SUG_STATUS_LINE:format(item.status == DONE and L.SUG_STATUS_DONE or L.SUG_STATUS_REJECTED,
+            item.statusBy or "?", date("%d.%m.%Y", item.statusAt or 0)))
+        if item.status == DONE then
+            d.status:SetTextColor(0.40, 0.90, 0.40)
+        else
+            d.status:SetTextColor(1.00, 0.40, 0.35)
+        end
+    end
+    d.status:SetShown(archived)
+
     local me = MyKey()
     local mine = me and item.votes[me]
     d.vote.label:SetText((mine and mine.v == 1) and L.SUG_UNVOTE or L.SUG_VOTE)
     d.vote.item = item
+    d.vote:SetShown(not archived)
     d.delete.label:SetText(L.SUG_DELETE)
     d.delete.item = item
     d.delete:SetShown(item.author == me)
+
+    -- Admin: merk som utført eller avvis; i arkivet: åpne igjen.
+    local admin = DW.IsAdmin()
+    d.done.item, d.reject.item, d.reopen.item = item, item, item
+    d.done.label:SetText(L.SUG_MARK_DONE)
+    d.reject.label:SetText(L.SUG_REJECT)
+    d.reopen.label:SetText(L.SUG_REOPEN)
+    d.done:SetShown(admin and not archived)
+    d.reject:SetShown(admin and not archived)
+    d.reopen:SetShown(admin and archived)
 end
 
 RefreshPanel = function()
@@ -711,6 +833,11 @@ RefreshPanel = function()
     panel.filters.new:SetSelected(filterKind == NEW)
     panel.filters.improve:SetSelected(filterKind == IMPROVE)
     panel.newButton.label:SetText(L.SUG_NEW_BUTTON)
+    panel.views.active.label:SetText(L.SUG_VIEW_ACTIVE)
+    panel.views.archive.label:SetText(L.SUG_VIEW_ARCHIVE:format(#VisibleItems("archive")))
+    panel.views.active:SetSelected(view == "active")
+    panel.views.archive:SetSelected(view == "archive")
+    panel.admin.label:SetText(DW.IsAdmin() and L.SUG_ADMIN_LOGOUT or L.SUG_ADMIN)
 
     local items = VisibleItems()
     local selected
@@ -720,6 +847,11 @@ RefreshPanel = function()
         row.label:SetText(item.title ~= "" and item.title or "?")
         local count = Agreeing(item)
         local kindText = item.kind == IMPROVE and ModuleName(item.module) or L.SUG_KIND_NEW
+        if IsArchived(item) then
+            -- I arkivet: statusen først, i farge.
+            local status = item.status == DONE and ("|cff66e666" .. L.SUG_STATUS_DONE .. "|r") or ("|cffff6659" .. L.SUG_STATUS_REJECTED .. "|r")
+            kindText = status .. "  -  " .. kindText
+        end
         row.sub:SetText(("%s  -  %s"):format(kindText, L.SUG_AGREE_COUNT:format(count)))
         row:SetSelected(item.id == selectedID and not formOpen)
         row:Show()
@@ -747,7 +879,9 @@ RefreshPanel = function()
                 any = true
             end
         end
-        if not any then
+        if view == "archive" and #items == 0 then
+            panel.empty:SetText(L.SUG_ARCHIVE_EMPTY)
+        elseif not any then
             panel.empty:SetText(L.SUG_EMPTY)
         elseif #items == 0 then
             panel.empty:SetText(L.SUG_EMPTY_FILTER)
@@ -857,6 +991,32 @@ local function CreatePanel(parent)
         f.filters[name] = chip
     end
 
+    -- Åpne forslag, eller arkivet med de utførte og avviste.
+    f.views = {}
+    for index, name in ipairs({ "active", "archive" }) do
+        local chip = DW.CreateChip(f, 100, 26)
+        chip:SetPoint("TOPLEFT", 14 + 3 * 126 + (index - 1) * 106, -40)
+        chip.label:SetJustifyH("CENTER")
+        chip:SetScript("OnClick", function()
+            view = name
+            formOpen = false
+            RefreshPanel()
+        end)
+        f.views[name] = chip
+    end
+
+    -- Admin: logg inn med koden (Admin.lua), eller ut igjen.
+    f.admin = DW.CreateChip(f, 110, 22)
+    f.admin:SetPoint("TOPRIGHT", -10, -10)
+    f.admin.label:SetJustifyH("CENTER")
+    f.admin:SetScript("OnClick", function()
+        if DW.IsAdmin() then
+            DW.AdminLogout()
+        else
+            DW.ShowAdminLogin()
+        end
+    end)
+
     -- Listen til venstre.
     local scroll = CreateFrame("ScrollFrame", "DragonworldForslagScroll", f, "ScrollFrameTemplate")
     scroll:SetPoint("TOPLEFT", 10, -76)
@@ -927,6 +1087,29 @@ local function CreatePanel(parent)
             RefreshPanel()
         end
     end)
+
+    -- Statusen i arkivet: "Utført av X, dato".
+    d.status = d:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    d.status:SetPoint("BOTTOMLEFT", 0, 70)
+    d.status:SetWidth(rightWidth)
+    d.status:SetJustifyH("LEFT")
+
+    -- Admin: utført eller avvist (flyttes til arkivet), eller åpne igjen.
+    local function StatusButton(button, status)
+        button:SetScript("OnClick", function(self)
+            if self.item then
+                SetStatus(self.item, status)
+                RefreshPanel()
+            end
+        end)
+        return button
+    end
+    d.done = StatusButton(DW.CreateButton(d, 145, 26, "gold"), DONE)
+    d.done:SetPoint("BOTTOMLEFT", 0, 34)
+    d.reject = StatusButton(DW.CreateButton(d, 145, 26, "red"), REJECTED)
+    d.reject:SetPoint("BOTTOMRIGHT", 0, 34)
+    d.reopen = StatusButton(DW.CreateButton(d, 170, 26, "gold"), OPEN)
+    d.reopen:SetPoint("BOTTOMLEFT", 0, 34)
 
     -- Skjemaet for et nytt forslag.
     local form = CreateFrame("Frame", nil, f)
@@ -1050,6 +1233,11 @@ DW.OnMembershipChanged(function(member)
 end)
 
 DW.OnLanguageChanged(function()
+    RefreshPanel()
+end)
+
+-- Logget inn eller ut som admin: vis eller skjul knappene.
+DW.OnAdminChanged(function()
     RefreshPanel()
 end)
 

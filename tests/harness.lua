@@ -24,6 +24,20 @@ function print(...)
     for i = 1, select("#", ...) do parts[#parts + 1] = tostring((select(i, ...))) end
     chat[#chat + 1] = table.concat(parts, " ")
 end
+-- The game's bit library (32-bit, results as unsigned numbers). This VM's whole
+-- numbers are 32-bit and signed, so values are folded into that range first.
+do
+    local function toBits(x) x = x % 4294967296.0; if x >= 2147483648.0 then x = x - 4294967296.0 end; return math.tointeger(x) end
+    local function fromBits(x) return x % 4294967296.0 end
+    bit = {
+        band = function(a, b) return fromBits(toBits(a) & toBits(b)) end,
+        bor = function(a, b) return fromBits(toBits(a) | toBits(b)) end,
+        bxor = function(a, b) return fromBits(toBits(a) ~ toBits(b)) end,
+        bnot = function(a) return fromBits(~toBits(a)) end,
+        rshift = function(a, n) assert(n >= 0 and n < 32); return fromBits(toBits(a) >> n) end,
+        lshift = function(a, n) assert(n >= 0 and n < 32); return fromBits(toBits(a) << n) end,
+    }
+end
 local function chatText() return table.concat(chat, "\n") end
 local function clearChat() chat = {} end
 local function has(text) return chatText():find(text, 1, true) ~= nil end
@@ -687,6 +701,7 @@ function Frame:SetFontObject(font) assert(self.kind == "EditBox" or self.kind ==
 function Frame:SetTextInsets(l, r, t, b) assert(self.kind == "EditBox", "SetTextInsets on non-EditBox"); assert(l and r and t and b) end
 function Frame:SetFocus() assert(self.kind == "EditBox", "SetFocus on non-EditBox"); self.focused = true end
 function Frame:HighlightText() assert(self.kind == "EditBox", "HighlightText on non-EditBox"); self.highlighted = true end
+function Frame:SetPassword(on) assert(self.kind == "EditBox", "SetPassword on non-EditBox"); self.password = on and true or false end
 function Frame:SetChecked(v) assert(self.kind == "CheckButton", "SetChecked on non-CheckButton"); self.checked = v and true or false end
 function Frame:GetChecked() assert(self.kind == "CheckButton", "GetChecked on non-CheckButton"); return self.checked end
 
@@ -1050,7 +1065,10 @@ check("one chip per module that has content, top to bottom in order",
     and chipOrder[9] == chipByID.professions and chipOrder[10] == etterChip and chipOrder[11] == kaputtChip and chipByID.boom == nil, #chipOrder)
 do
     local ok = true
-    for index, chip in ipairs(chipOrder) do
+    -- The default order (the guild leader's choice), test modules last.
+    local position = { roster = 1, dungeons = 2, guildbank = 3, events = 4, professions = 5, materialer = 6, ryddesekk = 7, keybinds = 8, forslag = 9, etter = 10, kaputt = 11 }
+    for _, chip in ipairs(chipOrder) do
+        local index = position[chip.id] or 99
         local point, relTo, _, x, y = chip:GetPoint(1)
         -- Eleven tabs (nine modules and two test ones) do not fit 48 apart above
         -- Settings (434 - 48 = 386 high), so they move to 35 apart and get 33 tall.
@@ -3792,25 +3810,25 @@ end)()
             if row:IsShown() and row.id == id then return row end
         end
     end
-    local DEFAULT_ORDER = "ryddesekk,materialer,keybinds,events,roster,guildbank,forslag,dungeons,professions,etter,kaputt"
-    check("Settings lists the tabs in their order, in the chosen language",
+    local DEFAULT_ORDER = "roster,dungeons,guildbank,events,professions,materialer,ryddesekk,keybinds,forslag,etter,kaputt"
+    check("Settings lists the tabs in the default order (the guild leader's), in the chosen language",
         settings.orderLabel.text == "Rekkefølgen på fanene til venstre (bruk pilene)" and orderNames() == DEFAULT_ORDER
-        and settings.orderRows[1].name.text == "Ryddesekk" and settings.orderRows[1].icon.texture == "Interface\\Icons\\INV_Misc_Bag_08", orderNames())
+        and settings.orderRows[1].name.text == ns.ModuleTitle(ns.modules.roster) and settings.orderRows[1].icon.texture == ns.modules.roster.icon, orderNames())
     check("the top tab cannot move up, and the bottom one cannot move down",
         not settings.orderRows[1].up:IsEnabled() and settings.orderRows[1].down:IsEnabled()
         and settings.orderRows[11].up:IsEnabled() and not settings.orderRows[11].down:IsEnabled())
     check("the arrows use the game's own arrow pictures", settings.orderRows[1].up.normalTexture == "Interface\\Buttons\\UI-ScrollBar-ScrollUpButton-Up"
         and settings.orderRows[1].down.disabledTexture == "Interface\\Buttons\\UI-ScrollBar-ScrollDownButton-Disabled")
 
-    rowFor("ryddesekk").down.scripts.OnClick(rowFor("ryddesekk").down)
-    check("moving Ryddesekk down swaps it with Materialer in the sidebar at once",
-        chipY("materialer") == 0 and chipY("ryddesekk") == -35 and chipY("keybinds") == -70 and orderNames():find("^materialer,ryddesekk,keybinds,") ~= nil, orderNames())
-    check("...and the order is saved", DragonworldDB.tabOrder[1] == "materialer" and DragonworldDB.tabOrder[2] == "ryddesekk" and #DragonworldDB.tabOrder == 11)
+    rowFor("roster").down.scripts.OnClick(rowFor("roster").down)
+    check("moving Members down swaps it with Dungeons in the sidebar at once",
+        chipY("dungeons") == 0 and chipY("roster") == -35 and chipY("guildbank") == -70 and orderNames():find("^dungeons,roster,guildbank,") ~= nil, orderNames())
+    check("...and the order is saved", DragonworldDB.tabOrder[1] == "dungeons" and DragonworldDB.tabOrder[2] == "roster" and #DragonworldDB.tabOrder == 11)
     for _ = 1, 10 do
         local row = rowFor("forslag")
         if row.up:IsEnabled() then row.up.scripts.OnClick(row.up) end
     end
-    check("a tab can be moved all the way to the top", chipY("forslag") == 0 and orderNames():find("^forslag,materialer,ryddesekk,") ~= nil, orderNames())
+    check("a tab can be moved all the way to the top", chipY("forslag") == 0 and orderNames():find("^forslag,dungeons,roster,") ~= nil, orderNames())
     check("moving past the top does nothing", ns.MoveModule("forslag", -1) == false and chipY("forslag") == 0)
 
     DragonworldDB.tabOrder = { "guildbank", "nothing-here", 42, "guildbank", "forslag" }
@@ -3825,7 +3843,7 @@ end)()
     DragonworldDB.tabOrder = nil
     ns.MoveModule("materialer", -1)
     ns.MoveModule("materialer", 1)
-    check("back to the original order", orderNames() == DEFAULT_ORDER and chipY("ryddesekk") == 0, orderNames())
+    check("back to the default order", orderNames() == DEFAULT_ORDER and chipY("roster") == 0, orderNames())
 
     -- Forslag ---------------------------------------------------------------------
     local SUG_PREFIX = "DragonworldSug"
@@ -4008,6 +4026,106 @@ end)()
         and sugDB().items["Mallory-Stormrage:3:1"] == nil and sugDB().items[borinID].votes["Mallory-Stormrage"] == nil
         and detail.note.text ~= "nope" and #chat == 0, chatText())
     sugSent()
+
+    -- Admin: log in with a code (only a fingerprint of it is in the addon).
+    check("SHA-256 gives the standard answers",
+        ns.Sha256("") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        and ns.Sha256("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        and ns.Sha256("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq") == "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
+        ns.Sha256("abc"))
+    check("the admin fingerprint is salted and repeated (same as computed outside the game)",
+        ns.AdminHash("test-code") == "53ad21b07189dae7b3b20b87546e653ffd92ad5ccb807c76d850b23d81ca4c70")
+    ns.ADMIN_HASH = ns.AdminHash("test-code") -- the tests use a code of their own
+
+    for _, row in ipairs(sugRows()) do if row.label.text == "DKP-modul" then click(row) end end
+    check("not admin: no buttons for marking suggestions",
+        detail:IsShown() and not detail.done:IsShown() and not detail.reject:IsShown() and not detail.reopen:IsShown() and p.admin.label.text == "Admin")
+    click(p.admin)
+    local login = DragonworldAdminLogin
+    check("the Admin button opens a login box, with the code shown as dots",
+        login ~= nil and login:IsShown() and login.code.password == true and login.title.text == "Admin" and login.login.label.text == "Logg inn"
+        and login.text.text == ns.strings.nb.ADM_PROMPT)
+    login.code:TypeText("wrong")
+    login.code.scripts.OnEnterPressed(login.code)
+    check("a wrong code says so, and gives nothing", login:IsShown() and login.error.text == "Feil kode." and not ns.IsAdmin() and login.code.text == "")
+    clearChat()
+    login.code:TypeText("test-code")
+    click(login.login)
+    check("the right code logs in as admin, remembered on the account",
+        not login:IsShown() and ns.IsAdmin() and DragonworldDB.admin.on == true and has("Du er logget inn som admin."), chatText())
+    check("as admin: Mark as done and Reject on an open suggestion",
+        detail.done:IsShown() and detail.reject:IsShown() and not detail.reopen:IsShown()
+        and detail.done.label.text == "Merk som utført" and detail.reject.label.text == "Avvis" and p.admin.label.text == "Logg ut admin")
+
+    local dkp = sugDB().items[borinID]
+    sugSent()
+    SERVER_NOW = SERVER_NOW + 10
+    click(detail.done)
+    sent = sugSent()
+    check("Mark as done: the suggestion gets the status, who and when, and the guild is told",
+        dkp.status == "D" and dkp.statusBy == "Tester" and dkp.statusAt == SERVER_NOW
+        and #sent == 1 and sent[1] == table.concat({ "S", borinID, "D", tostring(SERVER_NOW), "Tester" }, "\t"), all(sent))
+    check("...and it leaves the open list for the archive", not sugDescribe():find("DKP-modul", 1, true) and p.views.archive.label.text == "Arkiv (1)"
+        and p.views.active.label.text == "Åpne", sugDescribe())
+
+    click(p.views.archive)
+    local rows = sugRows()
+    check("the archive lists it, with its status", #rows == 1 and rows[1].label.text == "DKP-modul" and rows[1].sub.text:find("Utført", 1, true) ~= nil, sugDescribe())
+    click(rows[1])
+    check("...and shows who marked it done and when, in green; as admin it can be reopened, and there is no voting",
+        detail.status:IsShown() and detail.status.text == "Utført av Tester, " .. date("%d.%m.%Y", SERVER_NOW) and detail.status.color[2] > 0.8
+        and detail.reopen:IsShown() and detail.reopen.label.text == "Åpne igjen" and not detail.done:IsShown() and not detail.vote:IsShown(), detail.status.text)
+    SERVER_NOW = SERVER_NOW + 10
+    click(detail.reopen)
+    sent = sugSent()
+    check("Reopen puts it back among the open ones",
+        dkp.status == nil and dkp.statusAt == SERVER_NOW and #sent == 1 and sent[1] == table.concat({ "S", borinID, "O", tostring(SERVER_NOW), "Tester" }, "\t")
+        and p.views.archive.label.text == "Arkiv (0)", all(sent))
+    check("an empty archive explains itself", p.empty:IsShown() and p.empty.text == ns.strings.nb.SUG_ARCHIVE_EMPTY)
+    click(p.views.active)
+
+    -- Statuses from others.
+    local cedric = sugDB().items[cedricID]
+    sugReceive(table.concat({ "S", cedricID, "R", tostring(SERVER_NOW + 5), "Altine" }, "\t"), "Altine-Stormrage")
+    flush()
+    check("a status from another admin is taken in: rejected, into the archive",
+        cedric.status == "R" and cedric.statusBy == "Altine" and p.views.archive.label.text == "Arkiv (1)")
+    sugReceive(table.concat({ "S", cedricID, "D", tostring(SERVER_NOW + 1), "Borin" }, "\t"), "Borin-Stormrage")
+    sugReceive(table.concat({ "S", cedricID, "X", tostring(SERVER_NOW + 50), "Borin" }, "\t"), "Borin-Stormrage")
+    sugReceive(table.concat({ "S", cedricID, "D", tostring(SERVER_NOW + 5 * 86400), "Borin" }, "\t"), "Borin-Stormrage")
+    sugReceive("S\t" .. cedricID, "Borin-Stormrage")
+    flush()
+    check("an older status, an unknown one, one from the future, or a broken one is ignored", cedric.status == "R" and cedric.statusBy == "Altine")
+    sugReceive(table.concat({ "S", "Dagny-Stormrage:5:1", "D", tostring(SERVER_NOW), "Altine" }, "\t"), "Altine-Stormrage")
+    flush()
+    sent = sugSent()
+    check("a status for a suggestion we lack: kept, and the suggestion asked for",
+        sugDB().items["Dagny-Stormrage:5:1"].stub and sugDB().items["Dagny-Stormrage:5:1"].status == "D" and count(sent, "^G\tDagny%-Stormrage:5:1$") == 1, all(sent))
+
+    -- Someone's list shows they lack the status: they get it.
+    local cedricVotes = 0
+    for _ in pairs(cedric.votes) do cedricVotes = cedricVotes + 1 end
+    sugReceive("H\t" .. cedricID .. "," .. cedric.updated .. "," .. cedricVotes .. ",0", "Eira-Stormrage")
+    sugReceive("Q", "Eira-Stormrage")
+    flush()
+    sent = sugSent()
+    check("someone whose list lacks the status gets it", count(sent, "^S\t" .. cedricID:gsub("%-", "%%-") .. "\tR\t") == 1, all(sent))
+
+    -- Only the writer can delete a suggestion.
+    local deletion = table.concat({ "F", cedricID, tostring(cedric.updated + 100), "1", "N", "", "0", "" }, "\t")
+    sugReceive(deletion, "Mallory-Stormrage")
+    flush()
+    check("a deletion sent by someone other than the writer is ignored", not cedric.deleted and cedric.title == "Raid-kalender")
+    sugReceive(deletion, "Cedric-Stormrage")
+    flush()
+    check("...from the writer it is taken in", cedric.deleted == true)
+    sugSent()
+
+    clearChat()
+    click(p.admin)
+    check("Log out admin: no more admin buttons", not ns.IsAdmin() and DragonworldDB.admin == nil and p.admin.label.text == "Admin" and has("Du er logget ut som admin."), chatText())
+    ns.ADMIN_HASH = nil
+    clearChat()
 
     ns.SetLanguage("en", true)
     check("Forslag follows the language", sugChip.label.text == "Suggestions" and p.title.text == "Suggestions for the addon"
