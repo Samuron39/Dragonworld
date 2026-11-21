@@ -1,7 +1,7 @@
 ## Interface: 16001
 ## Title: Dragonworld
 ## Notes: Guild addon for Dragonworld. English, Norsk, Nederlands.
-## Version: 0.15.1
+## Version: 0.15.2
 ## IconTexture: Interface\AddOns\Dragonworld\Media\icon
 ## SavedVariables: DragonworldDB
 

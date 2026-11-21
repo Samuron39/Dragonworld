@@ -1,9 +1,17 @@
 -- Dragonworld - "oppdater addonen"
 --
--- En addon får ikke lese fra internett, så den kan ikke selv se hva som ligger
--- på GitHub. I stedet forteller addonene i guilden hverandre hvilken versjon
--- de har (DW.RELEASE fra Version.lua). Hører addonen om en nyere versjon enn
--- sin egen, vises et vindu: "Oppdater Dragonworld!", med lenken til nedlasting.
+-- En addon får ikke lese fra internett eller skrive filer, så den kan ikke
+-- selv hente en ny versjon. I stedet forteller addonene i guilden hverandre
+-- hvilken versjon de har (DW.RELEASE fra Version.lua). Hører addonen om en
+-- nyere versjon enn sin egen, vises et vindu:
+--   * Med automatisk oppdatering (DW.AUTO_UPDATE, satt av Dragonworld
+--     Updater) er den nye versjonen alt lastet ned i bakgrunnen: "Skriv
+--     /reload", med en knapp som gjør det. Har den nye versjonen nye filer
+--     eller bilder (DW.RESTART_RELEASE), må spillet startes helt på nytt i
+--     stedet, og det står det.
+--     Vinduet venter til versjonen har vært ute så lenge at bakgrunnsjobben
+--     sikkert har hentet den (DW.RELEASED_AT + 15 minutter).
+--   * Uten: "Oppdater Dragonworld!", med hvordan og lenken til nedlasting.
 --
 -- Slik går det til:
 --   * Litt etter innlogging sier addonen hvilken versjon den har.
@@ -16,7 +24,12 @@
 --   * Vinduet vises ikke midt i en kamp, og høyst én gang per økt.
 --
 -- Meldinger (navn DragonworldVer, felter skilt med tabulator):
---   V versjon tocversjon     min versjon (tocversjonen bare til feilsøking)
+--   V versjon tocversjon omstart utlagt
+--       versjon    min DW.RELEASE
+--       tocversjon bare til feilsøking
+--       omstart    min DW.RESTART_RELEASE (fra 0.15.2)
+--       utlagt     min DW.RELEASED_AT     (fra 0.15.2)
+--   Eldre versjoner sender bare de to første feltene, og leser bare dem.
 --
 -- All tekst ligger i Locales.lua (navnene som begynner med UP_).
 
@@ -28,6 +41,7 @@ local SEP = "\t"
 local HELLO_DELAY = 12          -- sekunder etter innlogging
 local POPUP_DELAY = 20          -- vinduet ved innlogging kommer litt etter
 local REPLY_MIN, REPLY_SPREAD = 2, 8
+local AUTO_DELAY = 15 * 60      -- så lenge etter utleggingen er den sikkert hentet i bakgrunnen
 
 -- Versjonsnummer ----------------------------------------------------------------
 
@@ -62,6 +76,14 @@ local function MyVersion()
     return DW.RELEASE or "0"
 end
 
+local function Now()
+    local now = GetServerTime and GetServerTime()
+    if type(now) == "number" and not DW.IsSecret(now) then
+        return now
+    end
+    return time()
+end
+
 -- Versjonen i Dragonworld.toc (vises i addon-listen). Bare til feilsøking.
 local function TocVersion()
     local get = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
@@ -75,7 +97,8 @@ local function TocVersion()
     return "?"
 end
 
--- Det som huskes: { newest = "0.16.0", from = "Navn" }, felles for kontoen.
+-- Det som huskes, felles for kontoen:
+--   { newest = "0.16.0", from = "Navn", restart = "0.16.0", releasedAt = tid }
 local function Store()
     if type(DragonworldDB) ~= "table" then
         return nil
@@ -86,7 +109,7 @@ local function Store()
     local store = DragonworldDB.update
     -- Har vi oppdatert siden sist, er det vi husket ikke nyere lenger.
     if store.newest and DW.CompareVersions(store.newest, MyVersion()) <= 0 then
-        store.newest, store.from = nil, nil
+        store.newest, store.from, store.restart, store.releasedAt = nil, nil, nil, nil
     end
     return store
 end
@@ -100,6 +123,22 @@ end
 -- Finnes det en nyere versjon enn den vi har?
 function DW.IsOutdated()
     return DW.CompareVersions(MyVersion(), DW.NewestVersion()) < 0
+end
+
+-- Holder det med /reload for å få den nyeste? Nei hvis den eller en
+-- versjon i mellom har nye filer, eller hvis vi ikke vet det.
+function DW.UpdateNeedsRestart()
+    local store = Store()
+    local restart = store and store.restart
+    if not Parse(restart) then
+        return true
+    end
+    return DW.CompareVersions(MyVersion(), restart) < 0
+end
+
+-- Er automatisk oppdatering slått på for denne PC-en?
+function DW.IsAutoUpdate()
+    return DW.AUTO_UPDATE == true
 end
 
 local listeners = {}
@@ -181,9 +220,21 @@ local function CreatePopup()
         self:ClearFocus()
     end)
 
-    f.ok = DW.CreateButton(f, 120, 28, "gold")
+    -- Gull: OK, eller "Reload nå" når en /reload er alt som trengs.
+    f.ok = DW.CreateButton(f, 130, 28, "gold")
     f.ok:SetPoint("BOTTOM", 0, 16)
-    f.ok:SetScript("OnClick", function()
+    f.ok:SetScript("OnClick", function(self)
+        f:Hide()
+        if self.reload and ReloadUI then
+            ReloadUI()
+        end
+    end)
+
+    -- "Senere", ved siden av "Reload nå".
+    f.later = DW.CreateChip(f, 110, 28)
+    f.later.label:SetJustifyH("CENTER")
+    f.later:SetPoint("LEFT", f.ok, "RIGHT", 10, 0)
+    f.later:SetScript("OnClick", function()
         f:Hide()
     end)
 
@@ -194,11 +245,37 @@ local function RefreshPopup()
     if not popup then
         return
     end
-    popup.title:SetText(L.UP_TITLE)
-    popup.text:SetText(L.UP_TEXT:format(DW.NewestVersion(), MyVersion()))
-    popup.how:SetText(L.UP_HOW)
-    popup.link:SetText(DW.DOWNLOAD_URL or "")
-    popup.ok.label:SetText(L.UP_OK)
+    local newest = DW.NewestVersion()
+    local reload = DW.IsAutoUpdate() and not DW.UpdateNeedsRestart()
+
+    if DW.IsAutoUpdate() then
+        -- Alt er lastet ned: bare /reload eller omstart igjen.
+        popup:SetHeight(160)
+        popup.title:SetText(L.UP_READY_TITLE)
+        popup.text:SetText((reload and L.UP_READY_RELOAD or L.UP_READY_RESTART):format(newest))
+        popup.how:Hide()
+        popup.link:Hide()
+    else
+        popup:SetHeight(236)
+        popup.title:SetText(L.UP_TITLE)
+        popup.text:SetText(L.UP_TEXT:format(newest, MyVersion()))
+        popup.how:SetText(L.UP_HOW)
+        popup.link:SetText(DW.DOWNLOAD_URL or "")
+        popup.how:Show()
+        popup.link:Show()
+    end
+
+    popup.ok.reload = reload
+    popup.ok.label:SetText(reload and L.UP_RELOAD_NOW or L.UP_OK)
+    popup.ok:ClearAllPoints()
+    if reload then
+        popup.ok:SetPoint("BOTTOM", -60, 16)
+        popup.later.label:SetText(L.UP_LATER)
+        popup.later:Show()
+    else
+        popup.ok:SetPoint("BOTTOM", 0, 16)
+        popup.later:Hide()
+    end
 end
 
 -- Viser vinduet. Brukes også av knappen under Innstillinger.
@@ -211,9 +288,25 @@ function DW.ShowUpdatePopup()
 end
 
 local waitingForCombat = false
+local waitingUntil -- tidspunktet vinduet venter på (automatisk oppdatering)
+
+-- Når er den nyeste sikkert hentet av bakgrunnsjobben? nil = nå.
+local function ReadyAt()
+    if not DW.IsAutoUpdate() then
+        return nil
+    end
+    local store = Store()
+    local releasedAt = store and tonumber(store.releasedAt)
+    if not releasedAt then
+        return nil
+    end
+    local ready = releasedAt + AUTO_DELAY
+    return ready > Now() and ready or nil
+end
 
 -- Viser vinduet hvis addonen er utdatert og det ikke er vist for denne
--- versjonen i denne økten. Venter til kampen er over.
+-- versjonen i denne økten. Venter til kampen er over, og med automatisk
+-- oppdatering til den nye versjonen sikkert er lastet ned.
 local function MaybeShowPopup()
     if not DW.IsMember() or not DW.IsOutdated() then
         return
@@ -222,12 +315,24 @@ local function MaybeShowPopup()
     if shownFor == newest then
         return
     end
+    local ready = ReadyAt()
+    if ready then
+        if waitingUntil ~= ready and C_Timer and C_Timer.After then
+            waitingUntil = ready
+            C_Timer.After(ready - Now() + 1, MaybeShowPopup)
+        end
+        return
+    end
     if InCombatLockdown and InCombatLockdown() then
         waitingForCombat = true
         return
     end
     shownFor = newest
-    DW.Print(L.UP_CHAT:format(newest, MyVersion(), DW.DOWNLOAD_URL or ""))
+    if DW.IsAutoUpdate() then
+        DW.Print((DW.UpdateNeedsRestart() and L.UP_CHAT_RESTART or L.UP_CHAT_RELOAD):format(newest))
+    else
+        DW.Print(L.UP_CHAT:format(newest, MyVersion(), DW.DOWNLOAD_URL or ""))
+    end
     DW.ShowUpdatePopup()
 end
 
@@ -238,7 +343,9 @@ DW.OnLanguageChanged(RefreshPopup)
 local Send = DW.CreateSender(PREFIX)
 
 local function SendMine()
-    Send(table.concat({ "V", MyVersion(), TocVersion() }, SEP))
+    Send(table.concat({
+        "V", MyVersion(), TocVersion(), DW.RESTART_RELEASE or MyVersion(), ("%d"):format(tonumber(DW.RELEASED_AT) or 0),
+    }, SEP))
 end
 
 local replyPlanned = false
@@ -281,11 +388,26 @@ DW.OnGuildMessage(PREFIX, function(text, sender)
         PlanReply()
     elseif compared > 0 then
         local store = Store()
-        if store and DW.CompareVersions(version, store.newest or MyVersion()) > 0 then
-            store.newest = version
-            store.from = (sender:match("^([^-]+)")) or sender
-            for _, callback in ipairs(listeners) do
-                pcall(callback, version)
+        if store then
+            local restart = Parse(fields[4]) and fields[4] or nil
+            local releasedAt = tonumber(fields[5])
+            if releasedAt and (releasedAt <= 0 or releasedAt > Now() + 86400) then
+                releasedAt = nil
+            end
+            local newer = DW.CompareVersions(version, store.newest or MyVersion()) > 0
+            if newer then
+                store.newest = version
+                store.from = (sender:match("^([^-]+)")) or sender
+                store.restart, store.releasedAt = restart, releasedAt
+            elseif version == store.newest then
+                -- Samme versjon fra en annen: fyll inn det vi manglet.
+                store.restart = store.restart or restart
+                store.releasedAt = store.releasedAt or releasedAt
+            end
+            if newer then
+                for _, callback in ipairs(listeners) do
+                    pcall(callback, version)
+                end
             end
         end
         MaybeShowPopup()
@@ -335,6 +457,8 @@ end)
 DW.AddDebug("versjon", function(add)
     local store = Store()
     add("min: " .. DW.DebugText(MyVersion()) .. " | toc: " .. DW.DebugText(TocVersion())
-        .. " | nyeste kjente: " .. DW.DebugText(DW.NewestVersion())
-        .. " | fra: " .. DW.DebugText(store and store.from) .. " | sist hørt: " .. DW.DebugText(lastHeard))
+        .. " | automatisk: " .. DW.DebugText(DW.IsAutoUpdate()) .. " | omstart fra: " .. DW.DebugText(DW.RESTART_RELEASE)
+        .. " | nyeste kjente: " .. DW.DebugText(DW.NewestVersion()) .. " | fra: " .. DW.DebugText(store and store.from)
+        .. " | omstart: " .. DW.DebugText(store and store.restart) .. " | utlagt: " .. DW.DebugText(store and store.releasedAt)
+        .. " | sist hørt: " .. DW.DebugText(lastHeard))
 end)

@@ -449,6 +449,7 @@ end
 function PickupMacro(index) assert(MACROS[index], "PickupMacro: no such macro"); CURSOR_MACRO = index end
 function GetFileIDFromPath(path) if path == "Interface\\Icons\\INV_Misc_Head_Dragon_01" then return 134153 end end
 function GetActionInfo(slot) local a = ACTION_SLOTS[slot]; if a then return a[1], a[2] end end
+function ReloadUI() RELOADS = (RELOADS or 0) + 1 end
 function GetActionText(slot)
     local a = ACTION_SLOTS[slot]
     if a and a[1] == "macro" and MACROS[a[2]] then return MACROS[a[2]].name end
@@ -4941,7 +4942,7 @@ rsChip.scripts.OnClick(rsChip)
     local VER = "DragonworldVer"
     local function verReceive(text, sender) fire("CHAT_MSG_ADDON", VER, text, "GUILD", sender or "Altine-Stormrage") end
     local function all(list) return table.concat(list, " ; ") end
-    local mine = "V\t" .. ns.RELEASE .. "\t?"
+    local mine = table.concat({ "V", ns.RELEASE, "?", ns.RESTART_RELEASE, tostring(ns.RELEASED_AT) }, "\t")
 
     check("versions compare number by number, not as text",
         ns.CompareVersions("0.9.0", "0.10.0") == -1 and ns.CompareVersions("1.0.0", "0.99.9") == 1 and ns.CompareVersions("0.15.0", "0.15") == 0
@@ -5004,6 +5005,49 @@ rsChip.scripts.OnClick(rsChip)
     settings:Refresh()
     check("...and Settings says so", settings.versionStatus.text == "Ingen nyere versjon sett i guilden." and settings.versionStatus.color[2] > 0.8)
     ns.RELEASE = release
+    check("Settings says automatic updates are off", settings.autoText.text == ns.strings.nb.UP_AUTO_OFF)
+
+    -- Automatic updates: Dragonworld Updater has set AUTO_UPDATE in Version.lua.
+    ns.AUTO_UPDATE = true
+    settings:Refresh()
+    check("...or on", settings.autoText.text == ns.strings.nb.UP_AUTO_ON)
+    clearChat()
+    verReceive(table.concat({ "V", "2.0.0", "2.0.0", ns.RELEASE, tostring(SERVER_NOW - 60) }, "\t"), "Altine-Stormrage")
+    check("with automatic updates, the window waits until the new version has surely been downloaded",
+        not notice:IsShown() and DragonworldDB.update.newest == "2.0.0" and DragonworldDB.update.restart == ns.RELEASE and DragonworldDB.update.releasedAt == SERVER_NOW - 60)
+    SERVER_NOW = SERVER_NOW + 15 * 60
+    flush()
+    check("...then: it is downloaded, type /reload, with a button that does it",
+        notice:IsShown() and notice.title.text == "Ny versjon er klar!" and notice.text.text == ns.strings.nb.UP_READY_RELOAD:format("2.0.0")
+        and not notice.link:IsShown() and not notice.how:IsShown() and notice.ok.label.text == "Reload nå" and notice.later:IsShown() and notice.later.label.text == "Senere")
+    check("...and in chat", has("Dragonworld 2.0.0 er lastet ned. Skriv /reload"), chatText())
+    settings:Refresh()
+    check("...and in Settings", settings.versionStatus.text == "Versjon 2.0.0 er lastet ned - skriv /reload!")
+    RELOADS = 0
+    notice.later.scripts.OnClick(notice.later)
+    check("Later just closes it", RELOADS == 0 and not notice:IsShown())
+    ns.ShowUpdatePopup()
+    notice.ok.scripts.OnClick(notice.ok)
+    check("Reload now reloads the interface", RELOADS == 1 and not notice:IsShown())
+
+    verReceive(table.concat({ "V", "3.0.0", "3.0.0", "3.0.0", tostring(SERVER_NOW - 3600) }, "\t"), "Altine-Stormrage")
+    check("a version with new files, out for an hour: restart the game, and no reload button",
+        notice:IsShown() and notice.text.text == ns.strings.nb.UP_READY_RESTART:format("3.0.0") and notice.ok.label.text == "OK" and not notice.later:IsShown())
+    settings:Refresh()
+    check("...Settings says so too", settings.versionStatus.text == "Versjon 3.0.0 er lastet ned - start spillet på nytt!")
+    notice.ok.scripts.OnClick(notice.ok)
+    check("...and OK there only closes it", RELOADS == 1 and not notice:IsShown())
+
+    verReceive("V\t4.0.0\t4.0.0", "Altine-Stormrage")
+    check("from an older addon that does not say whether files were added: to be safe, restart",
+        notice:IsShown() and notice.text.text == ns.strings.nb.UP_READY_RESTART:format("4.0.0"))
+    notice.ok.scripts.OnClick(notice.ok)
+    verReceive(table.concat({ "V", "5.0.0", "5.0.0", "4.0.0", tostring(SERVER_NOW + 5 * 86400) }, "\t"), "Altine-Stormrage")
+    check("a release time far in the future is not believed (the window is not held back)", notice:IsShown() and DragonworldDB.update.releasedAt == nil)
+    notice.ok.scripts.OnClick(notice.ok)
+
+    ns.AUTO_UPDATE = false
+    DragonworldDB.update = {}
     check("nothing else went out", #sentNow(VER) == 0)
 end)()
 

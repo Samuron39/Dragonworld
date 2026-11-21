@@ -445,6 +445,10 @@ local function CreateSettingsPanel(parent)
     panel.link:SetPoint("TOPLEFT", 22, y - 54)
     panel.linkHint = panel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     panel.linkHint:SetPoint("TOPLEFT", 16, y - 80)
+    panel.autoText = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    panel.autoText:SetPoint("TOPLEFT", 16, y - 96)
+    panel.autoText:SetWidth(290)
+    panel.autoText:SetJustifyH("LEFT")
 
     -- Høyre kolonne: rekkefølgen på fanene i venstre kant.
     panel.orderLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -469,7 +473,11 @@ local function CreateSettingsPanel(parent)
         self.versionLabel:SetText(L.UP_LABEL)
         self.versionText:SetText(L.UP_YOURS:format(DW.RELEASE or "?"))
         if DW.IsOutdated() then
-            self.versionStatus:SetText(L.UP_OUTDATED:format(DW.NewestVersion()))
+            local text = L.UP_OUTDATED
+            if DW.IsAutoUpdate() then
+                text = DW.UpdateNeedsRestart() and L.UP_OUTDATED_RESTART or L.UP_OUTDATED_RELOAD
+            end
+            self.versionStatus:SetText(text:format(DW.NewestVersion()))
             self.versionStatus:SetTextColor(1.00, 0.35, 0.30)
         else
             self.versionStatus:SetText(L.UP_IS_NEWEST)
@@ -477,6 +485,7 @@ local function CreateSettingsPanel(parent)
         end
         self.link:SetText(DW.DOWNLOAD_URL or "")
         self.linkHint:SetText(L.UP_LINK_HINT)
+        self.autoText:SetText(DW.IsAutoUpdate() and L.UP_AUTO_ON or L.UP_AUTO_OFF)
 
         self.orderLabel:SetText(L.TAB_ORDER)
         local ids = OrderedModuleIDs()

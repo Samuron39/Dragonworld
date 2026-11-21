@@ -2,12 +2,17 @@
 #
 #   pwsh tools\release.ps1 [-Notes "hva som er nytt"] [-NoInstall]
 #
+# (Notater som begynner med "-" må gis fra PowerShell: & tools\release.ps1 -Notes $notes)
+#
 # Gjør alt i én operasjon, i denne rekkefølgen:
 #   1. Versjonen er den i Dragonworld.toc. Er den alt lagt ut (taggen finnes),
 #      økes siste tall med én (0.15.0 -> 0.15.1) og skrives tilbake i .toc.
 #   2. Kjører testene (node tests\run.js Dragonworld). Feiler de, stopper alt.
 #   3. Skriver versjonen i Dragonworld\Version.lua (DW.RELEASE). Det er den
 #      addonene sammenligner i spillet; først nå får guilden beskjed om den.
+#      Skriver også når den ble lagt ut (DW.RELEASED_AT), og hvis den har nye
+#      eller fjernede filer eller bilder siden forrige versjon, at den krever
+#      omstart av spillet (DW.RESTART_RELEASE). Ellers holder /reload.
 #   4. Committer alt, lager taggen vX.Y.Z og pusher til GitHub.
 #   5. Lager Dragonworld.zip (mappen Dragonworld fra taggen, pluss
 #      Installer-Dragonworld.cmd øverst) og en GitHub release med zip-en og
@@ -69,9 +74,36 @@ try {
     Step 'Kjører testene'
     Invoke-Checked node @('tests/run.js', 'Dragonworld')
 
-    # 3. Versjonen guilden sammenligner med.
+    # 3. Versjonen guilden sammenligner med, når den ble lagt ut, og om den
+    #    krever at spillet startes på nytt: /reload leser bare filene som
+    #    fantes da spillet startet, så nye eller fjernede filer, endrede
+    #    bilder eller en ny fil-liste i .toc krever omstart.
+    Invoke-Checked git @('add', '-A')
+    $previous = git tag --list 'v*' --sort=-v:refname | Select-Object -First 1
+    $restart = $true
+    if ($previous) {
+        $restart = $false
+        foreach ($line in (git diff --cached --name-status $previous -- Dragonworld)) {
+            $status, $path = $line -split "`t", 2
+            if ($path -like 'Dragonworld/Updater/*') { continue }
+            if ($status -notmatch '^M' -or $path -like 'Dragonworld/Media/*') {
+                $restart = $true
+            } elseif ($path -eq 'Dragonworld/Dragonworld.toc') {
+                $files = { $input | ForEach-Object { $_.Trim() } | Where-Object { $_ -and -not $_.StartsWith('#') } }
+                $before = (git show "${previous}:Dragonworld/Dragonworld.toc" | & $files) -join '|'
+                $after = (Get-Content -LiteralPath $Toc | & $files) -join '|'
+                if ($before -ne $after) { $restart = $true }
+            }
+        }
+    }
+    Step ($(if ($restart) { 'Krever omstart av spillet (nye filer)' } else { '/reload holder' }))
     $versionText = Read-Utf8 $VersionFile
     $versionText = [regex]::Replace($versionText, 'DW\.RELEASE\s*=\s*"[^"]*"', "DW.RELEASE = `"$version`"")
+    $versionText = [regex]::Replace($versionText, 'DW\.RELEASED_AT\s*=\s*\d+', "DW.RELEASED_AT = $([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())")
+    $versionText = [regex]::Replace($versionText, 'DW\.AUTO_UPDATE\s*=\s*(true|false)', 'DW.AUTO_UPDATE = false')
+    if ($restart) {
+        $versionText = [regex]::Replace($versionText, 'DW\.RESTART_RELEASE\s*=\s*"[^"]*"', "DW.RESTART_RELEASE = `"$version`"")
+    }
     Write-Utf8 $VersionFile $versionText
 
     # 4. Commit, tag, push.
@@ -95,9 +127,12 @@ try {
     Invoke-Checked git @('archive', '--format=zip', '-o', $zip, '--prefix=', '--add-file=Installer-Dragonworld.cmd',
         '--prefix=Dragonworld/', "v${version}:Dragonworld")
     $installer = Join-Path $Root 'Installer-Dragonworld.cmd'
+    # Installeringsfilen henter oppdateringsprogrammet herfra (GitHubs kopi av
+    # main kan henge noen minutter etter etter en push).
+    $updater = Join-Path $Addon 'Updater\update.ps1'
     if (-not $Notes) { $Notes = "Dragonworld $version" }
     $Notes += "`n`nFirst time: download Installer-Dragonworld.cmd (or Dragonworld.zip) and double-click Installer-Dragonworld.cmd. In game, the addon tells you when a newer version is out; then double-click Dragonworld Updater on your desktop."
-    Invoke-Checked gh @('release', 'create', "v$version", $zip, $installer, '--title', "Dragonworld $version", '--notes', $Notes)
+    Invoke-Checked gh @('release', 'create', "v$version", $zip, $installer, $updater, '--title', "Dragonworld $version", '--notes', $Notes)
 
     # 6. Inn i spillet.
     if (-not $NoInstall -and (Test-Path -LiteralPath (Split-Path -Parent $Game))) {
