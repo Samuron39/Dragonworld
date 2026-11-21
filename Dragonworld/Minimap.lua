@@ -74,14 +74,18 @@ local function CreateButton()
     border:SetPoint("TOPLEFT", 0, 0)
     b.border = border
 
-    -- Gløden som blinker mildt i en farge når noe er nytt (Alerts.lua), over
-    -- ikonet. Rammen rundt farges litt i takt med den.
-    b.glow = b:CreateTexture(nil, "ARTWORK", nil, 1)
-    b.glow:SetSize(28, 28)
-    b.glow:SetPoint("CENTER", 0, 1)
-    b.glow:SetTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
-    b.glow:SetBlendMode("ADD")
-    DW.AddGlowTarget({ glow = b.glow, tint = border })
+    -- Når noe er nytt (Alerts.lua) blinker den runde ringen rundt knappen i en
+    -- farge (en lysende kopi av ringen, oppå den), med en myk glorie rundt.
+    -- Gløden ligger rundt ikonet, ikke oppå det, så fargen ikke forsvinner i
+    -- det mørke ikonet.
+    b.glow = DW.PrepareGlow(b:CreateTexture(nil, "OVERLAY", nil, 7), nil, "Interface\\Minimap\\MiniMap-TrackingBorder")
+    b.glow:SetSize(50, 50)
+    b.glow:SetPoint("TOPLEFT", 0, 0)
+    b.halo = DW.PrepareGlow(b:CreateTexture(nil, "BACKGROUND", nil, -8), "gamepad-hud-actionbar-casting-complete-glow",
+        "Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
+    b.halo:SetSize(60, 60)
+    b.halo:SetPoint("CENTER", 0, 0)
+    DW.AddGlowTarget({ glows = { b.glow, b.halo } })
 
     -- Blinker knappen, åpnes fanen med det nye.
     b:SetScript("OnClick", function()

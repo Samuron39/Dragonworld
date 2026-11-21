@@ -35,8 +35,8 @@ local ADDON_NAME, DW = ...
 local L = DW.L
 
 local PERIOD = 2.4       -- sekunder per blink
-local MAX_ALPHA = 0.75   -- så sterkt lyser det på det meste (mildt)
-local TINT = 0.55        -- hvor mye rammen ved minimapet farges på det meste
+local MAX_ALPHA = 1.00   -- så sterkt lyser det på det meste
+local TINT = 0.55        -- hvor mye en "tint"-tekstur farges på det meste
 local RECHECK = 30       -- sekunder mellom hver ny sjekk mens noe blinker
 
 DW.ALERTS = {} -- i den rekkefølgen de er meldt inn
@@ -112,11 +112,32 @@ end
 -- glow lyser opp i fargen; tint (rammen ved minimapet) farges litt.
 local targets = {}
 
+-- Et mål kan ha flere teksturer som lyser: { glows = { ring, glorie } }.
 function DW.AddGlowTarget(target)
-    assert(type(target) == "table" and target.glow, "AddGlowTarget: mangler glow")
+    assert(type(target) == "table" and (target.glow or target.glows), "AddGlowTarget: mangler glow")
+    target.glows = target.glows or { target.glow }
+    target.glow = target.glow or target.glows[1]
     targets[#targets + 1] = target
-    target.glow:Hide()
+    for _, glow in ipairs(target.glows) do
+        glow:Hide()
+    end
     return target
+end
+
+-- Gjør en av spillets egne bilder klar til å lyse i en farge: grå (så fargen
+-- blir ren) og lagt til lyset under (ADD). atlas er spillets navn på bildet;
+-- finnes det ikke, brukes filen fallback.
+function DW.PrepareGlow(texture, atlas, fallback)
+    local hasAtlas = atlas and texture.SetAtlas
+        and (not (C_Texture and C_Texture.GetAtlasInfo) or C_Texture.GetAtlasInfo(atlas) ~= nil)
+    if hasAtlas then
+        texture:SetAtlas(atlas)
+    else
+        texture:SetTexture(fallback)
+    end
+    texture:SetDesaturated(true)
+    texture:SetBlendMode("ADD")
+    return texture
 end
 
 local active = {}   -- det som er nytt nå, og som det skal blinkes for
@@ -129,14 +150,18 @@ DW.alertPulse = pulse -- til testene
 local function Paint(color, strength)
     for _, target in ipairs(targets) do
         if target.hidden or not color then
-            target.glow:Hide()
+            for _, glow in ipairs(target.glows) do
+                glow:Hide()
+            end
             if target.tint then
                 target.tint:SetVertexColor(1, 1, 1)
             end
         else
-            target.glow:SetVertexColor(color[1], color[2], color[3])
-            target.glow:SetAlpha(MAX_ALPHA * strength)
-            target.glow:Show()
+            for _, glow in ipairs(target.glows) do
+                glow:SetVertexColor(color[1], color[2], color[3])
+                glow:SetAlpha(MAX_ALPHA * strength)
+                glow:Show()
+            end
             if target.tint then
                 local mix = TINT * strength
                 target.tint:SetVertexColor(1 + (color[1] - 1) * mix, 1 + (color[2] - 1) * mix, 1 + (color[3] - 1) * mix)
@@ -161,6 +186,18 @@ local function OnUpdate(self, elapsed)
     local strength = 0.5 - 0.5 * math.cos(phase * 2 * math.pi)
     local alert = active[cycle % #active + 1]
     Paint(alert and alert.color, strength)
+end
+
+local testUntil -- GetTime() da testblinkingen (/dw blink) slutter
+
+-- Blinker i alle fargene i noen sekunder, uansett innstillinger.
+function DW.TestBlink(seconds)
+    seconds = seconds or 15
+    testUntil = GetTime() + seconds
+    DW.RefreshAlerts()
+    if C_Timer and C_Timer.After then
+        C_Timer.After(seconds + 0.1, DW.RefreshAlerts)
+    end
 end
 
 -- Ser etter hva som er nytt, og starter eller stopper blinkingen.
@@ -190,9 +227,17 @@ function DW.RefreshAlerts()
             end
         end
     end
+    -- "/dw blink": alle fargene en liten stund, så man ser hvordan det ser ut.
+    local testing = testUntil ~= nil and GetTime() < testUntil
+    if testing then
+        list = {}
+        for index, alert in ipairs(DW.ALERTS) do
+            list[index] = alert
+        end
+    end
     active = list
 
-    local shouldBlink = #active > 0 and DW.IsBlinkOn()
+    local shouldBlink = #active > 0 and (DW.IsBlinkOn() or testing)
     if shouldBlink and not blinking then
         blinking = true
         clock, sinceCheck = 0, 0

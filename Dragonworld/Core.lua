@@ -443,6 +443,13 @@ SlashCmdList["DRAGONWORLD"] = function(message)
         return
     end
 
+    -- "/dw blink": vis hvordan blinkingen ser ut (Alerts.lua).
+    if word == "blink" and DW.TestBlink then
+        DW.TestBlink(15)
+        DW.Print(L.BLINK_TEST)
+        return
+    end
+
     if BUTTON_WORDS[word] and DW.ToggleMinimapButton then
         DW.Print(DW.ToggleMinimapButton() and L.BUTTON_SHOWN or L.BUTTON_HIDDEN)
         return

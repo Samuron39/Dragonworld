@@ -6,7 +6,7 @@
 -- (kommandoen /dw) hvis den ikke finnes, og legger den på musepekeren.
 --
 -- Makroen får dragehodet fra spillets egne ikoner. Der den ligger på action
--- bar, legger addonen guildlogoen oppå, og en farget glød som blinker når noe
+-- bar, legger addonen guildlogoen oppå, og en farget glød rundt som blinker når noe
 -- er nytt (Alerts.lua). Holder man musen over den, viser tooltipen en liste
 -- over det nye, og blinkingen stopper. Det virker på spillets egne action
 -- bars og på Bartender4, Dominos og ElvUI.
@@ -20,9 +20,12 @@ local L = DW.L
 local MACRO_NAME = "Dragonworld"
 local MACRO_BODY = "/dw"
 local MACRO_ICON = "Interface\\Icons\\INV_Misc_Head_Dragon_01"
--- Spillets egen lysning når musen er over en knapp. Den finnes i Forever
--- (andre addons der bruker den); farget og pulserende blir den blinket.
-local GLOW_TEXTURE = "Interface\\Buttons\\ButtonHilight-Square"
+-- Gløden rundt knappen: rammen fra spillets egen "proc"-glød (den myke
+-- firkanten i IconAlert), gjort grå og farget, litt større enn knappen. Den
+-- finnes i Forever (GlowingBars bruker den der).
+local GLOW_TEXTURE = "Interface\\SpellActivationOverlay\\IconAlert"
+local GLOW_COORDS = { 0.0078125, 0.5078125, 0.27734375, 0.52734375 }
+local GLOW_SCALE = 1.4
 DW.ACTION_ICON = DW.MEDIA .. "button" -- guildlogoen som ikon (Media\button.tga)
 
 -- Makroen -----------------------------------------------------------------------
@@ -240,10 +243,14 @@ local function Overlay(button)
     end
 
     -- Gløden dekker ikonet og lyser det opp i fargen.
-    overlay.glow = button:CreateTexture(nil, "OVERLAY", nil, 7)
-    overlay.glow:SetTexture(GLOW_TEXTURE)
-    overlay.glow:SetBlendMode("ADD")
-    overlay.glow:SetAllPoints(type(icon) == "table" and icon.GetDrawLayer and icon or button)
+    local width = button:GetWidth()
+    if type(width) ~= "number" or DW.IsSecret(width) or width <= 0 then
+        width = 36
+    end
+    overlay.glow = DW.PrepareGlow(button:CreateTexture(nil, "OVERLAY", nil, 7), nil, GLOW_TEXTURE)
+    overlay.glow:SetTexCoord(GLOW_COORDS[1], GLOW_COORDS[2], GLOW_COORDS[3], GLOW_COORDS[4])
+    overlay.glow:SetSize(width * GLOW_SCALE, width * GLOW_SCALE)
+    overlay.glow:SetPoint("CENTER", button, "CENTER", 0, 0)
     overlay.target = DW.AddGlowTarget({ glow = overlay.glow, hidden = true })
 
     -- Etter spillets egne skript, så tooltipen deres er laget først.

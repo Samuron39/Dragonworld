@@ -46,6 +46,7 @@ strings.en = {
     -- Blinking når noe er nytt (Alerts.lua)
     BLINK_ON = "Blink when something is new",
     BLINK_HINT = "The minimap icon and the action bar button blink softly in the colour shown, for what you tick. Hold the mouse over the button to see a list of what is new; then it stops blinking.",
+    BLINK_TEST = "Blinking for 15 seconds in all the colours, so you can see how it looks.",
     AL_DUNGEON = "Someone wants a dungeon",
     AL_EVENT = "New event",
     AL_WHISPER = "New whisper",
@@ -584,6 +585,7 @@ strings.nb = {
     -- Blinking når noe er nytt (Alerts.lua)
     BLINK_ON = "Blink når noe er nytt",
     BLINK_HINT = "Ikonet ved minimapet og knappen på action bar blinker mildt i fargen som vises, for det du krysser av. Hold musen over knappen for å se en liste over det nye; da slutter den å blinke.",
+    BLINK_TEST = "Blinker i 15 sekunder i alle fargene, så du ser hvordan det ser ut.",
     AL_DUNGEON = "Noen ser etter dungeon",
     AL_EVENT = "Ny event",
     AL_WHISPER = "Ny hvisking",
@@ -1112,6 +1114,7 @@ strings.nl = {
     -- Blinking når noe er nytt (Alerts.lua)
     BLINK_ON = "Knipperen als er iets nieuws is",
     BLINK_HINT = "Het icoon bij de minimap en de knop op je actiebalk knipperen zacht in de getoonde kleur, voor wat je aanvinkt. Houd de muis boven de knop voor een lijst van wat er nieuw is; dan stopt het knipperen.",
+    BLINK_TEST = "Knippert 15 seconden in alle kleuren, zodat je ziet hoe het eruitziet.",
     AL_DUNGEON = "Iemand zoekt een dungeon",
     AL_EVENT = "Nieuw evenement",
     AL_WHISPER = "Nieuw fluisterbericht",

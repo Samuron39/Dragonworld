@@ -474,6 +474,7 @@ function QueryGuildEventLog() GUILD_LOG_QUERIES = GUILD_LOG_QUERIES + 1 end
 function GetNumGuildEvents() return #GUILD_LOG end
 function GetGuildEventInfo(index) local e = GUILD_LOG[index]; if e then return table.unpack(e, 1, 8) end end
 ChatTypeInfo = { GUILD = { r = 0.25, g = 1.0, b = 0.25 } }
+C_Texture = { GetAtlasInfo = function(name) if ATLASES[name] then return { width = 64, height = 64 } end end }
 function GetActionText(slot)
     local a = ACTION_SLOTS[slot]
     if a and a[1] == "macro" and MACROS[a[2]] then return MACROS[a[2]].name end
@@ -633,6 +634,9 @@ function Texture:SetVertexColor(r, g, b, a) assert(type(r) == "number" and type(
 function Texture:SetAlpha(alpha) assert(type(alpha) == "number" and alpha >= 0 and alpha <= 1, "SetAlpha out of range"); self.alpha = alpha end
 function Texture:GetDrawLayer() return self.layer or "ARTWORK", self.sublevel or 0 end
 function Texture:AddMaskTexture(mask) assert(mask ~= nil, "AddMaskTexture(nil)"); self.mask = mask end
+function Texture:SetDesaturated(on) self.desaturated = on and true or false end
+ATLASES = { ["gamepad-hud-actionbar-casting-complete-glow"] = true, ["gamepad-actionbar-circleslot-border-hover"] = true }
+function Texture:SetAtlas(name) assert(type(name) == "string" and ATLASES[name], "unknown atlas " .. tostring(name)); self.atlas = name; self.texture = nil; return true end
 
 local Frame = setmetatable({}, { __index = Region })
 Frame.__index = Frame
@@ -5409,7 +5413,10 @@ end)()
         #ns.ALERTS == 4 and ns.ALERTS[1].kind == "event" and ns.ALERTS[2].kind == "whisper" and ns.ALERTS[3].kind == "guildchat"
         and ns.ALERTS[4].kind == "dungeon" and ns.ALERTS[1].module == "events" and ns.ALERTS[2].module == "guildchat" and ns.ALERTS[4].module == "dungeons")
     check("nothing new: nothing blinks", not ns.IsBlinking() and pulse.scripts.OnUpdate == nil and not mm.glow:IsShown())
-    check("the minimap glow is a soft round light over the icon", mm.glow.blend == "ADD" and mm.glow.texture == "Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight" and mm.glow.layer == "ARTWORK")
+    check("the minimap glow is the round ring itself lit up (a grey copy on top of it, coloured), with a soft halo around the button",
+        mm.glow.blend == "ADD" and mm.glow.desaturated and mm.glow.texture == "Interface\\Minimap\\MiniMap-TrackingBorder" and mm.glow.layer == "OVERLAY"
+        and mm.glow.sublevel == 7 and mm.glow.width == 50 and mm.halo.atlas == "gamepad-hud-actionbar-casting-complete-glow" and mm.halo.blend == "ADD"
+        and mm.halo.desaturated and mm.halo.layer == "BACKGROUND" and mm.halo.width == 60)
 
     -- Someone wants a dungeon at your level (Tester is 60; Blackrock Depths 52-60, Stratholme 58-60).
     -- (The status section left Altine's last status 100 s ahead of its clock.)
@@ -5418,8 +5425,9 @@ end)()
     flush()
     check("someone open for a dungeon at your level makes the buttons blink", ns.IsBlinking() and pulse.scripts.OnUpdate ~= nil)
     pulse.scripts.OnUpdate(pulse, 1.2) -- half a blink in: brightest
-    check("the minimap icon glows green, softly", mm.glow:IsShown() and colour(mm.glow) == GREEN and math.abs(mm.glow.alpha - 0.75) < 0.001, mm.glow.alpha)
-    check("...and its ring takes on the colour too", mm.border.vertexColor[1] < 0.7 and mm.border.vertexColor[2] == 1, colour(mm.border))
+    check("the ring around the minimap button lights up green, at full strength at the top of a blink",
+        mm.glow:IsShown() and colour(mm.glow) == GREEN and math.abs(mm.glow.alpha - 1.0) < 0.001, mm.glow.alpha)
+    check("...and so does the halo around it", mm.halo:IsShown() and colour(mm.halo) == GREEN and mm.halo.alpha == mm.glow.alpha)
     pulse.scripts.OnUpdate(pulse, 1.2) -- end of the blink
     check("...fading out between blinks", mm.glow.alpha < 0.01, mm.glow.alpha)
     mm.scripts.OnEnter(mm)
@@ -5427,7 +5435,7 @@ end)()
         #GameTooltip.lines == 6 and GameTooltip.lines[4] == " " and GameTooltip.lines[5] == "Nytt:"
         and GameTooltip.lines[6] == "Altine ser etter dungeon: Blackrock Depths, Stratholme: Undead (Loot)" and colour({ vertexColor = GameTooltip.colors[6] }) == GREEN,
         table.concat(GameTooltip.lines, " / "))
-    check("...and that counts as seen: the blinking stops at once", not ns.IsBlinking() and pulse.scripts.OnUpdate == nil and not mm.glow:IsShown() and mm.border.vertexColor[1] == 1)
+    check("...and that counts as seen: the blinking stops at once", not ns.IsBlinking() and pulse.scripts.OnUpdate == nil and not mm.glow:IsShown() and not mm.halo:IsShown())
     mm.scripts.OnLeave(mm)
     mm.scripts.OnEnter(mm)
     check("the next time, the list is gone", #GameTooltip.lines == 3, table.concat(GameTooltip.lines, " / "))
@@ -5549,7 +5557,7 @@ end)()
     local function overlayOf(b)
         local logo, glow
         for _, t in ipairs(b.textures or {}) do
-            if t.texture == ns.ACTION_ICON then logo = t elseif t.texture == "Interface\\Buttons\\ButtonHilight-Square" then glow = t end
+            if t.texture == ns.ACTION_ICON then logo = t elseif t.texture == "Interface\\SpellActivationOverlay\\IconAlert" then glow = t end
         end
         return logo, glow
     end
@@ -5559,7 +5567,9 @@ end)()
     local logo, glow = overlayOf(buttons[3])
     check("where the macro lies on the action bar, the guild logo covers its icon, just above it",
         logo ~= nil and logo:IsShown() and logo.layer == "BACKGROUND" and logo.sublevel == 1 and logo.allPoints == buttons[3].icon and logo.mask == buttons[3].IconMask)
-    check("...with a glow over it that lights it up", glow ~= nil and glow.blend == "ADD" and glow.layer == "OVERLAY" and glow.allPoints == buttons[3].icon)
+    check("...with the game's proc glow around it (grey, so the colour is clean), a bit bigger than the button",
+        glow ~= nil and glow.blend == "ADD" and glow.desaturated and glow.layer == "OVERLAY" and glow.width == 45 * 1.4 and glow.height == 45 * 1.4
+        and select(1, glow:GetPoint(1)) == "CENTER" and select(2, glow:GetPoint(1)) == buttons[3])
     pulse.scripts.OnUpdate(pulse, 0.6)
     check("...that blinks along with the minimap icon, in the same colour", glow:IsShown() and colour(glow) == colour(mm.glow) and glow.alpha == mm.glow.alpha and glow.alpha > 0)
     check("buttons without the macro are left alone", overlayOf(buttons[4]) == nil and #buttons[4].textures == 1)
@@ -5666,6 +5676,14 @@ end)()
     click(win.intro.next)
     click(win.setup.done)
     check("...and then back to where you were", win.body:IsVisible() and win.settingsChip.selected and not win.setup:IsVisible())
+
+    clearChat()
+    dw("blink")
+    check("/dw blink shows all the colours for a while, so you can see how it looks",
+        ns.IsBlinking() and #ns.ActiveAlerts() == 4 and has(ns.strings.nb.BLINK_TEST), chatText())
+    flush()
+    check("...and then stops by itself", not ns.IsBlinking() and not mm.glow:IsShown())
+    clearChat()
 
     click(rsChip)
 end)()
