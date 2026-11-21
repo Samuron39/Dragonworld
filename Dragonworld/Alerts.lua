@@ -3,23 +3,28 @@
 -- Knappen ved minimapet og knappen på action bar (ActionButton.lua) blinker
 -- mildt i en farge når det har skjedd noe nytt, f.eks. at noen i guilden ser
 -- etter dungeon eller at det er lagt ut en ny event. Er det flere ting, bytter
--- fargen for hvert blink. Et klikk på knappen åpner fanen med det nye, og når
--- fanen har vært åpen, slutter blinkingen.
+-- fargen for hvert blink.
+--
+-- Blinkingen stopper (varslene regnes som sett) når spilleren
+--   * holder musen over knappen: tooltipen viser da en liste over det nye, eller
+--   * åpner fanen der det nye er (et klikk på knappen gjør det, også rett
+--     etter at musen har vært over den).
 --
 -- Spilleren kan slå blinkingen av og på under Innstillinger og i første
 -- oppsett, og velge hva det skal blinke for. Den er på som standard.
 -- Lagres i DragonworldDB.alerts (felles for kontoen):
 --   blinkOff = true          blinkingen er slått av
 --   off[slag] = true         ikke blink for dette
---   seen[slag] = tid         sist fanen ble sett (serverens klokke)
+--   seen[slag] = tid         sist det nye ble sett (serverens klokke)
 --
 -- Slik melder en modul inn noe som kan blinke (se Events.lua, Dungeons.lua):
 --   DW.RegisterAlert({
 --       kind = "event",           kort navn
 --       module = "events",        fanen som åpnes og som "ser" det nye
---       labelKey = "AL_EVENT",    teksten i Innstillinger og tooltip
---       color = { r, g, b },      fargen på blinket
+--       labelKey = "AL_EVENT",    teksten i Innstillinger
+--       color = { r, g, b },      fargen på blinket og i listen
 --       Check = function(since)   true hvis noe er nytt siden tiden since
+--       Items = function(since)   (valgfri) det nye som tekstlinjer til listen
 --   })
 -- og kaller DW.RefreshAlerts() når dataene endres.
 
@@ -214,10 +219,76 @@ function DW.MarkAlertSeen(kind)
     DW.RefreshAlerts()
 end
 
+-- Listen over det nye ---------------------------------------------------------------
+
+local MAX_ITEMS = 5     -- linjer per slag i listen; resten blir "...og 3 til"
+local CLICK_MEMORY = 60 -- så lenge etter at musen var over knappen åpner et klikk fanen med det nye
+
+local shownLines = {}   -- linjene i tooltipen mens musen er over knappen
+local hovered           -- { alerts, at, blinking }: det som ble sett med musen sist
+
+-- Det nye som linjer: { { alert, text }, ... }, fra modulenes Items(since).
+local function CollectLines(list)
+    local lines = {}
+    for _, alert in ipairs(list) do
+        local items
+        if alert.Items then
+            local ok, result = pcall(alert.Items, DW.AlertSeenTime(alert.kind))
+            items = ok and type(result) == "table" and result or nil
+        end
+        if not items or #items == 0 then
+            items = { L[alert.labelKey or alert.kind] }
+        end
+        for index, text in ipairs(items) do
+            if index > MAX_ITEMS then
+                lines[#lines + 1] = { alert = alert, text = L.AL_MORE:format(#items - MAX_ITEMS) }
+                break
+            end
+            lines[#lines + 1] = { alert = alert, text = text }
+        end
+    end
+    return lines
+end
+
+-- Legger listen (fra sist musen kom over knappen) i tooltipen. Brukes også
+-- når spillet tegner tooltipen på action bar-knappen på nytt.
+function DW.AddAlertLines(tooltip)
+    if #shownLines == 0 then
+        return
+    end
+    tooltip:AddLine(" ")
+    tooltip:AddLine(L.AL_HEADER, 1.00, 0.82, 0.00)
+    for _, line in ipairs(shownLines) do
+        local color = line.alert.color or { 1, 1, 1 }
+        tooltip:AddLine(line.text, color[1], color[2], color[3], true)
+    end
+end
+
+-- Musen kommer over knappen ved minimapet eller på action bar: vis listen over
+-- det nye i tooltipen, og regn det som sett, så blinkingen stopper.
+function DW.AlertsHovered(tooltip)
+    DW.RefreshAlerts()
+    shownLines = CollectLines(active)
+    if #active > 0 then
+        hovered = { alerts = active, at = GetTime(), blinking = blinking }
+        local settings = Settings()
+        if settings then
+            for _, alert in ipairs(active) do
+                settings.seen[alert.kind] = Now()
+            end
+        end
+        DW.RefreshAlerts()
+    end
+    if tooltip then
+        DW.AddAlertLines(tooltip)
+    end
+end
+
 -- Knappene ------------------------------------------------------------------------
 
--- Klikk på knappen ved minimapet eller på action bar: blinker den, åpnes
--- fanen med det nye; ellers åpnes eller lukkes hovedvinduet som vanlig.
+-- Klikk på knappen ved minimapet eller på action bar: blinker den (eller
+-- blinket den til musen kom over den nettopp), åpnes fanen med det nye.
+-- Ellers åpnes eller lukkes hovedvinduet som vanlig.
 function DW.ClickOpen()
     if DW.IsMainWindowShown and DW.IsMainWindowShown() then
         DW.ToggleMainWindow()
@@ -225,18 +296,14 @@ function DW.ClickOpen()
     end
     DW.RefreshAlerts()
     local first = blinking and active[1]
+    if not first and hovered and hovered.blinking and GetTime() - hovered.at <= CLICK_MEMORY then
+        first = hovered.alerts[1]
+    end
+    hovered = nil
     if first and first.module and DW.modules[first.module] then
         DW.OpenModule(first.module)
     else
         DW.ToggleMainWindow()
-    end
-end
-
--- Linjer til tooltip på knappene: hva som er nytt, i sin farge.
-function DW.AddAlertLines(tooltip)
-    for _, alert in ipairs(active) do
-        local color = alert.color or { 1, 1, 1 }
-        tooltip:AddLine(L[alert.labelKey or alert.kind], color[1], color[2], color[3])
     end
 end
 

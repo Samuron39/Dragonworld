@@ -1895,18 +1895,31 @@ DW.RegisterModule({
 
 -- Knappene blinker (Alerts.lua) når en annen har lagt ut en event som gjelder
 -- deg, og du ikke har åpnet fanen siden den kom.
+local function NewEvents(since)
+    local list = {}
+    local me = MyKey()
+    for _, event in ipairs(VisibleEvents()) do
+        if event.arrived and event.arrived > since and event.creator ~= me then
+            list[#list + 1] = event
+        end
+    end
+    return list
+end
+
 DW.RegisterAlert({
     kind = "event",
     module = MODULE_ID,
     labelKey = "AL_EVENT",
     color = { 1.00, 0.70, 0.15 }, -- gull
     Check = function(since)
-        local me = MyKey()
-        for _, event in ipairs(VisibleEvents()) do
-            if event.arrived and event.arrived > since and event.creator ~= me then
-                return true
-            end
+        return #NewEvents(since) > 0
+    end,
+    -- Linjene i listen ved knappen: tittel, når, og hvem som la den ut.
+    Items = function(since)
+        local items = {}
+        for _, event in ipairs(NewEvents(since)) do
+            items[#items + 1] = L.AL_EVENT_ITEM:format(event.title or "?", date("%d.%m.%Y %H:%M", event.when), ShortName(event.creator))
         end
-        return false
+        return items
     end,
 })

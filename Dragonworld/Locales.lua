@@ -45,9 +45,14 @@ strings.en = {
 
     -- Blinking når noe er nytt (Alerts.lua)
     BLINK_ON = "Blink when something is new",
-    BLINK_HINT = "The minimap icon and the action bar button blink softly in a colour when someone in the guild is looking for a dungeon at your level, or a new event has been posted. Click the button to see what is new.",
+    BLINK_HINT = "The minimap icon and the action bar button blink softly in a colour when someone in the guild is looking for a dungeon at your level, or a new event has been posted. Hold the mouse over the button to see a list of what is new; then it stops blinking.",
     AL_DUNGEON = "Someone wants a dungeon",
     AL_EVENT = "New event",
+    AL_HEADER = "New:",
+    AL_MORE = "...and %d more",
+    AL_DUNGEON_ITEM = "%s wants a dungeon: %s",
+    AL_DUNGEON_ANY = "%s wants a dungeon",
+    AL_EVENT_ITEM = "New event: %s, %s (%s)",
 
     -- Knappen på action bar (ActionButton.lua)
     AB_LABEL = "Button for your action bar",
@@ -506,9 +511,14 @@ strings.nb = {
 
     -- Blinking når noe er nytt (Alerts.lua)
     BLINK_ON = "Blink når noe er nytt",
-    BLINK_HINT = "Ikonet ved minimapet og knappen på action bar blinker mildt i en farge når noen i guilden ser etter dungeon på ditt level, eller en ny event er lagt ut. Klikk på knappen for å se hva som er nytt.",
+    BLINK_HINT = "Ikonet ved minimapet og knappen på action bar blinker mildt i en farge når noen i guilden ser etter dungeon på ditt level, eller en ny event er lagt ut. Hold musen over knappen for å se en liste over det nye; da slutter den å blinke.",
     AL_DUNGEON = "Noen ser etter dungeon",
     AL_EVENT = "Ny event",
+    AL_HEADER = "Nytt:",
+    AL_MORE = "...og %d til",
+    AL_DUNGEON_ITEM = "%s ser etter dungeon: %s",
+    AL_DUNGEON_ANY = "%s ser etter dungeon",
+    AL_EVENT_ITEM = "Ny event: %s, %s (%s)",
 
     -- Knappen på action bar (ActionButton.lua)
     AB_LABEL = "Knapp til action bar",
@@ -957,9 +967,14 @@ strings.nl = {
 
     -- Blinking når noe er nytt (Alerts.lua)
     BLINK_ON = "Knipperen als er iets nieuws is",
-    BLINK_HINT = "Het icoon bij de minimap en de knop op je actiebalk knipperen zacht in een kleur als iemand in de guild een dungeon op jouw level zoekt, of als er een nieuw evenement is geplaatst. Klik op de knop om te zien wat er nieuw is.",
+    BLINK_HINT = "Het icoon bij de minimap en de knop op je actiebalk knipperen zacht in een kleur als iemand in de guild een dungeon op jouw level zoekt, of als er een nieuw evenement is geplaatst. Houd de muis boven de knop voor een lijst van wat er nieuw is; dan stopt het knipperen.",
     AL_DUNGEON = "Iemand zoekt een dungeon",
     AL_EVENT = "Nieuw evenement",
+    AL_HEADER = "Nieuw:",
+    AL_MORE = "...en nog %d",
+    AL_DUNGEON_ITEM = "%s zoekt een dungeon: %s",
+    AL_DUNGEON_ANY = "%s zoekt een dungeon",
+    AL_EVENT_ITEM = "Nieuw evenement: %s, %s (%s)",
 
     -- Knappen på action bar (ActionButton.lua)
     AB_LABEL = "Knop voor je actiebalk",

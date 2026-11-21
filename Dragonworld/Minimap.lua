@@ -101,7 +101,7 @@ local function CreateButton()
         GameTooltip:AddLine("Dragonworld")
         GameTooltip:AddLine(L.MINIMAP_CLICK, 1, 1, 1)
         GameTooltip:AddLine(L.MINIMAP_DRAG, 0.75, 0.75, 0.75)
-        DW.AddAlertLines(GameTooltip) -- hva som er nytt, hvis noe
+        DW.AlertsHovered(GameTooltip) -- listen over det nye; nå er det sett
         GameTooltip:Show()
     end)
     b:SetScript("OnLeave", function()

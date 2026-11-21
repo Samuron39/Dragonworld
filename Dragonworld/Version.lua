@@ -11,7 +11,7 @@
 
 local ADDON_NAME, DW = ...
 
-DW.RELEASE = "0.15.0"
+DW.RELEASE = "0.15.1"
 
 -- Her henter man siste versjon. Vises i oppdater-vinduet og under Innstillinger.
 DW.DOWNLOAD_URL = "https://github.com/Samuron39/Dragonworld/releases/latest"

@@ -601,21 +601,58 @@ local function WantsMyLevel(entry)
     return false
 end
 
+-- De som er nye siden tiden since: { { member, entry }, ... }.
+local function NewWishes(since)
+    local list = {}
+    if DW.GetMyStatus() == "C" then
+        return list
+    end
+    for _, found in ipairs(DW.MembersWithStatus("D")) do
+        local entry = found.entry
+        if not IsMe(found.member) and entry and (entry.time or 0) > since and WantsMyLevel(entry) then
+            list[#list + 1] = found
+        end
+    end
+    return list
+end
+
+-- Én linje i listen ved knappen: hvem, og de av dungeonene deres som passer
+-- ditt level (høyst tre), og hvorfor.
+local function WishLine(found)
+    local entry, level = found.entry, MyLevel()
+    local names = {}
+    for _, dungeon in ipairs(DW.DUNGEONS) do
+        if entry.dungeons and entry.dungeons[dungeon.id] and level >= dungeon.min - SLACK and level <= dungeon.max + SLACK then
+            names[#names + 1] = dungeon.name
+        end
+    end
+    local who = found.member.name
+    if #names == 0 then
+        return L.AL_DUNGEON_ANY:format(who)
+    end
+    if #names > 3 then
+        names = { names[1], names[2], names[3], "+" .. (#names - 3) }
+    end
+    local text = L.AL_DUNGEON_ITEM:format(who, table.concat(names, ", "))
+    if entry.purposes and next(entry.purposes) then
+        text = text .. " (" .. PurposesText(entry.purposes) .. ")"
+    end
+    return text
+end
+
 DW.RegisterAlert({
     kind = "dungeon",
     module = MODULE_ID,
     labelKey = "AL_DUNGEON",
     color = { 0.30, 1.00, 0.45 }, -- grønn
     Check = function(since)
-        if DW.GetMyStatus() == "C" then
-            return false
+        return #NewWishes(since) > 0
+    end,
+    Items = function(since)
+        local items = {}
+        for _, found in ipairs(NewWishes(since)) do
+            items[#items + 1] = WishLine(found)
         end
-        for _, found in ipairs(DW.MembersWithStatus("D")) do
-            local entry = found.entry
-            if not IsMe(found.member) and entry and (entry.time or 0) > since and WantsMyLevel(entry) then
-                return true
-            end
-        end
-        return false
+        return items
     end,
 })

@@ -767,10 +767,24 @@ end
 local function newTooltip(name)
     local t = CreateFrame("GameTooltip", name)
     t.lines = {}
+    t.colors = {}
     t.shown = false
-    function t:AddLine(text, r, g, b, wrap) assert(type(text) == "string"); self.lines[#self.lines + 1] = text end
-    function t:Reset() self.lines = {}; self:Fire("OnTooltipCleared") end
+    function t:AddLine(text, r, g, b, wrap)
+        assert(type(text) == "string")
+        self.lines[#self.lines + 1] = text
+        self.colors[#self.lines] = r and { r, g, b } or nil
+    end
+    function t:Reset() self.lines = {}; self.colors = {}; self:Fire("OnTooltipCleared") end
     function t:SetOwner(owner, anchor) assert(type(owner) == "table" and type(anchor) == "string"); self.owner = owner; self:Reset() end
+    function t:IsOwned(frame) return self.owner == frame end
+    -- An action bar slot: the game writes what is there (a macro's name).
+    function t:SetAction(slot)
+        assert(type(slot) == "number")
+        self:Reset()
+        self.lines[1] = GetActionText(slot) or "?"
+        self:Show()
+        return true
+    end
     function t:SetBagItem(bag, slot)
         assert(type(bag) == "number" and type(slot) == "number")
         self.bagItem = { bag, slot }
@@ -785,6 +799,17 @@ local function newTooltip(name)
         tooltipCallback(self, { id = id })
     end
     return t
+end
+-- Like the game: the hook runs after the original, with the same arguments.
+function hooksecurefunc(tbl, name, hook)
+    if type(tbl) == "string" then tbl, name, hook = _G, tbl, name end
+    local original = tbl[name]
+    assert(type(original) == "function" and type(hook) == "function", "hooksecurefunc: nothing to hook")
+    tbl[name] = function(...)
+        local results = table.pack(original(...))
+        hook(...)
+        return table.unpack(results, 1, results.n)
+    end
 end
 GameTooltip = newTooltip("GameTooltip")
 ItemRefTooltip = newTooltip("ItemRefTooltip")
@@ -5011,13 +5036,20 @@ end)()
     pulse.scripts.OnUpdate(pulse, 1.2) -- end of the blink
     check("...fading out between blinks", mm.glow.alpha < 0.01, mm.glow.alpha)
     mm.scripts.OnEnter(mm)
-    check("the minimap tooltip says what is new", GameTooltip.lines[4] == "Noen ser etter dungeon", table.concat(GameTooltip.lines, " / "))
+    check("holding the mouse over the minimap icon lists what is new, under a heading, in its colour",
+        #GameTooltip.lines == 6 and GameTooltip.lines[4] == " " and GameTooltip.lines[5] == "Nytt:"
+        and GameTooltip.lines[6] == "Altine ser etter dungeon: Blackrock Depths, Stratholme: Undead (Loot)" and colour({ vertexColor = GameTooltip.colors[6] }) == GREEN,
+        table.concat(GameTooltip.lines, " / "))
+    check("...and that counts as seen: the blinking stops at once", not ns.IsBlinking() and pulse.scripts.OnUpdate == nil and not mm.glow:IsShown() and mm.border.vertexColor[1] == 1)
+    mm.scripts.OnLeave(mm)
+    mm.scripts.OnEnter(mm)
+    check("the next time, the list is gone", #GameTooltip.lines == 3, table.concat(GameTooltip.lines, " / "))
     mm.scripts.OnLeave(mm)
 
     win:Hide()
     mm.scripts.OnClick(mm, "LeftButton")
-    check("clicking the blinking button opens the tab with what is new", win:IsShown() and dungeonsChip.selected)
-    check("...and then it counts as seen: the blinking stops", not ns.IsBlinking() and pulse.scripts.OnUpdate == nil and not mm.glow:IsShown() and mm.border.vertexColor[1] == 1)
+    check("a click right after still opens the tab with what was new", win:IsShown() and dungeonsChip.selected)
+    check("...and nothing blinks", not ns.IsBlinking() and not mm.glow:IsShown())
 
     SERVER_NOW = SERVER_NOW + 60
     stReceive("S\tPlayer-1-Altine\tD\t" .. SERVER_NOW .. "\t25\tX")
@@ -5079,6 +5111,11 @@ end)()
         colours[colour(mm.glow)] = true
     end
     check("with two new things the colour changes every blink: gold for the event, green for the dungeon", colours[GOLD] and colours[GREEN])
+    do
+        local items = ns.ALERTS[1].Items(ns.AlertSeenTime("event"))
+        check("in the list, a new event shows its title, when, and who posted it",
+            #items == 1 and items[1] == "Ny event: Blink test, " .. date("%d.%m.%Y %H:%M", NOW + 3 * 86400) .. " (Altine)", items[1])
+    end
     click(evChip)
     check("opening Events makes that seen; the dungeon still blinks", #ns.ActiveAlerts() == 1 and ns.ActiveAlerts()[1].kind == "dungeon")
     click(rsChip)
@@ -5115,6 +5152,10 @@ end)()
         b.action = index
         b.icon = b:CreateTexture(nil, "BACKGROUND")
         b.IconMask = { mask = true }
+        b:SetScript("OnEnter", function(self) -- what the game's action buttons do
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:SetAction(self.action)
+        end)
         buttons[index] = b
     end
     local function overlayOf(b)
@@ -5165,9 +5206,22 @@ end)()
     local btLogo = overlayOf(bt)
     check("Bartender4's buttons are found too (and the logo stays within the layer's sublevels)", btLogo ~= nil and btLogo.sublevel == 7)
 
+    buttons[7]:Fire("OnEnter")
+    check("holding the mouse over the action bar button: the game's tooltip, with the list under it",
+        GameTooltip.owner == buttons[7] and GameTooltip.lines[1] == "Dragonworld" and GameTooltip.lines[3] == "Nytt:"
+        and (GameTooltip.lines[4] or ""):find("^Altine ser etter dungeon") ~= nil and GameTooltip:IsShown(), table.concat(GameTooltip.lines, " / "))
+    check("...and the blinking stops there too", not ns.IsBlinking() and not glow7:IsShown())
+    local lineCount = #GameTooltip.lines
+    GameTooltip:SetAction(7) -- the game redraws the tooltip while the mouse is there
+    check("...the list stays when the game redraws the tooltip, without doubling", #GameTooltip.lines == lineCount and GameTooltip.lines[3] == "Nytt:", #GameTooltip.lines)
+    buttons[7]:Fire("OnLeave")
+    buttons[4]:Fire("OnEnter")
+    check("other action buttons' tooltips are left alone", #GameTooltip.lines == 1, table.concat(GameTooltip.lines, " / "))
+    buttons[4]:Fire("OnLeave")
+
     win:Hide()
     dw("")
-    check("/dw (what the action bar button runs) also opens the tab with what is new", win:IsShown() and dungeonsChip.selected)
+    check("/dw (what the action bar button runs) right after opens the tab with what was new", win:IsShown() and dungeonsChip.selected)
     check("...and then nothing blinks, on the minimap or the action bar", not ns.IsBlinking() and not mm.glow:IsShown() and not glow7:IsShown())
 
     click(rsChip)

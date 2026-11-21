@@ -215,7 +215,10 @@ try {
     } else {
         Invoke-WebRequest -Uri $ZipUrl -OutFile $zip -UseBasicParsing
     }
-    Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $temp 'x')
+    # .NET direkte i stedet for Expand-Archive: den kan bli lastet fra en nyere
+    # PowerShell og feile i Windows PowerShell.
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [System.IO.Compression.ZipFile]::ExtractToDirectory($zip, (Join-Path $temp 'x'))
     $source = Join-Path $temp 'x\Dragonworld'
     if (-not (Test-Path -LiteralPath (Join-Path $source 'Dragonworld.toc'))) { throw 'Dragonworld.zip has no Dragonworld\Dragonworld.toc' }
     $new = Get-Release $source

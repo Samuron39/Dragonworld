@@ -7,8 +7,9 @@
 --
 -- Makroen får dragehodet fra spillets egne ikoner. Der den ligger på action
 -- bar, legger addonen guildlogoen oppå, og en farget glød som blinker når noe
--- er nytt (Alerts.lua). Det virker på spillets egne action bars og på
--- Bartender4, Dominos og ElvUI.
+-- er nytt (Alerts.lua). Holder man musen over den, viser tooltipen en liste
+-- over det nye, og blinkingen stopper. Det virker på spillets egne action
+-- bars og på Bartender4, Dominos og ElvUI.
 --
 -- Makroen er felles for alle karakterene på kontoen. Den slettes aldri av
 -- addonen; spilleren kan slette den selv i makrovinduet (/macro).
@@ -180,6 +181,39 @@ end
 
 local overlays = {} -- [knapp] = { logo, glow, target }
 
+-- Tooltip: når musen er over knappen med makroen, legges listen over det nye
+-- under spillets egen tekst, og det regnes som sett (Alerts.lua). Spillet
+-- tegner tooltipen på action bar på nytt flere ganger i sekundet med
+-- SetAction, så listen legges til hver gang det skjer.
+local hoverButton -- knappen musen er over nå, hvis den har makroen
+
+local function OnButtonEnter(button)
+    local overlay = overlays[button]
+    if not overlay or overlay.target.hidden then
+        return
+    end
+    if not GameTooltip:IsOwned(button) then
+        GameTooltip:SetOwner(button, "ANCHOR_RIGHT")
+        GameTooltip:AddLine("Dragonworld")
+    end
+    DW.AlertsHovered(GameTooltip)
+    hoverButton = button
+    GameTooltip:Show()
+end
+
+local function OnButtonLeave()
+    hoverButton = nil
+end
+
+if hooksecurefunc and GameTooltip and GameTooltip.SetAction then
+    hooksecurefunc(GameTooltip, "SetAction", function(tooltip)
+        if hoverButton and tooltip:IsOwned(hoverButton) then
+            DW.AddAlertLines(tooltip)
+            tooltip:Show()
+        end
+    end)
+end
+
 -- Logoen og gløden på en knapp. Lages i selve knappen, så tastaturtegnet
 -- (hotkey) fortsatt vises over logoen.
 local function Overlay(button)
@@ -211,6 +245,10 @@ local function Overlay(button)
     overlay.glow:SetBlendMode("ADD")
     overlay.glow:SetAllPoints(type(icon) == "table" and icon.GetDrawLayer and icon or button)
     overlay.target = DW.AddGlowTarget({ glow = overlay.glow, hidden = true })
+
+    -- Etter spillets egne skript, så tooltipen deres er laget først.
+    button:HookScript("OnEnter", OnButtonEnter)
+    button:HookScript("OnLeave", OnButtonLeave)
 
     overlays[button] = overlay
     return overlay

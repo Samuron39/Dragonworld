@@ -9,8 +9,9 @@
 #   3. Skriver versjonen i Dragonworld\Version.lua (DW.RELEASE). Det er den
 #      addonene sammenligner i spillet; først nå får guilden beskjed om den.
 #   4. Committer alt, lager taggen vX.Y.Z og pusher til GitHub.
-#   5. Lager Dragonworld.zip (mappen Dragonworld fra taggen) og en GitHub
-#      release med den. Oppdateringsprogrammet henter alltid siste release.
+#   5. Lager Dragonworld.zip (mappen Dragonworld fra taggen, pluss
+#      Installer-Dragonworld.cmd øverst) og en GitHub release med zip-en og
+#      installeringsfilen. Oppdateringsprogrammet henter alltid siste release.
 #   6. Kopierer addonen inn i spillet (med mindre -NoInstall).
 #
 # Versjoner som bare testes i spillet underveis trenger ikke dette: de har
@@ -89,10 +90,14 @@ try {
     New-Item -ItemType Directory -Force -Path $Dist | Out-Null
     $zip = Join-Path $Dist 'Dragonworld.zip'
     if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
-    Invoke-Checked git @('archive', '--format=zip', '--prefix=Dragonworld/', '-o', $zip, "v${version}:Dragonworld")
+    # Zip-en har mappen Dragonworld og installeringsfilen øverst, så den som
+    # får zip-en (f.eks. på Discord) bare åpner den og dobbeltklikker filen.
+    Invoke-Checked git @('archive', '--format=zip', '-o', $zip, '--prefix=', '--add-file=Installer-Dragonworld.cmd',
+        '--prefix=Dragonworld/', "v${version}:Dragonworld")
+    $installer = Join-Path $Root 'Installer-Dragonworld.cmd'
     if (-not $Notes) { $Notes = "Dragonworld $version" }
-    $Notes += "`n`nInstall/update: see the README. In game, the addon tells you when a newer version is out."
-    Invoke-Checked gh @('release', 'create', "v$version", $zip, '--title', "Dragonworld $version", '--notes', $Notes)
+    $Notes += "`n`nFirst time: download Installer-Dragonworld.cmd (or Dragonworld.zip) and double-click Installer-Dragonworld.cmd. In game, the addon tells you when a newer version is out; then double-click Dragonworld Updater on your desktop."
+    Invoke-Checked gh @('release', 'create', "v$version", $zip, $installer, '--title', "Dragonworld $version", '--notes', $Notes)
 
     # 6. Inn i spillet.
     if (-not $NoInstall -and (Test-Path -LiteralPath (Split-Path -Parent $Game))) {
