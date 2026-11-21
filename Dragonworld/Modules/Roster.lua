@@ -1607,6 +1607,21 @@ DW.AddDebug("professions", function(add)
     add("spillets guild-oversikt: " .. text(GetNumGuildTradeSkill and select(2, pcall(GetNumGuildTradeSkill))))
 end)
 
+-- For andre filer (Prestasjoner): egne professions slik vi leser dem
+-- ({ { name, level, max, line }, ... }), og et medlems professions fra
+-- DW.ReadGuildRoster() slik vi kjenner dem (delt med addonen, eller spillets
+-- egen oversikt).
+function DW.ReadMyProfessions()
+    return ReadMyProfessions()
+end
+
+function DW.ProfessionsOfMember(member)
+    if type(member) ~= "table" then
+        return {}
+    end
+    return (ProfessionsOf(member))
+end
+
 -- Modul --------------------------------------------------------------------------
 
 DW.RegisterModule({

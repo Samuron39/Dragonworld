@@ -334,6 +334,16 @@ function GetTime() return clock end
 SERVER_NOW = NOW
 function GetServerTime() return SERVER_NOW end
 
+-- Sounds the addon plays: the game's sound kit numbers, by name.
+SOUNDKIT = { IG_MAINMENU_OPEN = 850, LFG_REWARDS = 17316, UI_ALERT_ACHIEVEMENT_GAINED = 12891 }
+SOUNDS_PLAYED = {}
+function PlaySound(kit, channel)
+    assert(type(kit) == "number", "PlaySound needs a sound kit number")
+    assert(channel == nil or channel == "Master" or channel == "SFX" or channel == "Music" or channel == "Ambience" or channel == "Dialog", "unknown sound channel")
+    SOUNDS_PLAYED[#SOUNDS_PLAYED + 1] = kit
+    return true, 1
+end
+
 -- Addon messages and ordinary chat -----------------------------------------------------
 local wire = {}                                          -- addon messages that went out
 local guildChat = {}                                     -- ordinary chat lines that went out
@@ -547,7 +557,7 @@ local frames = {}
 local TEMPLATES = { BackdropTemplate = true, UIPanelCloseButton = true, UICheckButtonTemplate = true, ScrollFrameTemplate = true, InputBoxTemplate = true }
 local FRAME_TYPES = { Frame = true, Button = true, CheckButton = true, ScrollFrame = true, GameTooltip = true, EditBox = true, ScrollingMessageFrame = true }
 local FONTS = { GameFontNormal = true, GameFontNormalSmall = true, GameFontNormalLarge = true, GameFontNormalHuge = true,
-                GameFontHighlight = true, GameFontHighlightSmall = true, GameFontDisable = true, GameFontDisableSmall = true }
+                GameFontHighlight = true, GameFontHighlightSmall = true, GameFontHighlightLarge = true, GameFontDisable = true, GameFontDisableSmall = true }
 
 local Region = {}
 Region.__index = Region
@@ -652,6 +662,10 @@ function Frame:SetFrameStrata(strata) self.strata = strata end
 function Frame:SetFrameLevel(level) assert(type(level) == "number"); self.level = level end
 function Frame:GetFrameLevel() return self.level or 1 end
 function Frame:GetEffectiveScale() return self.scale or 1 end
+function Frame:SetAlpha(alpha) assert(type(alpha) == "number" and alpha >= 0 and alpha <= 1, "SetAlpha out of range"); self.alpha = alpha end
+function Frame:GetAlpha() return self.alpha or 1 end
+-- Tests set frame.mouseOver to put the mouse over a frame.
+function Frame:IsMouseOver() return self.mouseOver == true end
 function Frame:SetBackdrop(t) assert(self.template == "BackdropTemplate", "SetBackdrop needs BackdropTemplate"); self.backdrop = t end
 function Frame:SetBackdropColor(r, g, b, a) assert(self.backdrop, "SetBackdropColor before SetBackdrop"); assert(r and g and b); self.backdropColor = { r, g, b, a } end
 function Frame:SetBackdropBorderColor(r, g, b, a) assert(self.backdrop, "SetBackdropBorderColor before SetBackdrop"); assert(r and g and b); self.borderColor = { r, g, b, a } end
@@ -1057,7 +1071,7 @@ do
         and intro.next.label.text == "Volgende" and #intro.tips == 5 and intro.tips[1].text == "- " .. ns.strings.nl.INTRO_TIP_BANK
         and intro.tips[2].text == "- " .. ns.strings.nl.INTRO_TIP_PROFESSIONS and intro.tips[3].text == "- " .. ns.strings.nl.INTRO_TIP_GUILDBANK)
     check("the intro lists every tab in tab order, with its icon, name and what it does",
-        #intro.rows == 12 and intro.rows[1].icon.texture == ns.modules.roster.icon
+        #intro.rows == 13 and intro.rows[1].icon.texture == ns.modules.roster.icon
         and intro.rows[1].text.text == "|cffffd100" .. ns.ModuleTitle(ns.modules.roster) .. "|r  " .. ns.ModuleNotes(ns.modules.roster)
         and intro.rows[2].text.text:find(ns.strings.nl.GC_TITLE, 1, true) ~= nil, intro.rows[1] and intro.rows[1].text.text)
     intro.next.scripts.OnClick(intro.next)
@@ -1154,21 +1168,23 @@ local rsChip, etterChip, kaputtChip = chipByID.ryddesekk, chipByID.etter, chipBy
 local matChip, kbChip, evChip, roChip = chipByID.materialer, chipByID.keybinds, chipByID.events, chipByID.roster
 check("the module asked for (/kast) is the one that opens", rsPanel ~= nil and rsPanel:IsVisible() and rsChip.selected and isGold(rsChip.borderColor))
 check("one chip per module that has content, top to bottom in order",
-    #chipOrder == 12 and chipOrder[1] == rsChip and chipOrder[2] == matChip and chipOrder[3] == kbChip and chipOrder[4] == evChip
+    #chipOrder == 13 and chipOrder[1] == rsChip and chipOrder[2] == matChip and chipOrder[3] == kbChip and chipOrder[4] == evChip
     and chipOrder[5] == roChip and chipOrder[6] == chipByID.guildchat and chipOrder[7] == chipByID.guildbank and chipOrder[8] == chipByID.forslag
-    and chipOrder[9] == chipByID.dungeons and chipOrder[10] == chipByID.professions and chipOrder[11] == etterChip and chipOrder[12] == kaputtChip
+    and chipOrder[9] == chipByID.dungeons and chipOrder[10] == chipByID.professions and chipOrder[11] == chipByID.achievements
+    and chipOrder[12] == etterChip and chipOrder[13] == kaputtChip
     and chipByID.boom == nil, #chipOrder)
 do
     local ok = true
     -- The default order (the guild leader's choice), test modules last.
-    local position = { roster = 1, guildchat = 2, dungeons = 3, guildbank = 4, events = 5, professions = 6, materialer = 7, ryddesekk = 8, keybinds = 9, forslag = 10, etter = 11, kaputt = 12 }
+    local position = { roster = 1, guildchat = 2, dungeons = 3, guildbank = 4, events = 5, achievements = 6, professions = 7, materialer = 8, ryddesekk = 9,
+                       keybinds = 10, forslag = 11, etter = 12, kaputt = 13 }
     for _, chip in ipairs(chipOrder) do
         local index = position[chip.id] or 99
         local point, relTo, _, x, y = chip:GetPoint(1)
-        -- Twelve tabs (ten modules and two test ones) do not fit 48 apart above
-        -- Settings (434 - 48 = 386 high), so they move to 32 apart and get 30 tall.
-        if not (point == "TOPLEFT" and x == 0 and y == -(index - 1) * 32 and chip:GetWidth() == 190 and chip:GetHeight() == 30
-            and (index - 1) * 32 + 30 <= 434 - 40) then ok = false end
+        -- Thirteen tabs (eleven modules and two test ones) do not fit 48 apart above
+        -- Settings (434 - 48 = 386 high), so they move to 29 apart and get 27 tall.
+        if not (point == "TOPLEFT" and x == 0 and y == -(index - 1) * 29 and chip:GetWidth() == 190 and chip:GetHeight() == 27
+            and (index - 1) * 29 + 27 <= 434 - 40) then ok = false end
     end
     local sPoint, _, _, sx, sy = win.settingsChip:GetPoint(1)
     check("chips are stacked down the left side, Settings at the bottom", ok and sPoint == "BOTTOMLEFT" and sx == 0 and sy == 0)
@@ -2058,6 +2074,7 @@ SUG_LOGIN = sentNow("DragonworldSug")       -- and this in the Forslag section (
 STATUS_LOGIN = sentNow("DragonworldSt")     -- and this in the Status section
 PROFILE_LOGIN = sentNow("DragonworldPf")    -- and this in the member card section
 VERSION_LOGIN = sentNow("DragonworldVer")   -- and this in the version section
+ACH_LOGIN = sentNow("DragonworldAch")       -- and this in the achievements section
 check("nothing else is waiting on the wire", #wire == 0, #wire)
 
 evChip.scripts.OnClick(evChip)
@@ -3912,20 +3929,20 @@ end)()
             if row:IsShown() and row.id == id then return row end
         end
     end
-    local DEFAULT_ORDER = "roster,guildchat,dungeons,guildbank,events,professions,materialer,ryddesekk,keybinds,forslag,etter,kaputt"
+    local DEFAULT_ORDER = "roster,guildchat,dungeons,guildbank,events,achievements,professions,materialer,ryddesekk,keybinds,forslag,etter,kaputt"
     check("Settings lists the tabs in the default order (the guild leader's), in the chosen language",
         settings.orderLabel.text == "Rekkefølgen på fanene til venstre (bruk pilene)" and orderNames() == DEFAULT_ORDER
         and settings.orderRows[1].name.text == ns.ModuleTitle(ns.modules.roster) and settings.orderRows[1].icon.texture == ns.modules.roster.icon, orderNames())
     check("the top tab cannot move up, and the bottom one cannot move down",
         not settings.orderRows[1].up:IsEnabled() and settings.orderRows[1].down:IsEnabled()
-        and settings.orderRows[12].up:IsEnabled() and not settings.orderRows[12].down:IsEnabled())
+        and settings.orderRows[13].up:IsEnabled() and not settings.orderRows[13].down:IsEnabled())
     check("the arrows use the game's own arrow pictures", settings.orderRows[1].up.normalTexture == "Interface\\Buttons\\UI-ScrollBar-ScrollUpButton-Up"
         and settings.orderRows[1].down.disabledTexture == "Interface\\Buttons\\UI-ScrollBar-ScrollDownButton-Disabled")
 
     rowFor("roster").down.scripts.OnClick(rowFor("roster").down)
     check("moving Members down swaps it with Guild chat in the sidebar at once",
-        chipY("guildchat") == 0 and chipY("roster") == -32 and chipY("dungeons") == -64 and orderNames():find("^guildchat,roster,dungeons,") ~= nil, orderNames())
-    check("...and the order is saved", DragonworldDB.tabOrder[1] == "guildchat" and DragonworldDB.tabOrder[2] == "roster" and #DragonworldDB.tabOrder == 12)
+        chipY("guildchat") == 0 and chipY("roster") == -29 and chipY("dungeons") == -58 and orderNames():find("^guildchat,roster,dungeons,") ~= nil, orderNames())
+    check("...and the order is saved", DragonworldDB.tabOrder[1] == "guildchat" and DragonworldDB.tabOrder[2] == "roster" and #DragonworldDB.tabOrder == 13)
     for _ = 1, 10 do
         local row = rowFor("forslag")
         if row.up:IsEnabled() then row.up.scripts.OnClick(row.up) end
@@ -3936,8 +3953,8 @@ end)()
     DragonworldDB.tabOrder = { "guildbank", "nothing-here", 42, "guildbank", "forslag" }
     ns.MoveModule("forslag", 1)
     check("a saved order with unknown or repeated names still works; tabs missing from it get their default place, others come last",
-        orderNames() == "roster,guildchat,dungeons,guildbank,events,professions,materialer,ryddesekk,keybinds,etter,forslag,kaputt"
-        and chipY("roster") == 0 and chipY("kaputt") == -11 * 32, orderNames())
+        orderNames() == "roster,guildchat,dungeons,guildbank,events,achievements,professions,materialer,ryddesekk,keybinds,etter,forslag,kaputt"
+        and chipY("roster") == 0 and chipY("kaputt") == -12 * 29, orderNames())
     DragonworldDB.tabOrder = { "forslag", "roster", "dungeons", "guildbank", "events", "professions", "materialer", "ryddesekk", "keybinds" }
     ns.MoveModule("etter", 1)
     check("a tab that is new since the order was saved lands right under the one before it by default (Guild chat under Members)",
@@ -5967,6 +5984,364 @@ end)()
     check("...and then stops by itself", not ns.IsBlinking() and not mm.glow:IsShown())
     clearChat()
 
+    click(rsChip)
+end)()
+
+-- ================== Prestasjoner (Modules\Achievements.lua) =====================
+;(function()
+    local ACH = "DragonworldAch"
+    local function ach(text, sender) fire("CHAT_MSG_ADDON", ACH, text, "GUILD", sender or "Altine-Stormrage") end
+    local function achSent() return sentNow(ACH) end
+    local function all(list) return table.concat(list, " ; ") end
+    local function click(button) button.scripts.OnClick(button) end
+    local function achDB() return DragonworldDB.modules.achievements end
+    local function state(id)
+        for _, a in ipairs(ns.GuildAchievements()) do if a.id == id then return a end end
+    end
+    local nb = ns.strings.nb
+    local GOLD = "|cffffd100"
+    local savedTradeSkill = C_TradeSkillUI
+    C_TradeSkillUI = nil
+    ns.SetLanguage("nb", true)
+
+    -- Legacy Challenges are the game's achievements: categories, and in each the
+    -- achievements (id, name, points, completed, month, day, year, description,
+    -- flags, icon, reward, isGuild, wasEarnedByMe). The legacy points each one
+    -- gives come from C_Traits.
+    local CHALLENGES = {
+        [6001] = { "Master Druid", "Reach level 60 for the first time on a Druid.", 236152, category = 92, points = 1 },
+        [6002] = { "Guild Thing", "A guild achievement.", 236153, category = 92, guild = true },
+        [6003] = { "Novice Druid", "Reach level 25 for the first time on a Druid.", 236154, category = 93, points = 1, done = true },
+    }
+    local savedTraits = C_Traits
+    C_Traits = setmetatable({
+        GetTraitCurrencyForAchievement = function(currency, id)
+            assert(currency == 4225, "the legacy points currency is 4225")
+            return CHALLENGES[id] and CHALLENGES[id].points or 0
+        end,
+    }, { __index = savedTraits })
+    function GetCategoryList() return { 92, 93 } end
+    function GetCategoryNumAchievements(category)
+        local n = 0
+        for _, c in pairs(CHALLENGES) do if c.category == category then n = n + 1 end end
+        return n, 0, n
+    end
+    function GetAchievementInfo(a, b)
+        local id = a
+        if b then
+            local ids = {}
+            for key, c in pairs(CHALLENGES) do if c.category == a then ids[#ids + 1] = key end end
+            table.sort(ids)
+            id = ids[b]
+        end
+        local c = CHALLENGES[id]
+        if not c then return nil end
+        return id, c[1], 10, c.done or false, nil, nil, nil, c[2], 0, c[3], "", c.guild or false, c.done or false, nil
+    end
+
+    check("at login the achievements module asks the others for their milestones (it has none of its own to send yet)",
+        prefixes[ACH] == true and #ACH_LOGIN == 1 and ACH_LOGIN[1] == "R", all(ACH_LOGIN))
+    check("the module has a tab, after Guild events by default", chipByID.achievements ~= nil and chipByID.achievements.icon.texture == "Interface\\Icons\\Achievement_Level_60")
+
+    -- Guild achievements worked out from the roster and the shared professions.
+    check("a guild achievement already reached the first time the addon looked counts as reached before the addon, with no banner",
+        state("lvl60_1").done and state("lvl60_1").done.before == true and state("lvl60_1").value == 2 and DragonworldMilestoneBanner == nil)
+    check("one not reached yet shows how far the guild has come (Tester and Dagny are 60)",
+        not state("lvl60_5").done and state("lvl60_5").value == 2 and state("lvl60_5").goal == 5, state("lvl60_5").value)
+    check("Altine's Alchemy at 300 (shared in the roster) makes the guild's first master crafter, and counts towards the six crafts",
+        state("prof_1").done ~= nil and state("prof_1").value == 1 and state("prof_craft").value == 1 and state("prof_craft").goal == 6
+        and state("size_25").value == #ROSTER and #ns.GuildAchievements() == 15)
+
+    -- A guildmate reaches level 60.
+    local t = SERVER_NOW
+    local soundsBefore = #SOUNDS_PLAYED
+    ach("M\tPlayer-1-Altine\t" .. t .. "\tL\t60\tAltine\tMAGE\t\t")
+    local banner = DragonworldMilestoneBanner
+    check("when a guildmate reaches level 60, a banner comes up at once, with the name in the class colour",
+        banner ~= nil and banner:IsShown() and banner.title.text == "GUILD-MILEPÆL!"
+        and banner.text.text == "|cff40c7ebAltine|r nådde " .. GOLD .. "level 60|r!" and banner.button.label.text == "Gratz!", banner and banner.text.text)
+    check("...with the guild shield, the fancy title font, the gold border, at the top of the screen",
+        banner.shield.texture == ns.ICON and banner.title.font[1] == "Fonts\\MORPHEUS.TTF" and banner.backdrop.edgeFile == "Interface\\DialogFrame\\UI-DialogBox-Gold-Border"
+        and banner.strata == "HIGH" and select(1, banner:GetPoint(1)) == "TOP" and select(5, banner:GetPoint(1)) == -110)
+    check("...and the game's achievement fanfare plays", #SOUNDS_PLAYED == soundsBefore + 1 and SOUNDS_PLAYED[#SOUNDS_PLAYED] == 12891)
+    check("...and it goes into the list with the time it happened", achDB().feed["Player-1-Altine:L60"] ~= nil and achDB().feed["Player-1-Altine:L60"].time == t
+        and achDB().feed["Player-1-Altine:L60"].exact)
+    check("Altine now counts as 60 for the guild, even before the roster catches up", state("lvl60_5").value == 3)
+
+    local chatBefore = #guildChat
+    click(banner.button)
+    check("Gratz! congratulates in guild chat and closes the banner",
+        #guildChat == chatBefore + 1 and guildChat[#guildChat].text == "Gratz med level 60, Altine!" and guildChat[#guildChat].chatType == "GUILD"
+        and not banner:IsShown() and achDB().feed["Player-1-Altine:L60"].gratz, guildChat[#guildChat] and guildChat[#guildChat].text)
+
+    ach("M\tPlayer-1-Altine\t" .. t .. "\tL\t60\tAltine\tMAGE\t\t")
+    flush()
+    check("the same milestone again gives no second banner", not banner:IsShown())
+
+    ach("M\tPlayer-1-Dagny\t" .. (t - 86400) .. "\tL\t50\tDagny\tPRIEST\t\t", "Dagny-Stormrage")
+    flush()
+    check("a milestone from yesterday (an answer when you log in) goes into the list without a banner",
+        not banner:IsShown() and achDB().feed["Player-1-Dagny:L50"] ~= nil and achDB().feed["Player-1-Dagny:L50"].time == t - 86400)
+
+    ach("M\tPlayer-1-Dagny\t" .. t .. "\tL\t37\tDagny\tPRIEST\t\t")
+    ach("M\tPlayer-1-Dagny\t" .. t .. "\tP\t250\tDagny\tPRIEST\t164\tBlacksmithing")
+    ach("M\tnot a key\t" .. t .. "\tL\t20\tX\tMAGE\t\t")
+    ach("M\tPlayer-1-Dagny\t" .. (t + 999999) .. "\tL\t20\tDagny\tPRIEST\t\t")
+    ach("M\tPlayer-1-Dagny\t" .. t .. "\tL")
+    ach("Z\tnonsense")
+    flush()
+    check("messages that are not milestones are ignored",
+        achDB().feed["Player-1-Dagny:L37"] == nil and achDB().feed["Player-1-Dagny:P164"] == nil and achDB().feed["Player-1-Dagny:L20"] == nil and not banner:IsShown())
+
+    -- Two at once: one after the other.
+    ach("M\tPlayer-1-Eira\t" .. t .. "\tL\t40\tEira\tHUNTER\t\t", "Eira-Stormrage")
+    ach("M\tPlayer-1-Borin\t" .. t .. "\tP\t300\tBorin\tWARRIOR\t164\tBlacksmithing", "Borin-Stormrage")
+    check("two milestones at once: the first is shown", banner:IsShown() and banner.text.text:find("Eira", 1, true) and banner.text.text:find("level 40", 1, true))
+    click(banner.close)
+    check("the X closes it", not banner:IsShown())
+    flush()
+    check("...and then the next comes: 300 in a profession",
+        banner:IsShown() and banner.text.text == "|cffc79c6eBorin|r nådde " .. GOLD .. "300 i Blacksmithing|r!", banner.text.text)
+    check("Borin's Blacksmithing counts towards the six crafts", state("prof_craft").value == 2)
+
+    -- It fades in, stays while the mouse is over it, and fades out after a while.
+    banner.scripts.OnUpdate(banner, 0.2)
+    check("it fades in", banner.alpha > 0 and banner.alpha < 1, banner.alpha)
+    banner.mouseOver = true
+    banner.scripts.OnUpdate(banner, 30)
+    check("while the mouse is over it, it stays", banner:IsShown() and banner.alpha == 1)
+    banner.mouseOver = false
+    banner.scripts.OnUpdate(banner, 13)
+    banner.scripts.OnUpdate(banner, 0.3)
+    check("...when the mouse is gone, it fades out after a while", banner:IsShown() and banner.alpha < 1)
+    banner.scripts.OnUpdate(banner, 0.5)
+    check("...and is gone", not banner:IsShown())
+    local light = 0
+    for _, star in ipairs(banner.stars) do if star.blend == "ADD" and star.texture == "Interface\\Cooldown\\star4" then light = light + 1 end end
+    check("four stars twinkle in the corners", light == 4)
+
+    -- It can be moved, and stays where it was put.
+    banner.scripts.OnDragStart(banner)
+    banner:ClearAllPoints()
+    banner:SetPoint("CENTER", UIParent, "CENTER", 15, 200)
+    banner.scripts.OnDragStop(banner)
+    local pos = achDB().bannerPos
+    check("dragging the banner remembers where it was put", pos and pos[1] == "CENTER" and pos[2] == "CENTER" and pos[3] == 15 and pos[4] == 200)
+
+    -- You reach a milestone yourself.
+    character.level = 40
+    fire("PLAYER_LEVEL_UP", 40)
+    local sent = achSent()
+    check("when you reach level 40 yourself, your own banner comes, with Hurra! instead of Gratz!, where you put it",
+        banner:IsShown() and banner.text.text == "Du nådde " .. GOLD .. "level 40|r!" and banner.button.label.text == "Hurra!"
+        and select(1, banner:GetPoint(1)) == "CENTER" and select(4, banner:GetPoint(1)) == 15, banner.text.text)
+    check("...and the guild is told at once", #sent == 1 and sent[1] == "M\tPlayer-1-Tester\t" .. SERVER_NOW .. "\tL\t40\tTester\tPALADIN\t\t", all(sent))
+    chatBefore = #guildChat
+    click(banner.button)
+    check("Hurra! just closes it", not banner:IsShown() and #guildChat == chatBefore)
+    character.level = 41
+    fire("PLAYER_LEVEL_UP", 41)
+    flush()
+    check("a level that is not a milestone does nothing", not banner:IsShown() and #achSent() == 0)
+
+    local mining = MY_PROFESSIONS[1][3]
+    MY_PROFESSIONS[1][3] = 300
+    fire("SKILL_LINES_CHANGED")
+    flush()
+    sent = achSent()
+    check("when one of your professions reaches 300, your banner says so and the guild is told (with the game's number for it)",
+        banner:IsShown() and banner.text.text == "Du nådde " .. GOLD .. "300 i Mining|r!"
+        and #sent == 1 and sent[1] == "M\tPlayer-1-Tester\t" .. SERVER_NOW .. "\tP\t300\tTester\tPALADIN\t186\tMining", all(sent))
+    check("...and Mining counts towards the gatherers", state("prof_gather").value == 1)
+    click(banner.button)
+    fire("SKILL_LINES_CHANGED")
+    flush()
+    check("it is only said once", not banner:IsShown() and #achSent() == 0)
+
+    -- A guild achievement reached right now gets its own banner.
+    ach("M\tPlayer-1-Borin\t" .. SERVER_NOW .. "\tL\t60\tBorin\tWARRIOR\t\t", "Borin-Stormrage")
+    ach("M\tPlayer-1-Eira\t" .. SERVER_NOW .. "\tL\t60\tEira\tHUNTER\t\t", "Eira-Stormrage")
+    check("the fifth member at 60 reaches the guild achievement", state("lvl60_5").done and state("lvl60_5").done.time == SERVER_NOW and state("lvl60_5").value == 5)
+    click(banner.close)
+    flush()
+    click(banner.close)
+    flush()
+    check("after the two milestones, the guild achievement gets a banner of its own",
+        banner:IsShown() and banner.title.text == "GUILD-PRESTASJON!" and banner.text.text == GOLD .. "Fem på toppen|r\n5 medlemmer har nådd level 60."
+        and banner.button.label.text == "Hurra!", banner.text.text)
+    click(banner.button)
+
+    -- Legacy Challenges.
+    fire("ACHIEVEMENT_EARNED", 6001, false)
+    sent = achSent()
+    check("completing a legacy challenge shows your banner, with the challenge's name and points read from the game",
+        banner:IsShown() and banner.text.text == "Du fullførte " .. GOLD .. "legacy-utfordringen Master Druid (+1)|r!" and banner.button.label.text == "Hurra!", banner.text.text)
+    check("...and tells the guild which challenge it was", #sent == 1 and sent[1] == "M\tPlayer-1-Tester\t" .. SERVER_NOW .. "\tA\t1\tTester\tPALADIN\t6001\tMaster Druid", all(sent))
+    click(banner.button)
+    fire("ACHIEVEMENT_EARNED", 6003, true)
+    fire("ACHIEVEMENT_EARNED", 6002, false)
+    fire("ACHIEVEMENT_EARNED", 6005, false)
+    flush()
+    check("one another character on the account already had, a guild achievement, or one that gives no legacy points, is not announced",
+        not banner:IsShown() and #achSent() == 0 and achDB().feed["Player-1-Tester:A6003"] == nil and achDB().feed["Player-1-Tester:A6002"] == nil
+        and achDB().feed["Player-1-Tester:A6005"] == nil)
+
+    ach("M\tPlayer-1-Altine\t" .. SERVER_NOW .. "\tA\t1\tAltine\tMAGE\t6001\tMeesterdruide")
+    check("a guildmate's legacy challenge gets a banner, named as your game names it",
+        banner:IsShown() and banner.text.text == "|cff40c7ebAltine|r fullførte " .. GOLD .. "legacy-utfordringen Master Druid (+1)|r!", banner.text.text)
+    chatBefore = #guildChat
+    click(banner.button)
+    check("...and Gratz! names the challenge", #guildChat == chatBefore + 1 and guildChat[#guildChat].text == "Gratz med Master Druid, Altine!", guildChat[#guildChat].text)
+    ach("M\tPlayer-1-Borin\t" .. SERVER_NOW .. "\tA\t2\tBorin\tWARRIOR\t7777\tBrand New Challenge", "Borin-Stormrage")
+    check("a challenge your game does not know yet uses the name that was sent", banner:IsShown()
+        and banner.text.text == "|cffc79c6eBorin|r fullførte " .. GOLD .. "legacy-utfordringen Brand New Challenge (+2)|r!", banner.text.text)
+    click(banner.close)
+    ach("M\tPlayer-1-Borin\t" .. SERVER_NOW .. "\tA\t1\tBorin\tWARRIOR\tabc\tX", "Borin-Stormrage")
+    ach("M\tPlayer-1-Borin\t" .. SERVER_NOW .. "\tA\t-1\tBorin\tWARRIOR\t6001\tX", "Borin-Stormrage")
+    flush()
+    check("a legacy message without a proper challenge number or points is ignored", not banner:IsShown() and achDB().feed["Player-1-Borin:A6001"] == nil)
+    check("the challenges count towards the guild's legacy goal", state("legacy_25").value == 3 and state("legacy_25").goal == 25)
+
+    -- The roster: members without the addon.
+    local anna = { "Anna Berg-Stormrage", "Member", 3, 32, "Paladin", "Wetlands", "", "", true, 0, "PALADIN" }   -- no id, no addon
+    table.insert(ROSTER, anna)
+    fire("GUILD_ROSTER_UPDATE")
+    flush()
+    check("a new member is just remembered", not banner:IsShown() and achDB().levels["name:annaberg"] == 32)
+    local cedricLevel = ROSTER[4][4]
+    anna[4] = 41
+    fire("GUILD_ROSTER_UPDATE")
+    flush()
+    local annaEntry = achDB().feed["name:annaberg:L40"]
+    check("a member online who passes a milestone in the roster gets a banner too, also without the addon",
+        banner:IsShown() and banner.text.text:find("Anna Berg", 1, true) and banner.text.text:find("level 40", 1, true)
+        and annaEntry ~= nil and not annaEntry.exact, banner.text.text)
+    click(banner.close)
+    ROSTER[4][4] = 31                       -- Cedric is offline
+    fire("GUILD_ROSTER_UPDATE")
+    flush()
+    check("someone offline who passed one goes into the list, but gets no banner (it happened while you were away)",
+        not banner:IsShown() and achDB().feed["name:cedric:L30"] ~= nil and achDB().feed["name:cedric:L20"] == nil)
+    table.insert(ROSTER, { "Nyfrelst-Stormrage", "Initiate", 4, 60, "Mage", "Orgrimmar", "", "", true, 0, "MAGE", guid = "Player-1-Nyfrelst" })
+    fire("GUILD_ROSTER_UPDATE")
+    flush()
+    check("someone new in the guild at level 60 has passed no milestone with us", not banner:IsShown() and achDB().feed["Player-1-Nyfrelst:L60"] == nil
+        and achDB().levels["Player-1-Nyfrelst"] == 60)
+
+    -- The tab.
+    click(chipByID.achievements)
+    local panel = DragonworldAchievementsScroll.parent
+    local function feedRow(id)
+        for _, row in ipairs(DragonworldAchievementsScroll.scrollChild.children) do
+            if row:IsShown() and row.entry and row.entry.id == id then return row end
+        end
+    end
+    check("the tab shows the milestones, newest first, in the chosen language",
+        panel:IsVisible() and panel.title.text == nb.ACH_PANEL_TITLE and panel.feedChip.selected and panel.feedChip.label.text == "Milepæler"
+        and panel.guildChip.label.text == "Guild-prestasjoner (3/15)" and feedRow("Player-1-Dagny:L50") ~= nil and not panel.empty:IsShown(), panel.guildChip.label.text)
+    local altineRow, borinRow, ownRow, dagnyRow = feedRow("Player-1-Altine:L60"), feedRow("Player-1-Borin:L60"), feedRow("Player-1-Tester:L40"), feedRow("Player-1-Dagny:L50")
+    check("each line has an icon, who (in the class colour) and what, and when",
+        altineRow.icon.texture == "Interface\\Icons\\Achievement_Level_60" and altineRow.text.text == "|cff40c7ebAltine|r nådde " .. GOLD .. "level 60|r"
+        and altineRow.when.text == nb.GC_AGO_NOW and dagnyRow.when.text == nb.GC_AGO_DAYS:format(1)
+        and feedRow("Player-1-Borin:P164").icon.texture == "Interface\\Icons\\Trade_BlackSmithing", altineRow.text.text)
+    local legacyRow = feedRow("Player-1-Altine:A6001")
+    check("a legacy line has the challenge's icon from the game, and says completed",
+        legacyRow.icon.texture == 236152 and legacyRow.text.text == "|cff40c7ebAltine|r fullførte " .. GOLD .. "legacy-utfordringen Master Druid (+1)|r"
+        and feedRow("Player-1-Borin:A7777").icon.texture == "Interface\\Icons\\Spell_Holy_ChampionsBond", legacyRow.text.text)
+    legacyRow:Fire("OnEnter")
+    check("hovering it shows what the challenge is", table.concat(GameTooltip.lines, "\n"):find("Reach level 60 for the first time on a Druid.", 1, true) ~= nil)
+    legacyRow:Fire("OnLeave")
+    check("a Gratz button for recent ones you have not congratulated, not for your own or old ones",
+        borinRow.gratz:IsShown() and not altineRow.gratz:IsShown() and not ownRow.gratz:IsShown() and not dagnyRow.gratz:IsShown())
+    chatBefore = #guildChat
+    click(borinRow.gratz)
+    check("...and it congratulates in guild chat", #guildChat == chatBefore + 1 and guildChat[#guildChat].text == "Gratz med level 60, Borin!"
+        and not feedRow("Player-1-Borin:L60").gratz:IsShown())
+    feedRow("name:annaberg:L40"):Fire("OnEnter")
+    check("hovering a line seen in the roster says where the time comes from", GameTooltip.lines[#GameTooltip.lines] == nb.ACH_TIP_SEEN, GameTooltip.lines[#GameTooltip.lines])
+    feedRow("name:annaberg:L40"):Fire("OnLeave")
+
+    click(panel.guildChip)
+    local function guildRow(id)
+        for _, row in ipairs(DragonworldAchievementsScroll.scrollChild.children) do
+            if row:IsShown() and row.achievement and row.achievement.id == id then return row end
+        end
+    end
+    local top1, top5, top10 = guildRow("lvl60_1"), guildRow("lvl60_5"), guildRow("lvl60_10")
+    check("the guild view lists all 15, with what is reached and how far the guild has come",
+        panel.guildChip.selected and top1 and top5 and top10 and feedRow("Player-1-Altine:L60") == nil
+        and top1.status.text == "Nådd før addonen" and top5.status.text == "Nådd DATE(" .. SERVER_NOW .. ")"
+        and top10.status.text == "6 / 10" and top10.bar.width == 90 and top10.name.text == "Ti på toppen" and top10.desc.text == "10 medlemmer har nådd level 60."
+        and top10.icon.desaturated and not top5.icon.desaturated, top10.status.text)
+    guildRow("prof_craft"):Fire("OnEnter")
+    local tip = table.concat(GameTooltip.lines, "\n")
+    check("hovering a profession goal shows who has 300 in each, and that it counts members with the addon",
+        tip:find("Alchemy: Altine", 1, true) and tip:find("Blacksmithing: Borin", 1, true) and tip:find("Tailoring: -", 1, true)
+        and GameTooltip.lines[#GameTooltip.lines] == nb.ACH_TIP_ADDON, tip)
+    guildRow("prof_craft"):Fire("OnLeave")
+
+    -- Settings in the tab.
+    check("banner and sound are on by default", panel.bannerCheck.checked and panel.soundCheck.checked
+        and panel.bannerCheck.label.text == nb.ACH_SHOW_BANNER and panel.soundCheck.label.text == nb.ACH_SOUND and panel.sample.label.text == nb.ACH_SAMPLE)
+    soundsBefore = #SOUNDS_PLAYED
+    panel.soundCheck:SetChecked(false)
+    click(panel.soundCheck)
+    click(panel.sample)
+    check("the example shows the banner with your own name, without sound when sound is off",
+        banner:IsShown() and banner.text.text == "|cfff58cbaTester|r nådde " .. GOLD .. "level 60|r!" and #SOUNDS_PLAYED == soundsBefore, banner.text.text)
+    chatBefore = #guildChat
+    click(banner.button)
+    check("Gratz on the example sends nothing", not banner:IsShown() and #guildChat == chatBefore)
+    panel.soundCheck:SetChecked(true)
+    click(panel.soundCheck)
+    panel.bannerCheck:SetChecked(false)
+    click(panel.bannerCheck)
+    ach("M\tPlayer-1-Dagny\t" .. SERVER_NOW .. "\tP\t300\tDagny\tPRIEST\t197\tTailoring", "Dagny-Stormrage")
+    flush()
+    check("with the banner turned off, a milestone only goes into the list", not banner:IsShown() and achDB().feed["Player-1-Dagny:P197"] ~= nil and achDB().banner == false)
+    dw("achievements test")
+    check("the example still works when asked for (/dw achievements test)", banner:IsShown())
+    click(banner.close)
+    panel.bannerCheck:SetChecked(true)
+    click(panel.bannerCheck)
+
+    -- Someone logs in and asks for milestones: each answers with their own.
+    ach("R\t" .. (SERVER_NOW - 60), "Nykommer-Stormrage")
+    flush()
+    sent = achSent()
+    check("asked for milestones since a time, you send your own from after it, and only your own",
+        #sent == 3 and count(sent, "^M\tPlayer%-1%-Tester\t%d+\tL\t40\t") == 1 and count(sent, "^M\tPlayer%-1%-Tester\t%d+\tP\t300\t") == 1
+        and count(sent, "^M\tPlayer%-1%-Tester\t%d+\tA\t1\t6001\t") == 0 and count(sent, "^M\tPlayer%-1%-Tester\t%d+\tA\t1\tTester\tPALADIN\t6001\tMaster Druid$") == 1, all(sent))
+    ach("R\t" .. (SERVER_NOW + 60), "Nykommer-Stormrage")
+    flush()
+    check("nothing newer than asked for, nothing sent", #achSent() == 0)
+
+    ns.SetLanguage("en", true)
+    click(panel.sample)
+    check("the banner and the tab follow the language", banner.title.text == "GUILD MILESTONE!" and banner.text.text:find("reached", 1, true)
+        and panel.title.text == "Milestones and guild achievements" and guildRow("lvl60_10").status.text == "6 / 10")
+    click(banner.close)
+    ns.SetLanguage("nb", true)
+
+    clearChat()
+    ns.PrintDebug()
+    check("/dw debug tells about milestones, sound and banner", has("[prestasjoner]") and has("guild-prestasjoner: 3 av 15") and has("utfordringer: 3 i 2 kategorier | fullført av deg: 1, 1 poeng") and has("kit 12891"), chatText())
+    clearChat()
+
+    -- Put things back for the sections after this one.
+    C_Traits = savedTraits
+    GetCategoryList, GetCategoryNumAchievements, GetAchievementInfo = nil, nil, nil
+    MY_PROFESSIONS[1][3] = mining
+    fire("SKILL_LINES_CHANGED")
+    ROSTER[4][4] = cedricLevel
+    table.remove(ROSTER)
+    table.remove(ROSTER)
+    fire("GUILD_ROSTER_UPDATE")
+    flush()
+    sentNow("DragonworldPr")
+    sentNow("DragonworldPf")
+    achSent()
+    C_TradeSkillUI = savedTradeSkill
     click(rsChip)
 end)()
 

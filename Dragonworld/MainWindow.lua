@@ -266,7 +266,7 @@ end
 
 -- Rekkefølgen før spilleren har valgt selv (valgt av guildlederen).
 local DEFAULT_TAB_ORDER = {
-    "roster", "guildchat", "dungeons", "guildbank", "events", "professions", "materialer", "ryddesekk", "keybinds", "forslag",
+    "roster", "guildchat", "dungeons", "guildbank", "events", "achievements", "professions", "materialer", "ryddesekk", "keybinds", "forslag",
 }
 
 -- Modulene som har en fane, i valgt rekkefølge (eller standardrekkefølgen).
