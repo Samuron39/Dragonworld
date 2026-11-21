@@ -151,35 +151,76 @@ local function CandidateButtons()
     return list
 end
 
--- Hvilken plass (1-180) knappen viser akkurat nå.
-local function SlotOf(button)
-    local slot = button.action
-    if type(slot) ~= "number" and button._state_type == "action" then
-        slot = button._state_action -- Bartender4 og ElvUI
+-- Hvilken plass (1-180) knappen viser akkurat nå. Spillets knapper har den i
+-- GetPagedID / CalculateAction (nyere klienter) eller i .action; attributtet
+-- "action" er bare grunnplassen 1-12 på hovedlinjen, så det kommer sist.
+-- (Samme rekkefølge som GlowingBars bruker i Forever.)
+local function Valid(slot)
+    if DW.IsSecret(slot) then
+        return nil
     end
-    if type(slot) ~= "number" and button.GetAttribute then
-        local ok, value = pcall(button.GetAttribute, button, "action")
-        slot = ok and tonumber(value) or nil
-    end
-    if type(slot) == "number" and not DW.IsSecret(slot) and slot >= 1 and slot <= 180 then
+    slot = tonumber(slot)
+    if slot and slot >= 1 and slot <= 180 then
         return slot
     end
     return nil
 end
 
-local function HoldsMacro(slot, index)
+local function SlotOf(button)
+    for _, method in ipairs({ "GetPagedID", "CalculateAction" }) do
+        if type(button[method]) == "function" then
+            local ok, value = pcall(button[method], button)
+            if ok and Valid(value) then
+                return Valid(value)
+            end
+        end
+    end
+    if Valid(button.action) then
+        return Valid(button.action)
+    end
+    if button._state_type == "action" and Valid(button._state_action) then
+        return Valid(button._state_action) -- Bartender4 og ElvUI
+    end
+    if button.GetAttribute then
+        local ok, value = pcall(button.GetAttribute, button, "action")
+        if ok then
+            return Valid(value)
+        end
+    end
+    return nil
+end
+
+-- Navnet på makroen på en plass. Nyere klienter har det i C_ActionBar.
+local function ActionText(slot)
+    local get = (C_ActionBar and C_ActionBar.GetActionText) or GetActionText
+    if not get then
+        return nil
+    end
+    local ok, text = pcall(get, slot)
+    if ok and type(text) == "string" and not DW.IsSecret(text) then
+        return text
+    end
+    return nil
+end
+
+-- Hva som ligger på en plass: type og nummer (for feilsøking også).
+local function ActionInfo(slot)
     if not GetActionInfo then
-        return false
+        return nil
     end
     local ok, kind, id = pcall(GetActionInfo, slot)
-    if not ok or DW.IsSecret(kind) or kind ~= "macro" then
+    if not ok or DW.IsSecret(kind) then
+        return nil
+    end
+    return kind, (not DW.IsSecret(id)) and id or nil
+end
+
+local function HoldsMacro(slot, index)
+    local kind, id = ActionInfo(slot)
+    if kind ~= "macro" then
         return false
     end
-    if not DW.IsSecret(id) and id == index then
-        return true
-    end
-    local okText, text = pcall(GetActionText or function() end, slot)
-    return okText and not DW.IsSecret(text) and text == MACRO_NAME
+    return id == index or ActionText(slot) == MACRO_NAME
 end
 
 local overlays = {} -- [knapp] = { logo, glow, target }
@@ -247,7 +288,13 @@ local function Overlay(button)
     if type(width) ~= "number" or DW.IsSecret(width) or width <= 0 then
         width = 36
     end
-    overlay.glow = DW.PrepareGlow(button:CreateTexture(nil, "OVERLAY", nil, 7), nil, GLOW_TEXTURE)
+    -- I en egen ramme over knappen (som spillets egen proc-glød), så den ligger
+    -- over alt knappen selv tegner, også nedkjølingen og rammen rundt ikonet.
+    overlay.frame = CreateFrame("Frame", nil, button)
+    overlay.frame:SetAllPoints(button)
+    local level = button.GetFrameLevel and button:GetFrameLevel()
+    overlay.frame:SetFrameLevel((type(level) == "number" and not DW.IsSecret(level) and level or 0) + 10)
+    overlay.glow = DW.PrepareGlow(overlay.frame:CreateTexture(nil, "OVERLAY", nil, 7), nil, GLOW_TEXTURE)
     overlay.glow:SetTexCoord(GLOW_COORDS[1], GLOW_COORDS[2], GLOW_COORDS[3], GLOW_COORDS[4])
     overlay.glow:SetSize(width * GLOW_SCALE, width * GLOW_SCALE)
     overlay.glow:SetPoint("CENTER", button, "CENTER", 0, 0)
@@ -329,5 +376,24 @@ DW.AddDebug("action bar", function(add)
         end
     end
     add("makro: " .. DW.DebugText(MacroIndex()) .. " | ikon: " .. DW.DebugText(MacroIcon())
-        .. " | knapper med makroen: " .. shown .. " | kandidater: " .. #CandidateButtons())
+        .. " | knapper med makroen: " .. shown .. " | kandidater: " .. #CandidateButtons()
+        .. " | C_ActionBar.GetActionText: " .. DW.DebugText(C_ActionBar ~= nil and C_ActionBar.GetActionText ~= nil)
+        .. " | GetActionText: " .. DW.DebugText(GetActionText ~= nil))
+    -- Knappene som har en makro på seg: hvor, hvilken, og om de har gløden.
+    local listed = 0
+    for _, button in ipairs(CandidateButtons()) do
+        local slot = SlotOf(button)
+        local kind, id = ActionInfo(slot or 0)
+        if slot and kind == "macro" and listed < 6 then
+            listed = listed + 1
+            local overlay = overlays[button]
+            add(("  %s: plass %s, makro nr %s, navn %s%s"):format(button.GetName and button:GetName() or "?", DW.DebugText(slot),
+                DW.DebugText(id), DW.DebugText(ActionText(slot)), (overlay and not overlay.target.hidden) and ", har gløden" or ""))
+        end
+    end
+    if listed == 0 then
+        local first = _G.ActionButton1
+        add("  ingen knapp med en makro funnet. ActionButton1: plass " .. DW.DebugText(first and SlotOf(first))
+            .. " | .action " .. DW.DebugText(first and first.action) .. " | GetPagedID " .. DW.DebugText(first and first.GetPagedID ~= nil))
+    end
 end)

@@ -650,6 +650,7 @@ function Frame:RegisterEvent(event) self.events[event] = true end
 function Frame:UnregisterEvent(event) self.events[event] = nil end
 function Frame:SetFrameStrata(strata) self.strata = strata end
 function Frame:SetFrameLevel(level) assert(type(level) == "number"); self.level = level end
+function Frame:GetFrameLevel() return self.level or 1 end
 function Frame:GetEffectiveScale() return self.scale or 1 end
 function Frame:SetBackdrop(t) assert(self.template == "BackdropTemplate", "SetBackdrop needs BackdropTemplate"); self.backdrop = t end
 function Frame:SetBackdropColor(r, g, b, a) assert(self.backdrop, "SetBackdropColor before SetBackdrop"); assert(r and g and b); self.backdropColor = { r, g, b, a } end
@@ -5556,7 +5557,12 @@ end)()
     end
     local function overlayOf(b)
         local logo, glow
-        for _, t in ipairs(b.textures or {}) do
+        local all = {}
+        for _, t in ipairs(b.textures or {}) do all[#all + 1] = t end
+        for _, child in ipairs(b.children or {}) do
+            for _, t in ipairs(child.textures or {}) do all[#all + 1] = t end
+        end
+        for _, t in ipairs(all) do
             if t.texture == ns.ACTION_ICON then logo = t elseif t.texture == "Interface\\SpellActivationOverlay\\IconAlert" then glow = t end
         end
         return logo, glow
@@ -5570,6 +5576,8 @@ end)()
     check("...with the game's proc glow around it (grey, so the colour is clean), a bit bigger than the button",
         glow ~= nil and glow.blend == "ADD" and glow.desaturated and glow.layer == "OVERLAY" and glow.width == 45 * 1.4 and glow.height == 45 * 1.4
         and select(1, glow:GetPoint(1)) == "CENTER" and select(2, glow:GetPoint(1)) == buttons[3])
+    check("...drawn in a frame of its own above the button, like the game's own proc glow",
+        glow.parent ~= buttons[3] and glow.parent.parent == buttons[3] and glow.parent.allPoints == buttons[3] and glow.parent.level == buttons[3]:GetFrameLevel() + 10)
     pulse.scripts.OnUpdate(pulse, 0.6)
     check("...that blinks along with the minimap icon, in the same colour", glow:IsShown() and colour(glow) == colour(mm.glow) and glow.alpha == mm.glow.alpha and glow.alpha > 0)
     check("buttons without the macro are left alone", overlayOf(buttons[4]) == nil and #buttons[4].textures == 1)
@@ -5593,6 +5601,34 @@ end)()
     flush()
     check("...it comes right after", overlayOf(buttons[9]) ~= nil)
     ACTION_SLOTS[9] = nil
+
+
+    -- Newer clients: the slot from GetPagedID (the main bar paged, say), the name from C_ActionBar.
+    local paged = buttons[11]
+    paged.GetPagedID = function() return 97 end -- e.g. bear form pages the main bar to 97-108
+    ACTION_SLOTS[97] = { "macro", 1 }
+    fire("ACTIONBAR_SLOT_CHANGED", 97)
+    flush()
+    check("the slot is taken from GetPagedID when the button has it (not .action)", overlayOf(paged) ~= nil)
+    paged.GetPagedID = nil
+    ACTION_SLOTS[97] = nil
+    local realText = GetActionText
+    GetActionText = nil
+    C_ActionBar = { GetActionText = function(slot) if slot == 12 then return "Dragonworld" end end }
+    ACTION_SLOTS[12] = { "macro", 999 } -- a number that does not match: found by the name instead
+    fire("ACTIONBAR_SLOT_CHANGED", 12)
+    flush()
+    check("the macro is also recognised by its name, read with C_ActionBar.GetActionText", overlayOf(buttons[12]) ~= nil)
+    clearChat()
+    ns.PrintDebug()
+    check("/dw debug lists the buttons with a macro, where, and whether they have the glow",
+        has("ActionButton12: plass 12, makro nr 999, navn Dragonworld, har gløden") and has("C_ActionBar.GetActionText: true"), chatText())
+    ACTION_SLOTS[12] = nil
+    C_ActionBar = nil
+    GetActionText = realText
+    fire("ACTIONBAR_SLOT_CHANGED", 12)
+    flush()
+    clearChat()
 
     local bt = CreateFrame("CheckButton", "BT4Button50", UIParent)
     bt:SetSize(36, 36)
