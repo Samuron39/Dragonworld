@@ -25,6 +25,9 @@
 --       color = { r, g, b },      fargen på blinket og i listen
 --       Check = function(since)   true hvis noe er nytt siden tiden since
 --       Items = function(since)   (valgfri) det nye som tekstlinjer til listen
+--       defaultOff = true         (valgfri) av til spilleren slår det på
+--       IsShown = function()      (valgfri) vises det nye nå? Ellers: er fanen åpen
+--       Open = function()         (valgfri) åpner der det nye er. Ellers: fanen
 --   })
 -- og kaller DW.RefreshAlerts() når dataene endres.
 
@@ -75,6 +78,9 @@ local function Settings()
     if type(settings.off) ~= "table" then
         settings.off = {}
     end
+    if type(settings.on) ~= "table" then
+        settings.on = {} -- slått på av spilleren, for det som er av som standard
+    end
     return settings
 end
 
@@ -85,7 +91,14 @@ end
 
 function DW.IsAlertOn(kind)
     local settings = Settings()
-    return not (settings and settings.off[kind])
+    if settings and settings.off[kind] then
+        return false
+    end
+    if settings and settings.on[kind] then
+        return true
+    end
+    local alert = ALERT_BY_KIND[kind]
+    return not (alert and alert.defaultOff)
 end
 
 function DW.AlertSeenTime(kind)
@@ -156,11 +169,18 @@ function DW.RefreshAlerts()
     local settings = Settings()
     if settings and DW.IsMember() then
         for _, alert in ipairs(DW.ALERTS) do
-            -- Fanen er åpen nå: da er det nye sett.
-            if alert.module and DW.IsModuleShown and DW.IsModuleShown(alert.module) then
+            -- Det nye vises nå (som regel: fanen er åpen): da er det sett.
+            local shown
+            if alert.IsShown then
+                local ok, result = pcall(alert.IsShown)
+                shown = ok and result
+            else
+                shown = alert.module and DW.IsModuleShown and DW.IsModuleShown(alert.module)
+            end
+            if shown then
                 settings.seen[alert.kind] = Now()
             end
-            if not settings.off[alert.kind] then
+            if DW.IsAlertOn(alert.kind) then
                 local ok, isNew = pcall(alert.Check, tonumber(settings.seen[alert.kind]) or 0)
                 if ok and isNew then
                     list[#list + 1] = alert
@@ -207,6 +227,7 @@ function DW.SetAlertOn(kind, on)
     local settings = Settings()
     if settings then
         settings.off[kind] = (not on) or nil
+        settings.on[kind] = on and true or nil
     end
     DW.RefreshAlerts()
 end
@@ -300,7 +321,9 @@ function DW.ClickOpen()
         first = hovered.alerts[1]
     end
     hovered = nil
-    if first and first.module and DW.modules[first.module] then
+    if first and first.Open then
+        first.Open()
+    elseif first and first.module and DW.modules[first.module] then
         DW.OpenModule(first.module)
     else
         DW.ToggleMainWindow()

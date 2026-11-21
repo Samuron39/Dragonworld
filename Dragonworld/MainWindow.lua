@@ -192,12 +192,13 @@ end
 
 -- Rekkefølgen før spilleren har valgt selv (valgt av guildlederen).
 local DEFAULT_TAB_ORDER = {
-    "roster", "dungeons", "guildbank", "events", "professions", "materialer", "ryddesekk", "keybinds", "forslag",
+    "roster", "guildchat", "dungeons", "guildbank", "events", "professions", "materialer", "ryddesekk", "keybinds", "forslag",
 }
 
 -- Modulene som har en fane, i valgt rekkefølge (eller standardrekkefølgen).
--- Moduler som er nye siden sist kommer nederst, i den rekkefølgen de er
--- registrert.
+-- En modul som mangler i spillerens lagrede rekkefølge (f.eks. fordi den er
+-- ny), får plassen sin fra standardrekkefølgen: rett etter den som står foran
+-- den der. Moduler som ikke er i standardrekkefølgen kommer nederst.
 local function OrderedModuleIDs()
     local list, used = {}, {}
     local saved = type(DragonworldDB) == "table" and DragonworldDB.tabOrder
@@ -208,6 +209,26 @@ local function OrderedModuleIDs()
         local module = type(id) == "string" and DW.modules[id]
         if module and module.CreatePanel and not used[id] then
             list[#list + 1] = id
+            used[id] = true
+        end
+    end
+    for index, id in ipairs(DEFAULT_TAB_ORDER) do
+        local module = DW.modules[id]
+        if module and module.CreatePanel and not used[id] then
+            -- Etter den nærmeste foran den i standardrekkefølgen som er med.
+            local at = 1
+            for back = index - 1, 1, -1 do
+                local before = DEFAULT_TAB_ORDER[back]
+                if used[before] then
+                    for position, listed in ipairs(list) do
+                        if listed == before then
+                            at = position + 1
+                        end
+                    end
+                    break
+                end
+            end
+            table.insert(list, at, id)
             used[id] = true
         end
     end
@@ -334,6 +355,8 @@ end
 -- Valgene for blinking (Alerts.lua): én boks for alt, og med withKinds én boks
 -- per ting det kan blinke for, med fargen som en liten firkant. Brukes både
 -- under Innstillinger og i første oppsett.
+local KIND_ROW = 22 -- avstanden mellom valgene for hva det blinker for
+
 local function CreateBlinkChoices(parent, x, y, withKinds)
     local group = { kinds = {} }
 
@@ -344,7 +367,7 @@ local function CreateBlinkChoices(parent, x, y, withKinds)
 
     if withKinds then
         for index, alert in ipairs(DW.ALERTS) do
-            local check = CreateCheck(parent, x + 20, y - index * 24, function(self)
+            local check = CreateCheck(parent, x + 20, y - index * KIND_ROW, function(self)
                 DW.SetAlertOn(self.alert.kind, self:GetChecked() and true or false)
             end)
             check.alert = alert
@@ -406,6 +429,14 @@ local function CreateSettingsPanel(parent)
     panel.languageLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     panel.languageLabel:SetPoint("TOPLEFT", 16, -16)
 
+    -- Introen og valgene fra første oppsett, en gang til.
+    panel.introButton = DW.CreateChip(panel, 140, 24)
+    panel.introButton:SetPoint("TOPRIGHT", -14, -10)
+    panel.introButton.label:SetJustifyH("CENTER")
+    panel.introButton:SetScript("OnClick", function()
+        DW.ShowIntro()
+    end)
+
     panel.languageChips = {}
     for index, language in ipairs(DW.LANGUAGES) do
         local chip = DW.CreateChip(panel, 150, CHIP_HEIGHT)
@@ -428,32 +459,32 @@ local function CreateSettingsPanel(parent)
     panel.minimapLabel = panel.minimapCheck.label
 
     panel.blink = CreateBlinkChoices(panel, 14, -122, true)
-    local y = -122 - (#panel.blink.kinds + 1) * 24 - 10
+    local y = -122 - #panel.blink.kinds * KIND_ROW - 32
 
     -- Knappen til action bar.
     panel.actionLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     panel.actionLabel:SetPoint("TOPLEFT", 16, y)
-    panel.actionSource = DW.CreateActionButtonSource(panel, 36)
-    panel.actionSource:SetPoint("TOPLEFT", 16, y - 20)
+    panel.actionSource = DW.CreateActionButtonSource(panel, 32)
+    panel.actionSource:SetPoint("TOPLEFT", 16, y - 18)
     panel.actionHint = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     panel.actionHint:SetPoint("TOPLEFT", panel.actionSource, "TOPRIGHT", 10, -2)
     panel.actionHint:SetWidth(250)
     panel.actionHint:SetJustifyH("LEFT")
-    y = y - 20 - 36 - 16
+    y = y - 18 - 32 - 14
 
     -- Versjonen, og om det finnes en nyere (Update.lua).
     panel.versionLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     panel.versionLabel:SetPoint("TOPLEFT", 16, y)
     panel.versionText = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    panel.versionText:SetPoint("TOPLEFT", 16, y - 20)
+    panel.versionText:SetPoint("TOPLEFT", 16, y - 18)
     panel.versionStatus = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    panel.versionStatus:SetPoint("TOPLEFT", 16, y - 38)
+    panel.versionStatus:SetPoint("TOPLEFT", 16, y - 34)
     panel.link = CreateLinkBox(panel, 270)
-    panel.link:SetPoint("TOPLEFT", 22, y - 54)
+    panel.link:SetPoint("TOPLEFT", 22, y - 50)
     panel.linkHint = panel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    panel.linkHint:SetPoint("TOPLEFT", 16, y - 80)
+    panel.linkHint:SetPoint("TOPLEFT", 16, y - 76)
     panel.autoText = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    panel.autoText:SetPoint("TOPLEFT", 16, y - 96)
+    panel.autoText:SetPoint("TOPLEFT", 16, y - 92)
     panel.autoText:SetWidth(290)
     panel.autoText:SetJustifyH("LEFT")
 
@@ -467,6 +498,7 @@ local function CreateSettingsPanel(parent)
     -- Skriver teksten på valgt språk og viser gjeldende valg.
     function panel:Refresh()
         self.languageLabel:SetText(L.LANGUAGE)
+        self.introButton.label:SetText(L.SHOW_INTRO)
         self.minimapLabel:SetText(L.SHOW_MINIMAP_BUTTON)
         for _, chip in ipairs(self.languageChips) do
             chip:SetSelected(chip.code == DW.GetLanguage())
@@ -608,16 +640,115 @@ local function CreateLanguagePrompt(parent)
     return prompt
 end
 
--- Første oppsett, steg 2 ------------------------------------------------------------
+-- Første oppsett, steg 2 og 3 -----------------------------------------------------
 
--- Rett etter språkvalget: om knappene skal blinke når noe er nytt, og knappen
--- til action bar. Vises én gang per konto; de som hadde valgt språk før dette
--- kom, får det én gang neste gang vinduet åpnes. Alt kan endres under
--- Innstillinger senere.
+-- Etter språkvalget: en intro (hva addonen kan, og hva du bør åpne i spillet
+-- så visningene fylles), og så valgene for hva knappene skal blinke for og
+-- knappen til action bar. Vises én gang per konto. SETUP_VERSION økes når
+-- oppsettet får noe nytt alle bør se; da får alle det én gang til. "Vis
+-- introen" under Innstillinger viser det igjen. Alt kan endres senere.
+local SETUP_VERSION = 2
+local setupStep          -- "intro" eller "options" mens oppsettet vises
+local forceSetup = false -- "Vis introen" er trykket
+
 local function IsSetupDone()
-    return type(DragonworldDB) == "table" and DragonworldDB.setupDone == true
+    if forceSetup then
+        return false
+    end
+    return type(DragonworldDB) == "table" and (tonumber(DragonworldDB.setupVersion) or 0) >= SETUP_VERSION
 end
 
+local function FinishSetup()
+    if type(DragonworldDB) == "table" then
+        DragonworldDB.setupDone = true -- eldre versjoner av addonen ser etter denne
+        DragonworldDB.setupVersion = SETUP_VERSION
+    end
+    forceSetup = false
+    setupStep = nil
+    local open = pending
+    pending = nil
+    ShowWindow(open)
+end
+
+local INTRO_TIPS = { "INTRO_TIP_BANK", "INTRO_TIP_PROFESSIONS", "INTRO_TIP_GUILDBANK", "INTRO_TIP_STATUS", "INTRO_TIP_BUTTON" }
+local INTRO_ROW = 26
+
+-- Introen: fanene til venstre (ikon, navn og hva de gjør, i fanerekkefølgen),
+-- "Kom i gang" til høyre.
+local function CreateIntroPrompt(parent)
+    local prompt = CreateFrame("Frame", nil, parent)
+    prompt:SetPoint("TOPLEFT", PAD, -(HEADER_HEIGHT + 8))
+    prompt:SetSize(BODY_WIDTH, BODY_HEIGHT)
+
+    prompt.title = prompt:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    prompt.title:SetPoint("TOP", 0, -12)
+
+    prompt.canHeading = prompt:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    prompt.canHeading:SetPoint("TOPLEFT", 20, -42)
+    prompt.rows = {}
+
+    prompt.startHeading = prompt:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    prompt.startHeading:SetPoint("TOPLEFT", 450, -42)
+    prompt.tips = {}
+    for index in ipairs(INTRO_TIPS) do
+        local tip = prompt:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        if index == 1 then
+            tip:SetPoint("TOPLEFT", 450, -66)
+        else
+            tip:SetPoint("TOPLEFT", prompt.tips[index - 1], "BOTTOMLEFT", 0, -10)
+        end
+        tip:SetWidth(340)
+        tip:SetJustifyH("LEFT")
+        prompt.tips[index] = tip
+    end
+
+    prompt.next = DW.CreateButton(prompt, 200, 34, "gold")
+    prompt.next:SetPoint("BOTTOM", 0, 16)
+    prompt.next:SetScript("OnClick", function()
+        setupStep = "options"
+        ShowWindow()
+    end)
+
+    function prompt:Refresh()
+        self.title:SetText(L.INTRO_TITLE)
+        self.canHeading:SetText(L.INTRO_CAN)
+        self.startHeading:SetText(L.INTRO_START)
+        for index, key in ipairs(INTRO_TIPS) do
+            self.tips[index]:SetText("- " .. L[key])
+        end
+        self.next.label:SetText(L.INTRO_NEXT)
+
+        local ids = OrderedModuleIDs()
+        for index, id in ipairs(ids) do
+            local row = self.rows[index]
+            if not row then
+                row = {}
+                row.icon = self:CreateTexture(nil, "ARTWORK")
+                row.icon:SetSize(20, 20)
+                row.icon:SetPoint("TOPLEFT", 20, -64 - (index - 1) * INTRO_ROW)
+                row.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+                row.text = self:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+                row.text:SetPoint("TOPLEFT", row.icon, "TOPRIGHT", 8, 0)
+                row.text:SetWidth(380)
+                row.text:SetJustifyH("LEFT")
+                self.rows[index] = row
+            end
+            local module = DW.modules[id]
+            row.icon:SetTexture(module.icon or DW.ICON)
+            row.text:SetText(("|cffffd100%s|r  %s"):format(DW.ModuleTitle(module), DW.ModuleNotes(module)))
+            row.icon:Show()
+            row.text:Show()
+        end
+        for index = #ids + 1, #self.rows do
+            self.rows[index].icon:Hide()
+            self.rows[index].text:Hide()
+        end
+    end
+
+    return prompt
+end
+
+-- Valgene: blinking (med hva det blinker for) og knappen til action bar.
 local function CreateSetupPrompt(parent)
     local prompt = CreateFrame("Frame", nil, parent)
     prompt:SetPoint("TOPLEFT", PAD, -(HEADER_HEIGHT + 8))
@@ -626,36 +757,30 @@ local function CreateSetupPrompt(parent)
     local LEFT = 190 -- valgene står i en blokk litt inn fra venstre
 
     prompt.title = prompt:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    prompt.title:SetPoint("TOP", 0, -30)
+    prompt.title:SetPoint("TOP", 0, -24)
 
     prompt.text = prompt:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    prompt.text:SetPoint("TOP", 0, -62)
+    prompt.text:SetPoint("TOP", 0, -54)
     prompt.text:SetWidth(560)
 
-    prompt.blink = CreateBlinkChoices(prompt, LEFT, -110, false)
+    prompt.blink = CreateBlinkChoices(prompt, LEFT, -96, true)
+    local y = -96 - #prompt.blink.kinds * KIND_ROW - 30
     prompt.blinkHint = prompt:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    prompt.blinkHint:SetPoint("TOPLEFT", LEFT + 28, -136)
-    prompt.blinkHint:SetWidth(420)
+    prompt.blinkHint:SetPoint("TOPLEFT", LEFT + 4, y)
+    prompt.blinkHint:SetWidth(440)
     prompt.blinkHint:SetJustifyH("LEFT")
     prompt.blinkHint:SetTextColor(0.75, 0.75, 0.75)
 
     prompt.actionSource = DW.CreateActionButtonSource(prompt, 40)
-    prompt.actionSource:SetPoint("TOPLEFT", LEFT, -196)
+    prompt.actionSource:SetPoint("TOPLEFT", LEFT, y - 48)
     prompt.actionText = prompt:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
     prompt.actionText:SetPoint("TOPLEFT", prompt.actionSource, "TOPRIGHT", 12, -2)
     prompt.actionText:SetWidth(400)
     prompt.actionText:SetJustifyH("LEFT")
 
     prompt.done = DW.CreateButton(prompt, 200, 34, "gold")
-    prompt.done:SetPoint("BOTTOM", 0, 40)
-    prompt.done:SetScript("OnClick", function()
-        if type(DragonworldDB) == "table" then
-            DragonworldDB.setupDone = true
-        end
-        local open = pending
-        pending = nil
-        ShowWindow(open)
-    end)
+    prompt.done:SetPoint("BOTTOM", 0, 24)
+    prompt.done:SetScript("OnClick", FinishSetup)
 
     function prompt:Refresh()
         self.title:SetText(L.SETUP_TITLE)
@@ -890,18 +1015,24 @@ ShowWindow = function(id)
     end
 
     if not IsSetupDone() then
-        -- Steg 2 av første oppsett: blinking og knappen til action bar.
+        -- Steg 2 av første oppsett er introen, steg 3 valgene (blinking og
+        -- knappen til action bar).
         pending = id or pending
-        if not window.setup then
+        if not window.intro then
+            window.intro = CreateIntroPrompt(window)
             window.setup = CreateSetupPrompt(window)
         end
         window.body:Hide()
-        window.setup:Refresh()
-        window.setup:Show()
+        local page = (setupStep == "options") and window.setup or window.intro
+        local other = (page == window.setup) and window.intro or window.setup
+        other:Hide()
+        page:Refresh()
+        page:Show()
         return
     end
 
-    if window.setup then
+    if window.intro then
+        window.intro:Hide()
         window.setup:Hide()
     end
     window.body:Show()
@@ -942,6 +1073,13 @@ end
 
 function DW.OpenSettings()
     ShowWindow(SETTINGS)
+end
+
+-- Viser introen og valgene fra første oppsett igjen (knappen under Innstillinger).
+function DW.ShowIntro()
+    forceSetup = true
+    setupStep = "intro"
+    ShowWindow()
 end
 
 function DW.IsMainWindowShown()

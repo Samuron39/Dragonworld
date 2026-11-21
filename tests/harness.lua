@@ -350,10 +350,11 @@ C_ChatInfo = {
         return sendResult
     end,
     InChatMessagingLockdown = function() return chatLock end,
-    SendChatMessage = function(text, chatType)
+    SendChatMessage = function(text, chatType, language, target)
         assert(type(text) == "string" and #text <= 255 and not text:find("|", 1, true), "bad chat message")
         assert(not chatLock, "sent a chat message while the game had chat locked")
-        guildChat[#guildChat + 1] = { text = text, chatType = chatType }
+        assert(chatType ~= "WHISPER" or (type(target) == "string" and target ~= ""), "a whisper needs someone to go to")
+        guildChat[#guildChat + 1] = { text = text, chatType = chatType, target = target }
     end,
 }
 math.random = function() return 0.5 end                  -- no surprises in the tests
@@ -464,6 +465,15 @@ function PickupMacro(index) assert(MACROS[index], "PickupMacro: no such macro");
 function GetFileIDFromPath(path) if path == "Interface\\Icons\\INV_Misc_Head_Dragon_01" then return 134153 end end
 function GetActionInfo(slot) local a = ACTION_SLOTS[slot]; if a then return a[1], a[2] end end
 function ReloadUI() RELOADS = (RELOADS or 0) + 1 end
+
+-- The guild's message of the day, and its event log ({ type, player1, player2, rank, years, months, days, hours }).
+GUILD_MOTD_TEXT = "Raid fredag kl 20!"
+function GetGuildRosterMOTD() return GUILD_MOTD_TEXT end
+GUILD_LOG, GUILD_LOG_QUERIES = {}, 0
+function QueryGuildEventLog() GUILD_LOG_QUERIES = GUILD_LOG_QUERIES + 1 end
+function GetNumGuildEvents() return #GUILD_LOG end
+function GetGuildEventInfo(index) local e = GUILD_LOG[index]; if e then return table.unpack(e, 1, 8) end end
+ChatTypeInfo = { GUILD = { r = 0.25, g = 1.0, b = 0.25 } }
 function GetActionText(slot)
     local a = ACTION_SLOTS[slot]
     if a and a[1] == "macro" and MACROS[a[2]] then return MACROS[a[2]].name end
@@ -534,7 +544,7 @@ SetItemRef = realSetItemRef
 -- Widgets ------------------------------------------------------------------------
 local frames = {}
 local TEMPLATES = { BackdropTemplate = true, UIPanelCloseButton = true, UICheckButtonTemplate = true, ScrollFrameTemplate = true, InputBoxTemplate = true }
-local FRAME_TYPES = { Frame = true, Button = true, CheckButton = true, ScrollFrame = true, GameTooltip = true, EditBox = true }
+local FRAME_TYPES = { Frame = true, Button = true, CheckButton = true, ScrollFrame = true, GameTooltip = true, EditBox = true, ScrollingMessageFrame = true }
 local FONTS = { GameFontNormal = true, GameFontNormalSmall = true, GameFontNormalLarge = true, GameFontNormalHuge = true,
                 GameFontHighlight = true, GameFontHighlightSmall = true, GameFontDisable = true, GameFontDisableSmall = true }
 
@@ -697,7 +707,26 @@ function Frame:SetPushedTexture(t) assert(self.kind == "Button" or self.kind == 
 function Frame:SetDisabledTexture(t) assert(self.kind == "Button" or self.kind == "CheckButton", "SetDisabledTexture on non-button"); assert(t ~= nil); self.disabledTexture = t end
 -- A text field over several lines needs a font of its own when it has no template.
 function Frame:SetMultiLine(multi) assert(self.kind == "EditBox", "SetMultiLine on non-EditBox"); self.multiLine = multi and true or false end
-function Frame:SetFontObject(font) assert(self.kind == "EditBox" or self.kind == "Button", "SetFontObject"); assert(font ~= nil); self.fontObject = font end
+function Frame:SetFontObject(font) assert(self.kind == "EditBox" or self.kind == "Button" or self.kind == "ScrollingMessageFrame", "SetFontObject"); assert(font ~= nil); self.fontObject = font end
+-- A ScrollingMessageFrame (lines like the chat window). Lines are kept in .messages.
+local function isSMF(self, method) assert(self.kind == "ScrollingMessageFrame", method .. " on a frame that is not a ScrollingMessageFrame") end
+function Frame:SetFading(on) isSMF(self, "SetFading"); self.fading = on end
+function Frame:SetMaxLines(n) isSMF(self, "SetMaxLines"); assert(type(n) == "number" and n > 0); self.maxLines = n end
+function Frame:SetHyperlinksEnabled(on) isSMF(self, "SetHyperlinksEnabled"); self.hyperlinks = on end
+function Frame:SetJustifyH(j) isSMF(self, "SetJustifyH"); assert(j == "LEFT" or j == "RIGHT" or j == "CENTER"); self.justifyH = j end
+function Frame:AddMessage(text, r, g, b)
+    isSMF(self, "AddMessage"); assert(type(text) == "string", "AddMessage needs a string")
+    self.messages = self.messages or {}
+    self.messages[#self.messages + 1] = { text = text, r = r, g = g, b = b }
+    if self.maxLines and #self.messages > self.maxLines then table.remove(self.messages, 1) end
+    self.atBottom = false
+end
+function Frame:Clear() isSMF(self, "Clear"); self.messages = {} end
+function Frame:GetNumMessages() isSMF(self, "GetNumMessages"); return #(self.messages or {}) end
+function Frame:ScrollUp() isSMF(self, "ScrollUp"); self.atBottom = false end
+function Frame:ScrollDown() isSMF(self, "ScrollDown") end
+function Frame:ScrollToBottom() isSMF(self, "ScrollToBottom"); self.atBottom = true end
+function Frame:EnableMouseWheel(on) self.mouseWheel = on and true or false end
 function Frame:SetTextInsets(l, r, t, b) assert(self.kind == "EditBox", "SetTextInsets on non-EditBox"); assert(l and r and t and b) end
 function Frame:SetFocus() assert(self.kind == "EditBox", "SetFocus on non-EditBox"); self.focused = true end
 function Frame:HighlightText() assert(self.kind == "EditBox", "HighlightText on non-EditBox"); self.highlighted = true end
@@ -1011,18 +1040,42 @@ check("/kast before choosing still asks first", win:IsShown() and prompt:IsVisib
 prompt.chips[3].scripts.OnClick(prompt.chips[3])
 check("choosing saves the language", DragonworldDB.language == "nl" and ns.GetLanguage() == "nl" and ns.HasChosenLanguage())
 
--- Step 2 of the first-time setup: blinking and the action bar button.
+-- Step 2 of the first-time setup: what the addon can do, and what to open in the game.
+do
+    local intro = win.intro
+    check("after choosing, the question goes away and an intro comes, in that language",
+        not prompt:IsVisible() and intro ~= nil and intro:IsVisible() and not win.setup:IsVisible() and not win.body:IsVisible()
+        and intro.title.text == "Welkom bij Dragonworld!" and intro.canHeading.text == "Wat je kunt doen" and intro.startHeading.text == "Aan de slag"
+        and intro.next.label.text == "Volgende" and #intro.tips == 5 and intro.tips[1].text == "- " .. ns.strings.nl.INTRO_TIP_BANK
+        and intro.tips[2].text == "- " .. ns.strings.nl.INTRO_TIP_PROFESSIONS and intro.tips[3].text == "- " .. ns.strings.nl.INTRO_TIP_GUILDBANK)
+    check("the intro lists every tab in tab order, with its icon, name and what it does",
+        #intro.rows == 12 and intro.rows[1].icon.texture == ns.modules.roster.icon
+        and intro.rows[1].text.text == "|cffffd100" .. ns.ModuleTitle(ns.modules.roster) .. "|r  " .. ns.ModuleNotes(ns.modules.roster)
+        and intro.rows[2].text.text:find(ns.strings.nl.GC_TITLE, 1, true) ~= nil, intro.rows[1] and intro.rows[1].text.text)
+    intro.next.scripts.OnClick(intro.next)
+end
+-- Step 3: what the buttons blink for, and the action bar button.
 local setup = win.setup
-check("after choosing, the question goes away and step 2 of the setup comes, in that language",
-    not prompt:IsVisible() and setup ~= nil and setup:IsVisible() and not win.body:IsVisible()
+check("Next leads to the choices, in that language",
+    not win.intro:IsVisible() and setup:IsVisible() and not prompt:IsVisible() and not win.body:IsVisible()
     and setup.title.text == "Bijna klaar!" and setup.done.label.text == "Doorgaan" and setup.blink.main.label.text == ns.strings.nl.BLINK_ON
     and setup.blinkHint.text == ns.strings.nl.BLINK_HINT and setup.actionText.text == ns.strings.nl.AB_SETUP)
-check("blinking is on by default, and the box shows it", setup.blink.main.checked == true and ns.IsBlinkOn())
+check("blinking is on by default, with a choice for each thing; guild chat is off by default (a busy guild would blink all the time)",
+    setup.blink.main.checked == true and ns.IsBlinkOn() and #setup.blink.kinds == 4
+    and setup.blink.kinds[1].checked and setup.blink.kinds[2].checked and not setup.blink.kinds[3].checked and setup.blink.kinds[4].checked
+    and setup.blink.kinds[2].label.text == ns.strings.nl.AL_WHISPER and setup.blink.kinds[3].label.text == ns.strings.nl.AL_GUILDCHAT)
+setup.blink.kinds[3].checked = true
+setup.blink.kinds[3].scripts.OnClick(setup.blink.kinds[3])
+check("ticking guild chat turns it on, and remembers that", ns.IsAlertOn("guildchat") and DragonworldDB.alerts.on.guildchat == true)
+setup.blink.kinds[3].checked = false
+setup.blink.kinds[3].scripts.OnClick(setup.blink.kinds[3])
+check("...and unticking turns it off again", not ns.IsAlertOn("guildchat") and DragonworldDB.alerts.off.guildchat == true)
 check("the icon to drag onto the action bar is the guild's dragon", setup.actionSource.icon.texture == "Interface\\AddOns\\Dragonworld\\Media\\button")
 check("the professions reminder waits until the setup is done", DragonworldShareNotice == nil)
 dw("")
 dw("")
-check("closing and reopening comes back to step 2, not the language", win:IsShown() and setup:IsVisible() and not prompt:IsVisible() and not win.body:IsVisible())
+check("closing and reopening comes back to the choices, not the language or the intro",
+    win:IsShown() and setup:IsVisible() and not win.intro:IsVisible() and not prompt:IsVisible() and not win.body:IsVisible())
 setup.blink.main.checked = false
 setup.blink.main.scripts.OnClick(setup.blink.main)
 check("unticking turns blinking off and saves it", not ns.IsBlinkOn() and DragonworldDB.alerts.blinkOff == true)
@@ -1030,7 +1083,8 @@ setup.blink.main.checked = true
 setup.blink.main.scripts.OnClick(setup.blink.main)
 check("ticking it again turns it back on", ns.IsBlinkOn() and DragonworldDB.alerts.blinkOff == nil)
 setup.done.scripts.OnClick(setup.done)
-check("Continue remembers the setup, and the modules appear", DragonworldDB.setupDone == true and not setup:IsVisible() and win.body:IsVisible() and win:IsShown())
+check("Continue remembers the setup, and the modules appear",
+    DragonworldDB.setupDone == true and DragonworldDB.setupVersion == 2 and not setup:IsVisible() and win.body:IsVisible() and win:IsShown())
 
 -- Right after the language is chosen: a reminder to open your professions.
 local shareNotice = DragonworldShareNotice
@@ -1060,20 +1114,21 @@ local rsChip, etterChip, kaputtChip = chipByID.ryddesekk, chipByID.etter, chipBy
 local matChip, kbChip, evChip, roChip = chipByID.materialer, chipByID.keybinds, chipByID.events, chipByID.roster
 check("the module asked for (/kast) is the one that opens", rsPanel ~= nil and rsPanel:IsVisible() and rsChip.selected and isGold(rsChip.borderColor))
 check("one chip per module that has content, top to bottom in order",
-    #chipOrder == 11 and chipOrder[1] == rsChip and chipOrder[2] == matChip and chipOrder[3] == kbChip and chipOrder[4] == evChip
-    and chipOrder[5] == roChip and chipOrder[6] == chipByID.guildbank and chipOrder[7] == chipByID.forslag and chipOrder[8] == chipByID.dungeons
-    and chipOrder[9] == chipByID.professions and chipOrder[10] == etterChip and chipOrder[11] == kaputtChip and chipByID.boom == nil, #chipOrder)
+    #chipOrder == 12 and chipOrder[1] == rsChip and chipOrder[2] == matChip and chipOrder[3] == kbChip and chipOrder[4] == evChip
+    and chipOrder[5] == roChip and chipOrder[6] == chipByID.guildchat and chipOrder[7] == chipByID.guildbank and chipOrder[8] == chipByID.forslag
+    and chipOrder[9] == chipByID.dungeons and chipOrder[10] == chipByID.professions and chipOrder[11] == etterChip and chipOrder[12] == kaputtChip
+    and chipByID.boom == nil, #chipOrder)
 do
     local ok = true
     -- The default order (the guild leader's choice), test modules last.
-    local position = { roster = 1, dungeons = 2, guildbank = 3, events = 4, professions = 5, materialer = 6, ryddesekk = 7, keybinds = 8, forslag = 9, etter = 10, kaputt = 11 }
+    local position = { roster = 1, guildchat = 2, dungeons = 3, guildbank = 4, events = 5, professions = 6, materialer = 7, ryddesekk = 8, keybinds = 9, forslag = 10, etter = 11, kaputt = 12 }
     for _, chip in ipairs(chipOrder) do
         local index = position[chip.id] or 99
         local point, relTo, _, x, y = chip:GetPoint(1)
-        -- Eleven tabs (nine modules and two test ones) do not fit 48 apart above
-        -- Settings (434 - 48 = 386 high), so they move to 35 apart and get 33 tall.
-        if not (point == "TOPLEFT" and x == 0 and y == -(index - 1) * 35 and chip:GetWidth() == 190 and chip:GetHeight() == 33
-            and (index - 1) * 35 + 33 <= 434 - 40) then ok = false end
+        -- Twelve tabs (ten modules and two test ones) do not fit 48 apart above
+        -- Settings (434 - 48 = 386 high), so they move to 32 apart and get 30 tall.
+        if not (point == "TOPLEFT" and x == 0 and y == -(index - 1) * 32 and chip:GetWidth() == 190 and chip:GetHeight() == 30
+            and (index - 1) * 32 + 30 <= 434 - 40) then ok = false end
     end
     local sPoint, _, _, sx, sy = win.settingsChip:GetPoint(1)
     check("chips are stacked down the left side, Settings at the bottom", ok and sPoint == "BOTTOMLEFT" and sx == 0 and sy == 0)
@@ -3810,31 +3865,36 @@ end)()
             if row:IsShown() and row.id == id then return row end
         end
     end
-    local DEFAULT_ORDER = "roster,dungeons,guildbank,events,professions,materialer,ryddesekk,keybinds,forslag,etter,kaputt"
+    local DEFAULT_ORDER = "roster,guildchat,dungeons,guildbank,events,professions,materialer,ryddesekk,keybinds,forslag,etter,kaputt"
     check("Settings lists the tabs in the default order (the guild leader's), in the chosen language",
         settings.orderLabel.text == "Rekkefølgen på fanene til venstre (bruk pilene)" and orderNames() == DEFAULT_ORDER
         and settings.orderRows[1].name.text == ns.ModuleTitle(ns.modules.roster) and settings.orderRows[1].icon.texture == ns.modules.roster.icon, orderNames())
     check("the top tab cannot move up, and the bottom one cannot move down",
         not settings.orderRows[1].up:IsEnabled() and settings.orderRows[1].down:IsEnabled()
-        and settings.orderRows[11].up:IsEnabled() and not settings.orderRows[11].down:IsEnabled())
+        and settings.orderRows[12].up:IsEnabled() and not settings.orderRows[12].down:IsEnabled())
     check("the arrows use the game's own arrow pictures", settings.orderRows[1].up.normalTexture == "Interface\\Buttons\\UI-ScrollBar-ScrollUpButton-Up"
         and settings.orderRows[1].down.disabledTexture == "Interface\\Buttons\\UI-ScrollBar-ScrollDownButton-Disabled")
 
     rowFor("roster").down.scripts.OnClick(rowFor("roster").down)
-    check("moving Members down swaps it with Dungeons in the sidebar at once",
-        chipY("dungeons") == 0 and chipY("roster") == -35 and chipY("guildbank") == -70 and orderNames():find("^dungeons,roster,guildbank,") ~= nil, orderNames())
-    check("...and the order is saved", DragonworldDB.tabOrder[1] == "dungeons" and DragonworldDB.tabOrder[2] == "roster" and #DragonworldDB.tabOrder == 11)
+    check("moving Members down swaps it with Guild chat in the sidebar at once",
+        chipY("guildchat") == 0 and chipY("roster") == -32 and chipY("dungeons") == -64 and orderNames():find("^guildchat,roster,dungeons,") ~= nil, orderNames())
+    check("...and the order is saved", DragonworldDB.tabOrder[1] == "guildchat" and DragonworldDB.tabOrder[2] == "roster" and #DragonworldDB.tabOrder == 12)
     for _ = 1, 10 do
         local row = rowFor("forslag")
         if row.up:IsEnabled() then row.up.scripts.OnClick(row.up) end
     end
-    check("a tab can be moved all the way to the top", chipY("forslag") == 0 and orderNames():find("^forslag,dungeons,roster,") ~= nil, orderNames())
+    check("a tab can be moved all the way to the top", chipY("forslag") == 0 and orderNames():find("^forslag,guildchat,roster,") ~= nil, orderNames())
     check("moving past the top does nothing", ns.MoveModule("forslag", -1) == false and chipY("forslag") == 0)
 
     DragonworldDB.tabOrder = { "guildbank", "nothing-here", 42, "guildbank", "forslag" }
     ns.MoveModule("forslag", 1)
-    check("a saved order with unknown or repeated names still works, and tabs missing from it come last",
-        orderNames() == "guildbank,ryddesekk,forslag,materialer,keybinds,events,roster,dungeons,professions,etter,kaputt" and chipY("guildbank") == 0 and chipY("kaputt") == -10 * 35, orderNames())
+    check("a saved order with unknown or repeated names still works; tabs missing from it get their default place, others come last",
+        orderNames() == "roster,guildchat,dungeons,guildbank,events,professions,materialer,ryddesekk,keybinds,etter,forslag,kaputt"
+        and chipY("roster") == 0 and chipY("kaputt") == -11 * 32, orderNames())
+    DragonworldDB.tabOrder = { "forslag", "roster", "dungeons", "guildbank", "events", "professions", "materialer", "ryddesekk", "keybinds" }
+    ns.MoveModule("etter", 1)
+    check("a tab that is new since the order was saved lands right under the one before it by default (Guild chat under Members)",
+        orderNames():find("^forslag,roster,guildchat,dungeons,") ~= nil, orderNames())
 
     ns.SetLanguage("en", true)
     check("the list follows the language", settings.orderLabel.text == "Order of the tabs on the left (use the arrows)" and rowFor("forslag").name.text == "Suggestions")
@@ -5055,6 +5115,168 @@ check("/dw knop (Dutch word) hides it", not mm:IsShown())
 dw("knapp")
 rsChip.scripts.OnClick(rsChip)
 
+-- ======================== Chat og logg (Guildchat.lua) ==========================
+;(function()
+    local function click(button) button.scripts.OnClick(button) end
+    local function lines(frame) local out = {}; for _, m in ipairs(frame.messages or {}) do out[#out + 1] = m.text end; return out end
+    local gcChip = chipByID.guildchat
+    check("Chat & Log has a tab, with a speech bubble", gcChip ~= nil and gcChip.label.text == "Chat og logg" and gcChip.icon.texture == "Interface\\GossipFrame\\GossipGossipIcon")
+    ns.OpenModule("guildchat")
+    local gc
+    for _, child in ipairs(win.content.children) do
+        if child.chat and child.log and child.views then gc = child end
+    end
+    check("empty at first: it says where the chat will come from, with the guild message on top",
+        gc ~= nil and gc:IsVisible() and gc.chat:IsShown() and gc.chatInput:IsShown() and not gc.log:IsShown()
+        and lines(gc.chat)[1] == ns.strings.nb.GC_EMPTY and gc.motd.text == "Guildmelding: Raid fredag kl 20!"
+        and gc.chat.hyperlinks == true and gc.chat.fading == false and gc.chat.mouseWheel == true)
+
+    fire("CHAT_MSG_GUILD", "Hei alle!", "Altine-Stormrage", "Common", "", "Altine", "", 0, 0, "", 7, 1234, "Player-1-Altine")
+    local stored = DragonworldDB.modules.guildchat.messages
+    local want = "|cff909090[" .. date("%H:%M", NOW) .. "]|r |Hplayer:Altine-Stormrage|h[|cff40c7ebAltine|r]|h: Hei alle!"
+    check("a guild chat message shows with the time, the name in its class colour as a link, and the text, in guild green",
+        #stored == 1 and stored[1].from == "Altine-Stormrage" and stored[1].text == "Hei alle!"
+        and #gc.chat.messages == 1 and gc.chat.messages[1].text == want and gc.chat.messages[1].g == 1.0, lines(gc.chat)[1])
+    fire("CHAT_MSG_GUILD", SECRET, "Altine-Stormrage")
+    fire("CHAT_MSG_GUILD", "hemmelig", SECRET)
+    check("messages the game keeps secret are skipped", #stored == 1)
+    gc.chat.scripts.OnHyperlinkClick(gc.chat, "player:Altine-Stormrage", "|Hplayer:Altine-Stormrage|h[Altine]|h", "LeftButton")
+    check("clicking the name works like in the chat window", itemRefs[#itemRefs].link == "player:Altine-Stormrage")
+
+    local before = #guildChat
+    gc.input = gc.chatInput
+    gc.send = gc.chatInput.button
+    gc.input:TypeText("Hei | tilbake ")
+    gc.input.scripts.OnEnterPressed(gc.input)
+    check("Enter sends it to the guild chat ('|' replaced, spaces trimmed) and empties the field",
+        #guildChat == before + 1 and guildChat[#guildChat].text == "Hei / tilbake" and guildChat[#guildChat].chatType == "GUILD" and gc.input.text == "")
+    gc.input:TypeText("   ")
+    click(gc.send)
+    check("an empty message is not sent", #guildChat == before + 1)
+    chatLock = true
+    clearChat()
+    gc.input:TypeText("hei")
+    click(gc.send)
+    check("when the game blocks chat, the player is told and the text is kept",
+        #guildChat == before + 1 and has(ns.strings.nb.GC_BLOCKED) and gc.input.text == "hei", chatText())
+    chatLock = false
+    clearChat()
+    gc.input:SetText("")
+
+    for i = 1, 305 do fire("CHAT_MSG_GUILD", "m" .. i, "Borin-Stormrage") end
+    check("the last 300 messages are kept", #stored == 300 and stored[1].text == "m6" and stored[300].text == "m305")
+
+
+    -- Whispers: every conversation, in and out, so it can be picked up again.
+    click(gc.views.whisper)
+    check("Whispers: empty at first, and says what will show up",
+        gc.whisperChat:IsShown() and not gc.chat:IsShown() and not gc.chatInput:IsShown() and lines(gc.whisperChat)[1] == ns.strings.nb.GC_WHISPER_EMPTY
+        and not gc.whisperInput:IsShown() and gc.views.whisper.label.text == "Hvisking" and gc.views.whisper.selected)
+    click(gc.views.chat)
+    local realTime = time
+    local clockNow = NOW
+    time = function(t) if t ~= nil then return realTime(t) end return clockNow end
+    fire("CHAT_MSG_WHISPER", "Hei, skal vi ta Deadmines?", "Altine-Stormrage")
+    clockNow = NOW + 60
+    fire("CHAT_MSG_WHISPER", "Hallo der", "Zed-Otherrealm")
+    fire("CHAT_MSG_WHISPER", SECRET, "Altine-Stormrage")
+    local whispers = DragonworldDB.modules.guildchat.whispers
+    check("whispers coming in are kept per person (guild or not) and counted as unread; secret ones are skipped",
+        whispers.altine.unread == 1 and whispers.zed.unread == 1 and #whispers.altine.messages == 1 and whispers.zed.name == "Zed-Otherrealm"
+        and gc.views.whisper.label.text == "Hvisking (2)", gc.views.whisper.label.text)
+
+    click(gc.views.whisper)
+    local rows = gc.whisperRows
+    check("the list: newest conversation first, unread in brackets, guild members in class colour; the newest one opens and is read",
+        rows[1]:IsShown() and rows[1].label.text == "|cffc8c8c8Zed|r" and rows[1].selected
+        and rows[2].label.text == "|cffffd100(1)|r |cff40c7ebAltine|r" and not rows[2].selected
+        and rows[1].sub.text == date("%H:%M", NOW + 60) .. "  Hallo der" and whispers.zed.unread == 0 and gc.views.whisper.label.text == "Hvisking (1)",
+        rows[1].label.text .. " / " .. rows[2].label.text .. " / " .. tostring(rows[1].sub.text))
+    check("...with the whole conversation, date and time on each line",
+        gc.whisperName.text == "|cffc8c8c8Zed|r" and lines(gc.whisperChat)[1] == "|cff909090[" .. date("%d.%m %H:%M", NOW + 60) .. "]|r |Hplayer:Zed-Otherrealm|h[|cffc8c8c8Zed|r]|h: Hallo der"
+        and gc.whisperChat.messages[1].r == 1.00 and gc.whisperChat.messages[1].g == 0.50, lines(gc.whisperChat)[1])
+
+    click(rows[2])
+    check("clicking a conversation opens it and marks it read", gc.whisperName.text == "|cff40c7ebAltine|r" and whispers.altine.unread == 0
+        and gc.views.whisper.label.text == "Hvisking" and rows[1].label.text == "|cffc8c8c8Zed|r" and rows[2].selected)
+    local sentBefore = #guildChat
+    gc.whisperInput:TypeText("Ja, om 10 min")
+    gc.whisperInput.scripts.OnEnterPressed(gc.whisperInput)
+    check("the field at the bottom answers with a whisper to that person",
+        #guildChat == sentBefore + 1 and guildChat[#guildChat].chatType == "WHISPER" and guildChat[#guildChat].target == "Altine-Stormrage"
+        and guildChat[#guildChat].text == "Ja, om 10 min" and gc.whisperInput.text == "")
+    clockNow = NOW + 120
+    fire("CHAT_MSG_WHISPER_INFORM", "Ja, om 10 min", "Altine-Stormrage") -- the game confirms what was sent
+    fire("CHAT_MSG_WHISPER", "Supert!", "Altine-Stormrage")
+    local l = lines(gc.whisperChat)
+    check("what you send shows under your own name, and new lines in the open conversation are not unread",
+        #l == 3 and l[2] == "|cff909090[" .. date("%d.%m %H:%M", NOW + 120) .. "]|r |Hplayer:Tester|h[|cfff58cbaTester|r]|h: Ja, om 10 min"
+        and l[3]:find("Supert!", 1, true) ~= nil and whispers.altine.unread == 0 and whispers.altine.messages[2].out == true
+        and rows[1].label.text == "|cff40c7ebAltine|r" and rows[1].sub.text == date("%H:%M", NOW + 120) .. "  Supert!", table.concat(l, " / "))
+    fire("CHAT_MSG_WHISPER_INFORM", "Hei Borin", "Borin-Stormrage")
+    check("whispering someone new from the game's own chat starts a conversation too, not unread",
+        whispers.borin ~= nil and whispers.borin.unread == 0 and whispers.borin.messages[1].out == true and whispers.borin.messages[1].me == "Tester")
+
+    click(gc.whisperDelete)
+    check("Delete conversation removes it, and the next one opens",
+        whispers.altine == nil and gc.whisperName.text ~= "" and gc.whisperDelete.label.text == "Slett samtalen")
+
+    for i = 1, 205 do
+        clockNow = NOW + 1000 + i
+        fire("CHAT_MSG_WHISPER", "w" .. i, "Cedric-Stormrage")
+    end
+    check("a conversation keeps its last 200 lines", #whispers.cedric.messages == 200 and whispers.cedric.messages[1].text == "w6")
+    for i = 1, 55 do
+        clockNow = NOW + 5000 + i
+        fire("CHAT_MSG_WHISPER", "hei", "Person" .. i .. "-Somewhere")
+    end
+    local kept = 0
+    for _ in pairs(whispers) do kept = kept + 1 end
+    check("the 50 newest conversations are kept", kept == 50 and whispers.person55 ~= nil and whispers.zed == nil, kept)
+    time = realTime
+    click(gc.views.chat)
+
+    -- The game's guild log.
+    GUILD_LOG = {
+        { "invite", "Tester-Stormrage", "Borin-Stormrage", "", 0, 0, 3, 2 },
+        { "join", "Borin-Stormrage", "", "", 0, 0, 3, 1 },
+        { "promote", "Tester-Stormrage", "Borin-Stormrage", "Officer", 0, 0, 1, 0 },
+        { "quit", "Eira-Stormrage", "", "", 0, 1, 0, 0 },
+        { "mystery", "Dagny-Stormrage", "", "", 0, 0, 0, 0 },
+    }
+    local queries = GUILD_LOG_QUERIES
+    click(gc.views.log)
+    check("Log asks the game for the guild log, and swaps the chat for it",
+        GUILD_LOG_QUERIES == queries + 1 and gc.log:IsShown() and not gc.chat:IsShown() and not gc.chatInput:IsShown() and not gc.motd:IsShown()
+        and not gc.whisperChat:IsShown()
+        and gc.refresh:IsShown() and gc.views.log.selected)
+    local l = lines(gc.log)
+    check("...and shows it oldest first, with how long ago and the names in class colours",
+        #l == 5 and l[1] == "|cff909090[1 mnd. siden]|r |cffabd473Eira|r forlot guilden."
+        and l[2] == "|cff909090[3 dager siden]|r |cfff58cbaTester|r inviterte |cffc79c6eBorin|r."
+        and l[3] == "|cff909090[3 dager siden]|r |cffc79c6eBorin|r ble med i guilden."
+        and l[4] == "|cff909090[1 dager siden]|r |cfff58cbaTester|r forfremmet |cffc79c6eBorin|r til Officer."
+        and l[5]:find("^|cff909090%[nettopp%]|r mystery: ") ~= nil, table.concat(l, " / "))
+    table.remove(GUILD_LOG, 5)
+    fire("GUILD_EVENT_LOG_UPDATE")
+    check("when the game sends the log, it is shown again", #lines(gc.log) == 4)
+    GUILD_LOG = {}
+    click(gc.refresh)
+    check("Refresh asks again; an empty log says so", GUILD_LOG_QUERIES == queries + 2 and lines(gc.log)[1] == ns.strings.nb.GC_LOG_EMPTY)
+    local realInfo = GetGuildEventInfo
+    GetGuildEventInfo = nil
+    click(gc.refresh)
+    check("without the game's log functions it says so", lines(gc.log)[1] == ns.strings.nb.GC_LOG_UNAVAILABLE)
+    GetGuildEventInfo = realInfo
+
+    ns.SetLanguage("en", true)
+    check("the tab follows the language", gcChip.label.text == "Chat & Log" and gc.views.log.label.text == "Log" and gc.refresh.label.text == "Refresh")
+    ns.SetLanguage("nb", true)
+    click(gc.views.chat)
+    check("back to the chat: every kept message is shown, scrolled to the newest", #gc.chat.messages == 300 and gc.chat.atBottom == true)
+    click(rsChip)
+end)()
+
 -- ======================= version check (Update.lua) ===============================
 ;(function()
     local VER = "DragonworldVer"
@@ -5182,10 +5404,10 @@ end)()
     local pulse = ns.alertPulse
     local dungeonsChip = chipByID.dungeons
 
-    ns.MarkAlertSeen("dungeon")
-    ns.MarkAlertSeen("event")
-    check("two things can blink: a new event (gold) and someone wanting a dungeon (green)",
-        #ns.ALERTS == 2 and ns.ALERTS[1].kind == "event" and ns.ALERTS[2].kind == "dungeon" and ns.ALERTS[1].module == "events" and ns.ALERTS[2].module == "dungeons")
+    for _, alert in ipairs(ns.ALERTS) do ns.MarkAlertSeen(alert.kind) end
+    check("four things can blink: a new event (gold), a whisper, a guild chat message, and someone wanting a dungeon (green)",
+        #ns.ALERTS == 4 and ns.ALERTS[1].kind == "event" and ns.ALERTS[2].kind == "whisper" and ns.ALERTS[3].kind == "guildchat"
+        and ns.ALERTS[4].kind == "dungeon" and ns.ALERTS[1].module == "events" and ns.ALERTS[2].module == "guildchat" and ns.ALERTS[4].module == "dungeons")
     check("nothing new: nothing blinks", not ns.IsBlinking() and pulse.scripts.OnUpdate == nil and not mm.glow:IsShown())
     check("the minimap glow is a soft round light over the icon", mm.glow.blend == "ADD" and mm.glow.texture == "Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight" and mm.glow.layer == "ARTWORK")
 
@@ -5245,11 +5467,12 @@ end)()
     local blink = settings.blink
     check("Settings has blinking, with what it blinks for and each colour, in the chosen language",
         blink.main.label.text == "Blink når noe er nytt" and blink.main.checked == true
-        and blink.kinds[1].label.text == "Ny event" and blink.kinds[2].label.text == "Noen ser etter dungeon"
-        and blink.kinds[1].checked == true and blink.kinds[2].checked == true and blink.kinds[2].swatch.texture == "color")
-    toggle(blink.kinds[2], false)
+        and blink.kinds[1].label.text == "Ny event" and blink.kinds[4].label.text == "Noen ser etter dungeon"
+        and blink.kinds[2].label.text == "Ny hvisking" and blink.kinds[3].label.text == "Ny melding i guildchatten"
+        and blink.kinds[1].checked == true and blink.kinds[4].checked == true and blink.kinds[4].swatch.texture == "color")
+    toggle(blink.kinds[4], false)
     check("unticking dungeons stops that blinking, and is saved", not ns.IsBlinking() and DragonworldDB.alerts.off.dungeon == true)
-    toggle(blink.kinds[2], true)
+    toggle(blink.kinds[4], true)
     check("ticking it again starts it", ns.IsBlinking() and DragonworldDB.alerts.off.dungeon == nil)
     toggle(blink.main, false)
     check("turning blinking off stops it everywhere, and greys out the choices under it",
@@ -5388,6 +5611,61 @@ end)()
     dw("")
     check("/dw (what the action bar button runs) right after opens the tab with what was new", win:IsShown() and dungeonsChip.selected)
     check("...and then nothing blinks, on the minimap or the action bar", not ns.IsBlinking() and not mm.glow:IsShown() and not glow7:IsShown())
+
+    -- Whispers and guild chat messages blink too.
+    local gc
+    for _, child in ipairs(win.content.children) do
+        if child.chat and child.whisperChat then gc = child end
+    end
+    for _, alert in ipairs(ns.ALERTS) do ns.MarkAlertSeen(alert.kind) end
+    click(rsChip)
+    -- The local clock moves on too (the whisper tests left conversations up to NOW + 5055).
+    local realTime = time
+    time = function(t) if t ~= nil then return realTime(t) end return NOW + 10000 end
+    SERVER_NOW = SERVER_NOW + 60
+    fire("CHAT_MSG_WHISPER", "Kan du hjelpe meg med en quest?", "Borin-Stormrage")
+    flush()
+    check("a new whisper makes the buttons blink", ns.IsBlinking() and #ns.ActiveAlerts() == 1 and ns.ActiveAlerts()[1].kind == "whisper")
+    pulse.scripts.OnUpdate(pulse, 1.2)
+    check("...in pink, like whispers in the chat", colour(mm.glow) == "1.00,0.45,1.00", colour(mm.glow))
+    fire("CHAT_MSG_GUILD", "Noen til Deadmines?", "Altine-Stormrage")
+    flush()
+    check("guild chat is off by default, so it does not blink", #ns.ActiveAlerts() == 1)
+    ns.SetAlertOn("guildchat", true)
+    check("turned on, a guild chat message from someone else blinks too, in light blue",
+        #ns.ActiveAlerts() == 2 and ns.ActiveAlerts()[2].kind == "guildchat" and ns.ActiveAlerts()[2].color[3] == 1.00)
+    mm.scripts.OnEnter(mm)
+    local tip = table.concat(GameTooltip.lines, " / ")
+    check("hovering lists who whispered what, and the guild chat line",
+        tip:find("Borin: Kan du hjelpe meg med en quest?", 1, true) ~= nil and tip:find("Altine: Noen til Deadmines?", 1, true) ~= nil, tip)
+    mm.scripts.OnLeave(mm)
+    win:Hide()
+    mm.scripts.OnClick(mm, "LeftButton")
+    check("a click right after opens Chat & Log on the whispers, with Borin's conversation",
+        win:IsShown() and chipByID.guildchat.selected and gc.whisperChat:IsShown() and gc.whisperName.text == "|cffc79c6eBorin|r" and not ns.IsBlinking(),
+        gc and gc.whisperName.text)
+    click(rsChip)
+    SERVER_NOW = SERVER_NOW + 60
+    fire("CHAT_MSG_GUILD", "Jeg er her", "Tester-Stormrage")
+    flush()
+    check("your own guild chat messages never blink", not ns.IsBlinking())
+    fire("CHAT_MSG_GUILD", "Kom igjen!", "Altine-Stormrage")
+    flush()
+    check("someone else's do, when turned on", ns.IsBlinking() and ns.ActiveAlerts()[1].kind == "guildchat")
+    ns.OpenModule("guildchat")
+    click(gc.views.chat)
+    check("looking at the guild chat counts as seen", not ns.IsBlinking())
+    ns.SetAlertOn("guildchat", false)
+    time = realTime
+
+    -- The intro again, from Settings.
+    click(win.settingsChip)
+    check("Settings has a button to see the intro again", settings.introButton.label.text == "Vis introen")
+    click(settings.introButton)
+    check("...which shows the intro and the choices again", win.intro:IsVisible() and not win.body:IsVisible())
+    click(win.intro.next)
+    click(win.setup.done)
+    check("...and then back to where you were", win.body:IsVisible() and win.settingsChip.selected and not win.setup:IsVisible())
 
     click(rsChip)
 end)()
