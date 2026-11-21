@@ -54,26 +54,10 @@ end
 
 -- Rolleikonene til en oppføring, f.eks. tank + dps. Tomt om de ikke har valgt
 -- noen (eldre versjon av addonen).
-local function RoleIcons(roles, size)
-    local parts = {}
-    for _, role in ipairs(DW.ROLES) do
-        if roles and roles[role.code] then
-            parts[#parts + 1] = DW.RoleIcon(role, size)
-        end
-    end
-    return table.concat(parts, " ")
-end
+local RoleIcons = DW.RoleIcons
 
 -- Rollene med ikon og navn, til verktøytips: "[ikon] Tank, [ikon] Healer".
-local function RolesText(roles)
-    local parts = {}
-    for _, role in ipairs(DW.ROLES) do
-        if roles and roles[role.code] then
-            parts[#parts + 1] = DW.RoleIcon(role) .. " " .. L[role.key]
-        end
-    end
-    return table.concat(parts, ", ")
-end
+local RolesText = DW.RoleNames
 
 local function CountOf(set)
     local count = 0
@@ -364,6 +348,12 @@ function DW.OpenDungeonPicker()
     end
     for code in pairs(entry and entry.roles or {}) do
         pickRoles[code] = true
+    end
+    -- Første gang: rollen du har valgt i profilen din (Medlemmer).
+    if not next(pickRoles) and DW.GetMyRoles then
+        for code in pairs(DW.GetMyRoles()) do
+            pickRoles[code] = true
+        end
     end
     picker.error:SetText("")
     RefreshPicker()

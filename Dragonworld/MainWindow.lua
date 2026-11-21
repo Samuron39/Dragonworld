@@ -185,6 +185,80 @@ function DW.CreateButton(parent, width, height, style)
     return button
 end
 
+-- Rollevalg -------------------------------------------------------------------
+
+-- Tre chips side om side: Tank, Healer, DPS, med spillets rolleikoner. Man
+-- velger én eller to; med to valgt er den tredje grå til man fjerner en.
+-- onChange(roles) kalles etter hvert klikk med { T = true, ... }.
+-- Brukes i første oppsett (under) og på ditt eget medlemskort.
+function DW.CreateRoleChoice(parent, chipWidth, chipHeight, iconSize, onChange)
+    local box = CreateFrame("Frame", nil, parent)
+    local gap = 6
+    box:SetSize(#DW.ROLES * chipWidth + (#DW.ROLES - 1) * gap, chipHeight)
+    box.roles = {}
+    box.chips = {}
+
+    function box:Refresh()
+        local count = 0
+        for _ in pairs(self.roles) do
+            count = count + 1
+        end
+        for _, chip in ipairs(self.chips) do
+            local chosen = self.roles[chip.role.code] and true or false
+            local open = chosen or count < DW.MAX_ROLES
+            chip.label:SetText(DW.RoleIcon(chip.role, iconSize) .. " " .. L[chip.role.key])
+            chip:SetSelected(chosen)
+            chip:SetEnabled(open)
+            chip:SetDimmed(not open)
+        end
+    end
+
+    function box:SetRoles(set)
+        self.roles = {}
+        for code in pairs(DW.RolesFromText(DW.RolesToText(set))) do
+            self.roles[code] = true
+        end
+        self:Refresh()
+    end
+
+    function box:GetRoles()
+        local copy = {}
+        for code in pairs(self.roles) do
+            copy[code] = true
+        end
+        return copy
+    end
+
+    for index, role in ipairs(DW.ROLES) do
+        local chip = DW.CreateChip(box, chipWidth, chipHeight)
+        chip:SetPoint("LEFT", (index - 1) * (chipWidth + gap), 0)
+        chip.label:SetJustifyH("CENTER")
+        chip.role = role
+        chip:SetScript("OnClick", function(self)
+            if box.roles[role.code] then
+                box.roles[role.code] = nil
+            else
+                local count = 0
+                for _ in pairs(box.roles) do
+                    count = count + 1
+                end
+                if count >= DW.MAX_ROLES then
+                    return
+                end
+                box.roles[role.code] = true
+            end
+            box:Refresh()
+            if onChange then
+                onChange(box:GetRoles())
+            end
+        end)
+        box.chips[index] = chip
+    end
+
+    box:Refresh()
+    return box
+end
+
 -- Rekkefølgen på fanene -----------------------------------------------------------
 
 -- Spilleren velger selv rekkefølgen på modul-fanene under Innstillinger. Den
@@ -794,6 +868,69 @@ local function CreateSetupPrompt(parent)
     return prompt
 end
 
+-- Rollen, første gang på hver karakter ---------------------------------------------
+
+-- Etter oppsettet over (som er felles for kontoen) spørres hver karakter én
+-- gang hvilken rolle den spiller: tank, healer, dps, eller to av dem. Den
+-- vises med ikon i Medlemmer, og kan endres på ditt eget kort. "Senere"
+-- hopper over, og spør ikke igjen. Selve rollen lagres i Profile.lua.
+local function CreateRolePrompt(parent)
+    local prompt = CreateFrame("Frame", nil, parent)
+    prompt:SetPoint("TOPLEFT", PAD, -(HEADER_HEIGHT + 8))
+    prompt:SetSize(BODY_WIDTH, BODY_HEIGHT)
+
+    prompt.title = prompt:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    prompt.title:SetPoint("TOP", 0, -40)
+
+    prompt.text = prompt:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    prompt.text:SetPoint("TOP", 0, -76)
+    prompt.text:SetWidth(560)
+
+    local function Changed(roles)
+        prompt.save:SetActive(next(roles) ~= nil)
+    end
+    prompt.choice = DW.CreateRoleChoice(prompt, 170, 48, 24, Changed)
+    prompt.choice:SetPoint("TOP", 0, -170)
+
+    prompt.save = DW.CreateButton(prompt, 200, 34, "gold")
+    prompt.save:SetPoint("BOTTOM", -106, 40)
+    prompt.save:SetScript("OnClick", function()
+        local roles = prompt.choice:GetRoles()
+        if next(roles) then
+            DW.SetMyRoles(roles)
+            ShowWindow()
+        end
+    end)
+
+    prompt.later = DW.CreateChip(prompt, 200, 34)
+    prompt.later:SetPoint("BOTTOM", 106, 40)
+    prompt.later.label:SetJustifyH("CENTER")
+    prompt.later:SetScript("OnClick", function()
+        DW.SkipRoleChoice()
+        ShowWindow()
+    end)
+
+    -- Begynner med rollen du kanskje har valgt for dungeons alt.
+    function prompt:Load()
+        local _, entry = DW.GetMyStatus()
+        self.choice:SetRoles(entry and entry.roles or {})
+        Changed(self.choice:GetRoles())
+    end
+
+    function prompt:Refresh()
+        local _, name = DW.CharacterKey()
+        self.title:SetText(L.ROLE_TITLE)
+        self.text:SetText(L.ROLE_TEXT:format(name or ""))
+        self.choice:Refresh()
+        self.save.label:SetText(L.ROLE_SAVE)
+        self.later.label:SetText(L.ROLE_LATER)
+    end
+
+    -- Skjult til den skal vises, så valgene lastes første gang den vises.
+    prompt:Hide()
+    return prompt
+end
+
 -- Status øverst til høyre -----------------------------------------------------------
 
 -- Tre knapper ("pills") der spilleren viser hva de holder på med: quester,
@@ -1034,6 +1171,26 @@ ShowWindow = function(id)
     if window.intro then
         window.intro:Hide()
         window.setup:Hide()
+    end
+
+    if DW.NeedsRoleChoice and DW.NeedsRoleChoice() then
+        -- Rollen, første gang på denne karakteren.
+        pending = id or pending
+        if not window.rolePrompt then
+            window.rolePrompt = CreateRolePrompt(window)
+        end
+        if not window.rolePrompt:IsShown() then
+            window.rolePrompt:Load()
+        end
+        window.body:Hide()
+        window.rolePrompt:Refresh()
+        window.rolePrompt:Show()
+        return
+    end
+    if window.rolePrompt and window.rolePrompt:IsShown() then
+        window.rolePrompt:Hide()
+        id = id or pending
+        pending = nil
     end
     window.body:Show()
     Select(id or selected or FirstModuleID())

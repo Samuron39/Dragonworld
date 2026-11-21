@@ -815,11 +815,15 @@ end)
 
 local ROW_HEIGHT = 22
 
--- Kolonnene i en rad, fra venstre: navn, level, rank, professions, sist
--- pålogget. Professions får plassen som er igjen.
-local NAME_WIDTH, LEVEL_WIDTH, RANK_WIDTH, LAST_WIDTH = 130, 28, 86, 84
+-- Kolonnene i en rad, fra venstre: navn, level, rank, rolle, professions,
+-- sist pålogget. Professions får plassen som er igjen. Sist pålogget er kort
+-- tekst ("Pålogget", "3 d"), så den kolonnen er smal.
+local NAME_WIDTH, LEVEL_WIDTH, RANK_WIDTH, LAST_WIDTH = 130, 28, 80, 60
 local LEGACY_WIDTH = 34   -- legacy-poeng, rett etter level (se Profile.lua)
-local PROFESSIONS_LEFT = 4 + NAME_WIDTH + 4 + LEVEL_WIDTH + 6 + LEGACY_WIDTH + 10 + RANK_WIDTH + 8
+local ROLE_WIDTH = 34     -- rolleikonene (én eller to), rett etter rank
+local RANK_LEFT = 4 + NAME_WIDTH + 4 + LEVEL_WIDTH + 6 + LEGACY_WIDTH + 10
+local ROLE_LEFT = RANK_LEFT + RANK_WIDTH + 6
+local PROFESSIONS_LEFT = ROLE_LEFT + ROLE_WIDTH + 6
 local PROFESSIONS_RIGHT = 6 + LAST_WIDTH + 8
 local PROFESSION_GAP = 10 -- luft mellom to professions
 local MORE_WIDTH = 22     -- plass til "+2" når ikke alle får plass
@@ -914,9 +918,16 @@ local function Collect()
             end
         end
 
-        -- Søket leter i navn, rank og professions.
+        -- Søket leter i navn, rank, rolle (f.eks. "healer") og professions.
         if keep and needle ~= "" then
-            local haystack = (member.name .. " " .. member.rank .. " " .. ProfessionText(member.professions)):lower()
+            local roleNames = {}
+            for _, role in ipairs(DW.ROLES or {}) do
+                local roles = DW.RolesOf and DW.RolesOf(member)
+                if roles and roles[role.code] then
+                    roleNames[#roleNames + 1] = L[role.key]
+                end
+            end
+            local haystack = (member.name .. " " .. member.rank .. " " .. table.concat(roleNames, " ") .. " " .. ProfessionText(member.professions)):lower()
             keep = haystack:find(needle, 1, true) ~= nil
         end
 
@@ -1142,6 +1153,13 @@ local function GetRow(index)
     row.rank:SetJustifyH("LEFT")
     row.rank:SetWordWrap(false)
 
+    -- Rollen medlemmet har valgt (Profile.lua), som ikoner.
+    row.roles = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    row.roles:SetPoint("LEFT", row, "LEFT", ROLE_LEFT, 0)
+    row.roles:SetWidth(ROLE_WIDTH)
+    row.roles:SetJustifyH("LEFT")
+    row.roles:SetWordWrap(false)
+
     row.last = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     row.last:SetPoint("RIGHT", -6, 0)
     row.last:SetWidth(LAST_WIDTH)
@@ -1182,6 +1200,10 @@ local function GetRow(index)
             GameTooltip:AddLine(member.name)
         end
         GameTooltip:AddLine(("%s - %s"):format(L.RO_TIP_LEVEL:format(member.level), member.rank), 1, 1, 1)
+        local roles = DW.RolesOf and DW.RolesOf(member)
+        if roles then
+            GameTooltip:AddLine(DW.RoleNames(roles), 1, 1, 1)
+        end
         local status = self.statusCode and DW.STATUS_BY_CODE[self.statusCode]
         if status then
             GameTooltip:AddLine(L[status.key], 0.25, 1.00, 0.25)
@@ -1233,6 +1255,7 @@ RefreshPanel = function()
     panel.headerLevel:SetText(L.RO_H_LEVEL)
     panel.headerLegacy:SetText(L.RO_H_LEGACY)
     panel.headerRank:SetText(L.RO_H_RANK)
+    panel.headerRole:SetText(L.RO_H_ROLE)
     panel.headerProfessions:SetText(L.RO_H_PROFESSIONS)
     panel.headerLast:SetText(L.RO_H_LAST)
     panel.footer:SetText(L.RO_FOOTER)
@@ -1274,6 +1297,7 @@ RefreshPanel = function()
         local points = DW.LegacyPointsOf and DW.LegacyPointsOf(member)
         row.legacy:SetText(points and tostring(points) or "")
         row.rank:SetText(member.rank)
+        row.roles:SetText(DW.RoleIcons and DW.RoleIcons(DW.RolesOf and DW.RolesOf(member)) or "")
         LayoutProfessions(row, member)
         row.last:SetText(LastOnlineText(member))
         if member.online then
@@ -1359,7 +1383,9 @@ local function CreatePanel(parent)
     f.headerLegacy = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     f.headerLegacy:SetPoint("TOPLEFT", 184, -108)
     f.headerRank = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    f.headerRank:SetPoint("TOPLEFT", 226, -108)
+    f.headerRank:SetPoint("TOPLEFT", 10 + RANK_LEFT, -108)
+    f.headerRole = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    f.headerRole:SetPoint("TOPLEFT", 10 + ROLE_LEFT, -108)
     f.headerProfessions = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     f.headerProfessions:SetPoint("TOPLEFT", 10 + PROFESSIONS_LEFT, -108)
     f.headerLast = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")

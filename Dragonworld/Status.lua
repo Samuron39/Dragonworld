@@ -190,26 +190,51 @@ local function ParsePurposes(text)
     return set
 end
 
+-- Roller som tekst ("TH") og tilbake. Brukes også av Profile.lua.
 local function RolesText(set)
     local out = ""
     for _, role in ipairs(DW.ROLES) do
-        if set and set[role.code] then
+        if type(set) == "table" and set[role.code] then
             out = out .. role.code
         end
     end
     return out
 end
+DW.RolesToText = RolesText
 
 -- Høyst to roller, også om en melding skulle ha flere.
 local function ParseRoles(text)
     local set, count = {}, 0
     for _, role in ipairs(DW.ROLES) do
-        if count < DW.MAX_ROLES and (text or ""):find(role.code, 1, true) then
+        if count < DW.MAX_ROLES and tostring(text or ""):find(role.code, 1, true) then
             set[role.code] = true
             count = count + 1
         end
     end
     return set
+end
+DW.RolesFromText = ParseRoles
+
+-- Rollene med ikon og navn: "[ikon] Tank, [ikon] Healer". Tomt uten roller.
+function DW.RoleNames(set, size)
+    local parts = {}
+    for _, role in ipairs(DW.ROLES) do
+        if type(set) == "table" and set[role.code] then
+            parts[#parts + 1] = DW.RoleIcon(role, size) .. " " .. L[role.key]
+        end
+    end
+    return table.concat(parts, ", ")
+end
+
+-- Bare ikonene: "[ikon] [ikon]". Tomt uten roller.
+function DW.RoleIcons(set, size)
+    local parts = {}
+    for _, role in ipairs(DW.ROLES) do
+        if type(set) == "table" and set[role.code] then
+            parts[#parts + 1] = DW.RoleIcon(role, size)
+        end
+    end
+    return table.concat(parts, " ")
 end
 
 -- Lytting ---------------------------------------------------------------------

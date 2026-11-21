@@ -1091,8 +1091,40 @@ setup.blink.main.checked = true
 setup.blink.main.scripts.OnClick(setup.blink.main)
 check("ticking it again turns it back on", ns.IsBlinkOn() and DragonworldDB.alerts.blinkOff == nil)
 setup.done.scripts.OnClick(setup.done)
-check("Continue remembers the setup, and the modules appear",
-    DragonworldDB.setupDone == true and DragonworldDB.setupVersion == 2 and not setup:IsVisible() and win.body:IsVisible() and win:IsShown())
+check("Continue remembers the setup, and then asks this character's role (once per character)",
+    DragonworldDB.setupDone == true and DragonworldDB.setupVersion == 2 and not setup:IsVisible() and win:IsShown()
+    and win.rolePrompt ~= nil and win.rolePrompt:IsVisible() and not win.body:IsVisible())
+;(function()
+    local rp = win.rolePrompt
+    local chips = rp.choice.chips
+    local ROLE_FILE = "|TInterface\\LFGFrame\\UI-LFG-ICON-PORTRAITROLES:24:24:0:0:64:64:"
+    check("the role page asks in the chosen language, naming the character",
+        rp.title.text == "Welke rol speel je?" and rp.text.text == ns.strings.nl.ROLE_TEXT:format("Tester")
+        and rp.save.label.text == "Opslaan" and rp.later.label.text == "Later", rp.text.text)
+    check("...with three big choices, Tank, Healer and DPS, with the game's role icons, none chosen, and Save greyed out",
+        #chips == 3 and chips[1].label.text == ROLE_FILE .. "0:19:22:41|t Tank" and chips[2].label.text == ROLE_FILE .. "20:39:1:20|t Healer"
+        and chips[3].label.text == ROLE_FILE .. "20:39:22:41|t DPS" and not chips[1].selected and not chips[2].selected and not chips[3].selected
+        and not rp.save:IsEnabled(), chips[1] and chips[1].label.text)
+    check("the professions reminder waits until the role is answered", DragonworldShareNotice == nil)
+    chips[1].scripts.OnClick(chips[1])
+    check("choosing Tank marks it and makes Save available", chips[1].selected and rp.save:IsEnabled())
+    chips[3].scripts.OnClick(chips[3])
+    check("with Tank and DPS chosen, Healer greys out", chips[1].selected and chips[3].selected and chips[2].dimmed and not chips[2]:IsEnabled())
+    chips[2].scripts.OnClick(chips[2])
+    check("...and cannot be chosen as a third", not chips[2].selected)
+    chips[1].scripts.OnClick(chips[1])
+    check("clicking a chosen one removes it, and Healer can be chosen again", not chips[1].selected and chips[3].selected and not chips[2].dimmed and chips[2]:IsEnabled())
+    chips[1].scripts.OnClick(chips[1])
+    dw("")
+    dw("")
+    check("closing and reopening comes back to the role page, with what was chosen",
+        win:IsShown() and rp:IsVisible() and not win.body:IsVisible() and chips[1].selected and chips[3].selected and not chips[2].selected)
+    rp.save.scripts.OnClick(rp.save)
+    local roles = ns.GetMyRoles()
+    check("Save stores the role for this character, and the modules appear",
+        roles.T and roles.D and not roles.H and DragonworldDB.profiles["Player-1-Tester"].roles.text == "TD"
+        and not rp:IsVisible() and win.body:IsVisible() and win:IsShown() and not ns.NeedsRoleChoice())
+end)()
 
 -- Right after the language is chosen: a reminder to open your professions.
 local shareNotice = DragonworldShareNotice
@@ -3046,7 +3078,8 @@ do
 end
 
 -- ---- Opening a member's profession, like a profession link in chat ----
--- (Since the Legacy column came in, professions have 40 px less room.)
+-- (Since the Legacy column came in, professions have 40 px less room; the Role column took 32 more,
+-- won back by a narrower "last online" column.)
 check("each profession stands on its own in the row; what does not fit becomes '+2'",
     shownProfs(roRow("Tester")) == "Cooking 150 +2" and shownProfs(roRow("Altine")) == "Alchemy 300, Herbalism 280"
     and shownProfs(roRow("Dagny")) == "", shownProfs(roRow("Tester")) .. " | " .. shownProfs(roRow("Altine")))
@@ -3054,7 +3087,7 @@ do
     local x1 = select(4, roRow("Altine").buttons[1]:GetPoint())
     local x2 = select(4, roRow("Altine").buttons[2]:GetPoint())
     check("professions start under their heading and follow each other with a gap",
-        x1 == 310 and x2 == 310 + 66 + 10 and select(4, roPanel.headerProfessions:GetPoint()) == 320, tostring(x1) .. " " .. tostring(x2))
+        x1 == 342 and x2 == 342 + 66 + 10 and select(4, roPanel.headerProfessions:GetPoint()) == 352, tostring(x1) .. " " .. tostring(x2))
 end
 do
     local button = roRow("Altine").buttons[1]
@@ -3217,6 +3250,12 @@ do
     character = { name = "Altine", realm = "Stormrage", class = "MAGE", guid = "Player-1-Altine" }
     dw("")
     dw("")
+    check("another character is asked for its role first", win:IsShown() and win.rolePrompt:IsVisible() and not win.body:IsVisible()
+        and not shareNotice:IsVisible() and win.rolePrompt.text.text == ns.strings.nb.ROLE_TEXT:format("Altine")
+        and not win.rolePrompt.choice.chips[1].selected and not win.rolePrompt.save:IsEnabled())
+    win.rolePrompt.later.scripts.OnClick(win.rolePrompt.later)
+    check("'Later' skips it without a role, and the modules appear", not win.rolePrompt:IsVisible() and win.body:IsVisible()
+        and next(ns.GetMyRoles()) == nil and not ns.NeedsRoleChoice())
     check("another character gets the reminder the first time the window is opened there", win:IsShown() and shareNotice:IsVisible())
     shareNotice.ok.scripts.OnClick(shareNotice.ok)
     check("...and it is remembered per character", roDB().reminded["Altine-Stormrage"] == true and roDB().reminded["Tester-Stormrage"] == true)
@@ -4305,11 +4344,11 @@ end)()
     local TANK_ICON, HEALER_ICON, DPS_ICON = ROLE_FILE .. "14:14:0:0:64:64:0:19:22:41|t", ROLE_FILE .. "14:14:0:0:64:64:20:39:1:20|t", ROLE_FILE .. "14:14:0:0:64:64:20:39:22:41|t"
     local function big(icon) return (icon:gsub(":14:14:", ":16:16:")) end
     local roleChecks = picker.roleChecks
-    check("three roles to choose from, with the game's role icons, none ticked yet",
+    check("three roles to choose from, with the game's role icons, starting with the role in your profile (Tank + DPS)",
         #roleChecks == 3 and picker.roleLabel.text == "Rolle:"
         and roleChecks[1].label.text == big(TANK_ICON) .. " Tank" and roleChecks[2].label.text == big(HEALER_ICON) .. " Healer" and roleChecks[3].label.text == big(DPS_ICON) .. " DPS"
-        and not roleChecks[1]:GetChecked() and not roleChecks[2]:GetChecked() and not roleChecks[3]:GetChecked()
-        and roleChecks[1]:IsEnabled() and roleChecks[2]:IsEnabled() and roleChecks[3]:IsEnabled(), roleChecks[1] and roleChecks[1].label.text)
+        and roleChecks[1]:GetChecked() and not roleChecks[2]:GetChecked() and roleChecks[3]:GetChecked()
+        and roleChecks[1]:IsEnabled() and not roleChecks[2]:IsEnabled() and roleChecks[3]:IsEnabled(), roleChecks[1] and roleChecks[1].label.text)
     check("the button to stop is not there while you are not on", not picker.off:IsShown())
     click(picker.save)
     check("saving with no dungeon asks for one", picker.error.text == "Velg minst én dungeon." and picker:IsVisible() and ns.GetMyStatus() == nil)
@@ -4321,6 +4360,8 @@ end)()
     picker.purposeChecks[3]:SetChecked(true); click(picker.purposeChecks[3])
     local scholo = checkFor("Scholomance")
     scholo:SetChecked(false); click(scholo)
+    roleChecks[1]:SetChecked(false); click(roleChecks[1])
+    roleChecks[3]:SetChecked(false); click(roleChecks[3])
     click(picker.save)
     check("saving with dungeons but no role asks for a role", picker.error.text == "Velg rolle: tank, healer eller DPS (høyst to)." and picker:IsVisible() and ns.GetMyStatus() == nil)
     local function tick(box, on) box:SetChecked(on); click(box) end
@@ -4508,8 +4549,9 @@ end)()
     local function pfSent() return sentNow(PF_PREFIX) end
     local function click(button) button.scripts.OnClick(button) end
 
-    check("at login the addon asks the others for their profiles (it had nothing readable of its own)",
-        prefixes[PF_PREFIX] == true and #PROFILE_LOGIN == 1 and PROFILE_LOGIN[1] == "R", all(PROFILE_LOGIN))
+    check("at login the addon sends the role chosen the first time (nothing else readable yet), and asks the others for their profiles",
+        prefixes[PF_PREFIX] == true and #PROFILE_LOGIN == 2 and (PROFILE_LOGIN[1] == "R" or PROFILE_LOGIN[2] == "R")
+        and (PROFILE_LOGIN[1] .. ";" .. PROFILE_LOGIN[2]):find("O\tPlayer%-1%-Tester\t%d+\tTD") ~= nil, all(PROFILE_LOGIN))
 
     -- What the game gives about this character: points, gear and the talent tree.
     -- Legacy points: no documented function, so the addon looks for a C_...Legacy... getter.
@@ -4553,8 +4595,8 @@ end)()
     check("asked for profiles, we answer after a little while, not at once", #pfSent() == 0)
     flush()
     local sent = pfSent()
-    check("we send our legacy points, gear and talents",
-        #sent == 3 and sent[1] == "P\tPlayer-1-Tester\t" .. t .. "\t23\t65"
+    check("we send our legacy points, gear, talents and role",
+        #sent == 4 and sent[4]:find("^O\tPlayer%-1%-Tester\t%d+\tTD$") ~= nil and sent[1] == "P\tPlayer-1-Tester\t" .. t .. "\t23\t65"
         and sent[2] == "E\tPlayer-1-Tester\t" .. t .. "\t1/1\t1=20::::::::60,16=7::::::::60"
         and sent[3] == "T\tPlayer-1-Tester\t" .. t .. "\t1/1\tHoly~7~21001-5,21002-2;Protection~0~;Retribution~3~21004-3", all(sent))
 
@@ -4696,6 +4738,68 @@ end)()
     check("an older text does not replace a newer one", card.aboutText.text == "Tank. Spør meg om Molten Core.")
     click(card.close)
     pfSent()
+
+    -- The role: a column in the roster (between rank and professions) and a row on the card.
+    do
+        local ROLE_FILE = "|TInterface\\LFGFrame\\UI-LFG-ICON-PORTRAITROLES:14:14:0:0:64:64:"
+        local TANK, HEALER, DPS = ROLE_FILE .. "0:19:22:41|t", ROLE_FILE .. "20:39:1:20|t", ROLE_FILE .. "20:39:22:41|t"
+        pfReceive("O\tPlayer-1-Altine\t" .. t .. "\tHD")
+        flush()
+        check("the roster has a Role column between rank and professions",
+            roPanel.headerRole.text == "Rolle" and select(4, roPanel.headerRank:GetPoint()) == 226 and select(4, roPanel.headerRole:GetPoint()) == 312
+            and select(4, roPanel.headerProfessions:GetPoint()) == 352)
+        check("...with each member's role as icons, and nothing for those who have not chosen one",
+            roRow("Tester").roles.text == TANK .. " " .. DPS and roRow("Altine").roles.text == HEALER .. " " .. DPS and roRow("Borin").roles.text == ""
+            and roRow("Dagny").roles.text == "", roRow("Altine").roles.text)
+        roRow("Altine"):Fire("OnEnter")
+        check("hovering the row names the role", GameTooltip.lines[3] == HEALER .. " Healer, " .. DPS .. " DPS", table.concat(GameTooltip.lines, " / "))
+        roRow("Altine"):Fire("OnLeave")
+        roPanel.searchBox:SetText("healer")
+        check("searching for a role finds the members who play it", #roRows() == 1 and roRows()[1].name.text == "Altine")
+        roPanel.searchBox:SetText("")
+
+        clearChat()
+        pfReceive("O\tPlayer-1-Altine\t" .. (t - 5) .. "\tT")
+        pfReceive("O\tPlayer-1-Altine\t" .. (t + 1) .. "\tXYZ")
+        pfReceive("O\tPlayer-1-Altine\t" .. (t + 5 * 86400) .. "\tT")
+        flush()
+        check("an older, broken or future role message changes nothing", roRow("Altine").roles.text == HEALER .. " " .. DPS and #chat == 0, chatText())
+
+        roRow("Altine").scripts.OnMouseUp(roRow("Altine"), "LeftButton")
+        check("someone else's card shows their role by name, and cannot be changed",
+            card.rolesLabel.text == "Rolle:" and card.rolesText:IsShown() and not card.roleChoice:IsShown()
+            and card.rolesText.text == HEALER .. " Healer, " .. DPS .. " DPS" and colour(card.rolesText.color, 1, 1, 1), card.rolesText.text)
+        click(card.close)
+        roRow("Borin").scripts.OnMouseUp(roRow("Borin"), "LeftButton")
+        check("...or that none is chosen yet", card.rolesText.text == "Ikke valgt ennå" and colour(card.rolesText.color, 0.55, 0.55, 0.55))
+        click(card.close)
+        pfReceive("O\tPlayer-1-Borin\t" .. t .. "\tTHD")
+        flush()
+        check("a message with three roles keeps only two", roRow("Borin").roles.text == TANK .. " " .. HEALER, roRow("Borin").roles.text)
+        pfSent()
+
+        roRow("Tester").scripts.OnMouseUp(roRow("Tester"), "LeftButton")
+        local chips = card.roleChoice.chips
+        check("on your own card you choose your role, starting with the one you have",
+            card.roleChoice:IsShown() and not card.rolesText:IsShown() and #chips == 3
+            and chips[1].selected and not chips[2].selected and chips[3].selected and chips[2].dimmed
+            and chips[1].label.text == TANK .. " Tank" and chips[3].label.text == DPS .. " DPS")
+        click(chips[3])
+        local early = pfSent()
+        check("taking one away is kept at once, but sent a moment later",
+            ns.GetMyRoles().T and not ns.GetMyRoles().D and not chips[3].selected and not chips[2].dimmed and #early == 0, all(early))
+        click(chips[2])
+        flush()
+        local sent = pfSent()
+        check("...so two clicks in a row become one message to the guild",
+            #sent == 1 and sent[1]:find("^O\tPlayer%-1%-Tester\t%d+\tTH$") ~= nil and roRow("Tester").roles.text == TANK .. " " .. HEALER, all(sent))
+        click(card.close)
+        check("closing the card sends nothing more", #pfSent() == 0)
+        roRow("Tester").scripts.OnMouseUp(roRow("Tester"), "LeftButton")
+        check("opening your card again shows the role you chose", chips[1].selected and chips[2].selected and not chips[3].selected)
+        click(card.close)
+        pfSent()
+    end
 
     -- Picking dungeons closes the card, so only one of them is on top.
     click(win.statusPills[2])

@@ -2,6 +2,7 @@
 -- Klikk på et medlem i Medlemmer, så kommer dette kortet opp over vinduet:
 --   * navn, level, klasse, rank, status, hvor de er / når de sist var pålogget
 --   * legacy-poeng
+--   * rollen (tank, healer, dps; høyst to). På ditt eget kort velger du den.
 --   * professions; de som er delt kan åpnes for å se hva medlemmet kan lage
 --   * talenter (hvor mange poeng i hvert tre; hold over for alle)
 --   * utstyret medlemmet har på seg (hold over en gjenstand for detaljer)
@@ -199,7 +200,7 @@ local function GetProfessionChip(index)
     end
     local width = math.floor((LEFT_WIDTH - 6) / 2)
     chip = DW.CreateChip(card, width, 22)
-    chip:SetPoint("TOPLEFT", 16 + ((index - 1) % 2) * (width + 6), -124 - math.floor((index - 1) / 2) * 26)
+    chip:SetPoint("TOPLEFT", 16 + ((index - 1) % 2) * (width + 6), -148 - math.floor((index - 1) / 2) * 26)
     chip:SetScript("OnClick", function(self)
         if current and self.profession and DW.OpenMemberProfession then
             DW.OpenMemberProfession(current, self.profession)
@@ -239,6 +240,24 @@ local function RefreshCard()
     local points, max = DW.LegacyPointsOf(member)
     local pointsText = points and (max and ("%d / %d"):format(points, max) or tostring(points)) or L.MC_UNKNOWN
     card.legacy:SetText(L.MC_LEGACY:format(pointsText))
+
+    -- Rollen.
+    card.rolesLabel:SetText(L.MC_ROLE)
+    if IsMe(member) then
+        card.roleChoice:SetRoles(DW.GetMyRoles())
+        card.roleChoice:Show()
+        card.rolesText:Hide()
+    else
+        local roles = DW.RolesOf(member)
+        card.rolesText:SetText(roles and DW.RoleNames(roles) or L.MC_ROLE_NONE)
+        if roles then
+            card.rolesText:SetTextColor(1, 1, 1)
+        else
+            card.rolesText:SetTextColor(0.55, 0.55, 0.55)
+        end
+        card.roleChoice:Hide()
+        card.rolesText:Show()
+    end
 
     -- Professions.
     card.professionsLabel:SetText(L.MC_PROFESSIONS)
@@ -380,19 +399,33 @@ local function CreateCard(window)
     c.legacy = c:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     c.legacy:SetPoint("TOPLEFT", 16, -80)
 
-    c.professionsLabel = Heading(c, 16, -104)
-    c.noProfessions = c:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    c.noProfessions:SetPoint("TOPLEFT", 16, -124)
+    -- Rollen: på ditt eget kort velger du den her (lagres med en gang og
+    -- sendes til guilden), ellers står rollen medlemmet har valgt.
+    c.rolesLabel = Heading(c, 16, -104)
+    c.rolesText = c:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    c.rolesText:SetPoint("TOPLEFT", 80, -104)
+    c.rolesText:SetWidth(LEFT_WIDTH - 64)
+    c.rolesText:SetJustifyH("LEFT")
+    c.roleChoice = DW.CreateRoleChoice(c, 92, 22, 14, function(roles)
+        if current and IsMe(current) then
+            DW.SetMyRoles(roles)
+        end
+    end)
+    c.roleChoice:SetPoint("TOPLEFT", 80, -99)
 
-    c.talentsLabel = Heading(c, 16, -180)
+    c.professionsLabel = Heading(c, 16, -128)
+    c.noProfessions = c:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    c.noProfessions:SetPoint("TOPLEFT", 16, -148)
+
+    c.talentsLabel = Heading(c, 16, -204)
     c.talents = c:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    c.talents:SetPoint("TOPLEFT", 16, -198)
+    c.talents:SetPoint("TOPLEFT", 16, -222)
     c.talents:SetWidth(LEFT_WIDTH)
     c.talents:SetJustifyH("LEFT")
     c.talents:SetWordWrap(false)
     -- Usynlig felt over talentlinjen: hold over for å se alle talentene.
     c.talentsHover = CreateFrame("Frame", nil, c)
-    c.talentsHover:SetPoint("TOPLEFT", 16, -194)
+    c.talentsHover:SetPoint("TOPLEFT", 16, -218)
     c.talentsHover:SetSize(LEFT_WIDTH, 20)
     c.talentsHover:EnableMouse(true)
     c.talentsHover:SetScript("OnEnter", function(self)
@@ -414,10 +447,10 @@ local function CreateCard(window)
 
     -- "Om meg": på ditt eget kort et felt du skriver i, ellers teksten
     -- medlemmet har skrevet om seg selv.
-    c.aboutLabel = Heading(c, 16, -224)
+    c.aboutLabel = Heading(c, 16, -248)
     local aboutHolder = CreateFrame("Frame", nil, c, "BackdropTemplate")
-    aboutHolder:SetPoint("TOPLEFT", 16, -240)
-    aboutHolder:SetSize(LEFT_WIDTH, 58)
+    aboutHolder:SetPoint("TOPLEFT", 16, -264)
+    aboutHolder:SetSize(LEFT_WIDTH, 50)
     aboutHolder:SetBackdrop(DW.PANEL_BACKDROP)
     aboutHolder:SetBackdropColor(0, 0, 0, 0.6)
     aboutHolder:SetBackdropBorderColor(0.45, 0.45, 0.45, 1)
@@ -429,7 +462,7 @@ local function CreateCard(window)
     c.aboutBox:SetMultiLine(true)
     c.aboutBox:SetFontObject(ChatFontNormal or "ChatFontNormal")
     c.aboutBox:SetPoint("TOPLEFT", 8, -6)
-    c.aboutBox:SetSize(LEFT_WIDTH - 16, 46)
+    c.aboutBox:SetSize(LEFT_WIDTH - 16, 38)
     c.aboutBox:SetAutoFocus(false)
     c.aboutBox:SetMaxLetters(MAX_ABOUT_LETTERS)
     c.aboutBox:SetScript("OnEscapePressed", function(self)
@@ -451,10 +484,10 @@ local function CreateCard(window)
         end
     end)
 
-    c.notesLabel = Heading(c, 16, -306)
+    c.notesLabel = Heading(c, 16, -322)
     local holder = CreateFrame("Frame", nil, c, "BackdropTemplate")
-    holder:SetPoint("TOPLEFT", 16, -322)
-    holder:SetSize(LEFT_WIDTH, 62)
+    holder:SetPoint("TOPLEFT", 16, -338)
+    holder:SetSize(LEFT_WIDTH, 52)
     holder:SetBackdrop(DW.PANEL_BACKDROP)
     holder:SetBackdropColor(0, 0, 0, 0.6)
     holder:SetBackdropBorderColor(0.45, 0.45, 0.45, 1)
@@ -462,7 +495,7 @@ local function CreateCard(window)
     c.notes:SetMultiLine(true)
     c.notes:SetFontObject(ChatFontNormal or "ChatFontNormal")
     c.notes:SetPoint("TOPLEFT", 8, -6)
-    c.notes:SetSize(LEFT_WIDTH - 16, 50)
+    c.notes:SetSize(LEFT_WIDTH - 16, 40)
     c.notes:SetAutoFocus(false)
     c.notes:SetMaxLetters(MAX_NOTE_LETTERS)
     c.notes:SetScript("OnEscapePressed", function(self)

@@ -5,6 +5,9 @@
 --   * utstyret karakteren har på seg
 --   * talentene
 --   * "om meg": en kort tekst spilleren skriver om seg selv, som andre ser
+--   * rollen karakteren spiller: tank, healer, dps, eller to av dem. Den
+--     velges første gang (MainWindow.lua) og kan endres på ditt eget kort,
+--     og vises med ikon i Medlemmer.
 -- Hver addon sender bare sitt eget, og bare når noe er endret. Ved innlogging
 -- ber den de andre om det som er endret siden sist den var pålogget (se
 -- "Hva vi har fått med oss" i Comm.lua). Alle tar vare på det de får (det
@@ -34,9 +37,11 @@
 --   E nøkkel tid nr/antall tekst      utstyr: "1=12345:0:0,5=..." (plass=gjenstand)
 --   T nøkkel tid nr/antall tekst      talenter: "Navn~poeng~spell-rang,...;..."
 --   A nøkkel tid nr/antall tekst      "om meg"-teksten (tom tekst = slettet)
+--   O nøkkel tid roller               rollen: "TH" (høyst to av T, H, D; tom = ingen)
 --   R tid                             send meg det dere har endret etter tid (servertid)
 --   R                                 send meg alt (første gang, og én gang i uka)
--- Tiden i P/E/T/A er når den delen sist ble endret.
+-- Tiden i P/E/T/A/O er når den delen sist ble endret. Eldre versjoner
+-- kjenner ikke O og overser den.
 -- Lange tekster deles i biter og settes sammen igjen hos mottakeren.
 
 local ADDON_NAME, DW = ...
@@ -90,9 +95,11 @@ end
 --   legacy  = { points, time },
 --   gear    = { time, items = { [plass] = "12345:0:0..." } },
 --   talents = { time, trees = { { name, points, talents = { { spell, rank }, ... } }, ... } },
+--   roles   = { time, text = "TH" },
 -- }
--- Din egen har i tillegg gear.raw og talents.raw (teksten som sendes) og
--- sent = { [P/E/T/A] = tiden på det som sist ble sendt }.
+-- Din egen har i tillegg gear.raw og talents.raw (teksten som sendes),
+-- sent = { [P/E/T/A/O] = tiden på det som sist ble sendt } og rolesAsked
+-- (true når du er spurt om rollen første gang, også om du svarte "senere").
 local function Profiles()
     if type(DragonworldDB) ~= "table" then
         return {}
@@ -457,6 +464,7 @@ end
 -- Deling ------------------------------------------------------------------------
 
 local Send = DW.CreateSender(PREFIX)
+local rolesQueued = false -- rollen er nettopp endret og sendes om litt (DW.SetMyRoles)
 
 -- Sender en tekst, delt i biter som får plass i en melding.
 local function SendText(kind, key, when, text)
@@ -552,6 +560,15 @@ local function Publish(since)
         sent.A = about.time
         SendText("A", key, about.time, about.text)
     end
+    -- Rollen: valgt av spilleren selv (DW.SetMyRoles), sendt som for "om meg".
+    -- Mens spilleren klikker (rolesQueued), venter den til klikkene er ferdige,
+    -- med mindre noen har bedt om den.
+    local roles = profile.roles
+    if Due("O", roles) and type(roles.text) == "string" and not (since == 0 and roles.text == "" and sent.O == roles.time)
+        and not (rolesQueued and since == nil) then
+        sent.O = roles.time
+        Send(table.concat({ "O", key, ("%d"):format(roles.time), roles.text }, SEP))
+    end
 
     if changed then
         Changed()
@@ -616,7 +633,16 @@ DW.OnGuildMessage(PREFIX, function(text, sender)
         return
     end
 
-    if kind == "P" then
+    if kind == "O" then
+        local text = fields[4] or ""
+        if #text <= 3 and not text:find("[^THD]") then
+            local profile = ProfileFor(key, true)
+            if type(profile.roles) ~= "table" or (profile.roles.time or 0) < when then
+                profile.roles = { time = when, text = DW.RolesToText(DW.RolesFromText(text)) }
+                Changed()
+            end
+        end
+    elseif kind == "P" then
         local points, max = tonumber(fields[4]), tonumber(fields[5] or "")
         if points and points >= 0 and points < 100000 then
             local profile = ProfileFor(key, true)
@@ -723,6 +749,86 @@ end
 function DW.PublishProfile()
     if DW.IsMember() then
         Publish()
+    end
+end
+
+-- Rollen ----------------------------------------------------------------------
+
+local function RolesIn(profile)
+    if profile and type(profile.roles) == "table" and type(profile.roles.text) == "string" then
+        return DW.RolesFromText(profile.roles.text)
+    end
+    return nil
+end
+
+-- Rollen du har valgt for denne karakteren: { T = true, ... } (tom om ingen).
+function DW.GetMyRoles()
+    local key = MyKey()
+    return RolesIn(key and ProfileFor(key)) or {}
+end
+
+-- Rollen til et medlem fra DW.ReadGuildRoster(), eller nil hvis vi ikke vet
+-- (ingen addon, eller ikke valgt). For deg selv er det din egen.
+function DW.RolesOf(member)
+    if type(member) ~= "table" then
+        return nil
+    end
+    local key = IsMe(member) and MyKey() or MemberKey(member)
+    local roles = RolesIn(key and ProfileFor(key))
+    if roles and next(roles) then
+        return roles
+    end
+    return nil
+end
+
+-- Lagrer rollen din (høyst to) og sender den til guilden litt etterpå, så
+-- flere klikk rett etter hverandre blir én melding.
+function DW.SetMyRoles(set)
+    local key = MyKey()
+    if not key then
+        return
+    end
+    local profile = ProfileFor(key, true)
+    profile.rolesAsked = true
+    local text = DW.RolesToText(DW.RolesFromText(DW.RolesToText(set)))
+    local old = type(profile.roles) == "table" and profile.roles or nil
+    if (old and old.text == text) or (not old and text == "") then
+        return
+    end
+    profile.roles = { text = text, time = math.max(Now(), old and ((old.time or 0) + 1) or 0) }
+    -- Planlegg sendingen før visningene oppdateres: kortet leser profilen på
+    -- nytt (DW.ProfileOf), og det skal ikke sende rollen midt i klikkingen.
+    if not rolesQueued and C_Timer and C_Timer.After then
+        rolesQueued = true
+        C_Timer.After(2, function()
+            rolesQueued = false
+            if DW.IsMember() then
+                Publish()
+            end
+        end)
+    end
+    Changed()
+end
+
+-- Skal vi spørre om rollen? Første gang på hver karakter, til den er valgt
+-- eller spilleren har svart "senere".
+function DW.NeedsRoleChoice()
+    local key = MyKey()
+    if not key or not DW.IsMember() then
+        return false
+    end
+    local profile = ProfileFor(key)
+    if profile and (profile.rolesAsked or (RolesIn(profile) and next(RolesIn(profile)))) then
+        return false
+    end
+    return true
+end
+
+-- "Senere": ikke spør igjen. Rollen kan velges på kortet ditt.
+function DW.SkipRoleChoice()
+    local key = MyKey()
+    if key then
+        ProfileFor(key, true).rolesAsked = true
     end
 end
 
