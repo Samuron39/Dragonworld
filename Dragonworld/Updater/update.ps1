@@ -373,7 +373,10 @@ try {
         if ($FromZip) {
             Copy-Item -LiteralPath $FromZip -Destination $zip
         } else {
-            Invoke-WebRequest -Uri $ZipUrl -OutFile $zip -UseBasicParsing
+            # Hent akkurat den versjonen GitHub sa var nyest: "latest"-lenkene
+            # kan peke på forrige versjon i noen minutter etter en ny release.
+            $url = if ($latest) { "https://github.com/$Repo/releases/download/v$latest/Dragonworld.zip" } else { $ZipUrl }
+            Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
         }
         # .NET direkte i stedet for Expand-Archive: den kan bli lastet fra en nyere
         # PowerShell og feile i Windows PowerShell.
@@ -384,8 +387,9 @@ try {
         $new = Get-Release $source
 
         if (-not $Silent) { Write-Host '' }
-        if ($old -and $new -and $old -eq $new) {
-            if (-not $Silent) { Say ($T.Same -f $new) 'Green' }
+        if ($old -and $new -and ($old -eq $new -or (Test-Older $new $old))) {
+            # Samme, eller (rett etter en release) en eldre enn vår: aldri bakover.
+            if (-not $Silent) { Say ($T.Same -f $old) 'Green' }
         } else {
             Copy-Addon $source $target
             if ($old) { Say ($T.Updated -f $old, $new) 'Green' } else { Say ($T.Installed -f $new) 'Green' }

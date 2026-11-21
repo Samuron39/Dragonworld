@@ -10,7 +10,7 @@
 --     eller bilder (DW.RESTART_RELEASE), må spillet startes helt på nytt i
 --     stedet, og det står det.
 --     Vinduet venter til versjonen har vært ute så lenge at bakgrunnsjobben
---     sikkert har hentet den (DW.RELEASED_AT + 15 minutter).
+--     sikkert har hentet den (DW.RELEASED_AT + 20 minutter).
 --   * Uten: "Oppdater Dragonworld!", med hvordan og lenken til nedlasting.
 --
 -- Slik går det til:
@@ -41,7 +41,7 @@ local SEP = "\t"
 local HELLO_DELAY = 12          -- sekunder etter innlogging
 local POPUP_DELAY = 20          -- vinduet ved innlogging kommer litt etter
 local REPLY_MIN, REPLY_SPREAD = 2, 8
-local AUTO_DELAY = 15 * 60      -- så lenge etter utleggingen er den sikkert hentet i bakgrunnen
+local AUTO_DELAY = 20 * 60      -- så lenge etter utleggingen er den sikkert hentet i bakgrunnen (GitHub kan henge noen minutter, jobben går hvert 10.)
 
 -- Versjonsnummer ----------------------------------------------------------------
 
@@ -317,9 +317,13 @@ local function MaybeShowPopup()
     end
     local ready = ReadyAt()
     if ready then
+        -- Én ventende sjekk om gangen; kommer den for tidlig, venter den på nytt.
         if waitingUntil ~= ready and C_Timer and C_Timer.After then
             waitingUntil = ready
-            C_Timer.After(ready - Now() + 1, MaybeShowPopup)
+            C_Timer.After(ready - Now() + 1, function()
+                waitingUntil = nil
+                MaybeShowPopup()
+            end)
         end
         return
     end

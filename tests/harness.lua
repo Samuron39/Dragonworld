@@ -5015,7 +5015,10 @@ rsChip.scripts.OnClick(rsChip)
     verReceive(table.concat({ "V", "2.0.0", "2.0.0", ns.RELEASE, tostring(SERVER_NOW - 60) }, "\t"), "Altine-Stormrage")
     check("with automatic updates, the window waits until the new version has surely been downloaded",
         not notice:IsShown() and DragonworldDB.update.newest == "2.0.0" and DragonworldDB.update.restart == ns.RELEASE and DragonworldDB.update.releasedAt == SERVER_NOW - 60)
-    SERVER_NOW = SERVER_NOW + 15 * 60
+    SERVER_NOW = SERVER_NOW + 10 * 60
+    flush()
+    check("...still waiting ten minutes later", not notice:IsShown())
+    SERVER_NOW = SERVER_NOW + 10 * 60
     flush()
     check("...then: it is downloaded, type /reload, with a button that does it",
         notice:IsShown() and notice.title.text == "Ny versjon er klar!" and notice.text.text == ns.strings.nb.UP_READY_RELOAD:format("2.0.0")
