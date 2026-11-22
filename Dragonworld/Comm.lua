@@ -1,24 +1,24 @@
--- Dragonworld - meldinger mellom medlemmer
+-- Dragonworld - messages between members
 --
--- Moduler som deler noe med resten av guilden (events, professions) sender
--- små meldinger på guild-kanalen som bare andre addoner ser. Denne filen tar
--- seg av det som er felles:
---   * køen som sørger for at vi ikke sender fortere enn spillet tillater
---   * mottak, med de sjekkene som alltid må gjøres først
+-- Modules that share something with the rest of the guild (events, professions)
+-- send small messages on the guild channel that only other addons see. This
+-- file handles what they have in common:
+--   * the queue that makes sure we do not send faster than the game allows
+--   * receiving, with the checks that must always be done first
 --
--- Slik bruker en modul det:
---   local Send = DW.CreateSender("DragonworldXx")      -- navn på meldingene, maks 16 tegn
+-- How a module uses it:
+--   local Send = DW.CreateSender("DragonworldXx")      -- message name, max 16 characters
 --   DW.OnGuildMessage("DragonworldXx", function(text, sender) ... end)
---   Send("tekst")                                       -- maks 255 tegn
+--   Send("text")                                        -- max 255 characters
 --
--- Spillets regler: 255 tegn per melding, 10 meldinger "på konto" per navn, og
--- én ny i sekundet. Prøvekontoer får ikke sende i det hele tatt.
+-- The game's rules: 255 characters per message, 10 messages "in the bank" per
+-- name, and one new one per second. Trial accounts cannot send at all.
 
 local ADDON_NAME, DW = ...
 local L = DW.L
 
--- Er avsenderen av en melding karakteren du selv spiller? Spillet oppgir som
--- regel "Navn-Realm".
+-- Is the sender of a message the character you are playing yourself? The game
+-- usually gives "Navn-Realm".
 function DW.IsMe(sender)
     local key, name = DW.CharacterKey()
     if not key then
@@ -27,8 +27,8 @@ function DW.IsMe(sender)
     if sender == key or sender == name then
         return true
     end
-    -- Navn kan komme med eller uten mellomrom, så sammenlign uten dem. Har
-    -- avsenderen realm, må den også stemme.
+    -- Names can come with or without spaces, so compare without them. If the
+    -- sender has a realm, it must match too.
     local function Plain(text)
         return (text:lower():gsub("%s+", ""))
     end
@@ -38,8 +38,8 @@ function DW.IsMe(sender)
     return DW.NameKey(sender) == DW.NameKey(name)
 end
 
--- Lager en sendefunksjon for ett meldingsnavn. Meldinger som ikke får plass
--- med en gang legges i kø og sendes etter hvert.
+-- Makes a send function for one message name. Messages that do not fit right
+-- away are queued and sent as room allows.
 function DW.CreateSender(prefix)
     if C_ChatInfo and C_ChatInfo.RegisterAddonMessagePrefix then
         pcall(C_ChatInfo.RegisterAddonMessagePrefix, prefix)
@@ -69,7 +69,7 @@ function DW.CreateSender(prefix)
             queue = {}
             return
         end
-        -- I noen situasjoner sperrer spillet all sending. Vent og prøv igjen.
+        -- In some situations the game blocks all sending. Wait and try again.
         if C_ChatInfo.InChatMessagingLockdown and C_ChatInfo.InChatMessagingLockdown() then
             Schedule(5)
             return
@@ -85,12 +85,12 @@ function DW.CreateSender(prefix)
                 table.remove(queue, 1)
                 tokens = tokens - 1
             elseif result == 10 then
-                queue = {} -- ikke i en guild
+                queue = {} -- not in a guild
                 return
             elseif result == 1 or result == 2 or result == 4 then
-                table.remove(queue, 1) -- meldingen er ugyldig; den blir aldri sendt
+                table.remove(queue, 1) -- the message is invalid; it will never be sent
             else
-                tokens = 0 -- strupet eller sperret: vent litt
+                tokens = 0 -- throttled or blocked: wait a bit
                 break
             end
         end
@@ -106,7 +106,7 @@ function DW.CreateSender(prefix)
         end
         for _, waiting in ipairs(queue) do
             if waiting == message then
-                return -- ligger allerede i køen
+                return -- already in the queue
             end
         end
         queue[#queue + 1] = message
@@ -114,12 +114,12 @@ function DW.CreateSender(prefix)
     end
 end
 
--- Mottak ----------------------------------------------------------------------
+-- Receiving -------------------------------------------------------------------
 
-local handlers = {} -- [meldingsnavn] = funksjon(tekst, avsender)
+local handlers = {} -- [message name] = function(text, sender)
 
--- Til feilsøking: hvordan spillet skrev avsenderen på den siste meldingen fra
--- en annen, og på vårt eget siste ekko.
+-- For debugging: how the game wrote the sender on the last message from
+-- someone else, and on our own last echo.
 local lastSender, lastEcho
 
 DW.AddDebug("meldinger", function(add)
@@ -128,8 +128,8 @@ DW.AddDebug("meldinger", function(add)
         .. " | sperret nå: " .. DW.DebugText(C_ChatInfo and C_ChatInfo.InChatMessagingLockdown and C_ChatInfo.InChatMessagingLockdown()))
 end)
 
--- Registrerer hvem som skal ha meldingene med et bestemt navn. Funksjonen
--- kalles bare for meldinger fra andre guildmedlemmer, aldri for dine egne.
+-- Registers who gets the messages with a given name. The function is only
+-- called for messages from other guild members, never for your own.
 function DW.OnGuildMessage(prefix, handler)
     handlers[prefix] = handler
 end
@@ -149,10 +149,10 @@ frame:SetScript("OnEvent", function(self, event, prefix, text, channel, sender)
     end
     if DW.IsMe(sender) then
         lastEcho = sender
-        return -- vårt eget ekko
+        return -- our own echo
     end
     lastSender = sender
-    -- En ødelagt melding fra en annen skal aldri gi feil hos oss.
+    -- A broken message from someone else must never cause an error for us.
     local ok, problem = pcall(handler, text, sender)
     if not ok then
         DW.PrintError(L.ERROR, problem)
@@ -161,24 +161,24 @@ end)
 
 pcall(frame.RegisterEvent, frame, "CHAT_MSG_ADDON")
 
--- Hva vi har fått med oss ------------------------------------------------------
+-- What we have received ----------------------------------------------------------
 --
--- Profil og professions lagres hos alle, så de trenger ikke sendes på nytt
--- hver gang noen logger inn. Den som logger inn, spør derfor bare etter det
--- som er endret siden sist den var pålogget ("R <tid>"), og bare de som har
--- endret noe etter det, svarer. Første gang, og så én gang i uka, spør den
--- etter alt ("R"), i tilfelle en melding har gått tapt.
+-- Profile and professions are stored by everyone, so they do not need to be
+-- sent again every time someone logs in. The one who logs in therefore only
+-- asks for what has changed since it was last online ("R <time>"), and only
+-- those who have changed something since then answer. The first time, and then
+-- once a week, it asks for everything ("R"), in case a message has been lost.
 --
--- Lagret (for hele kontoen, som profilene og professions):
---   DragonworldDB.syncedUntil  servertid da vi sist logget ut etter å ha
---                              spurt og fått svar
---   DragonworldDB.fullSyncAt   servertid da vi sist spurte etter alt og fikk svar
+-- Saved (for the whole account, like the profiles and professions):
+--   DragonworldDB.syncedUntil  server time when we last logged out after having
+--                              asked and got an answer
+--   DragonworldDB.fullSyncAt   server time when we last asked for everything and got an answer
 
 local FULL_SYNC_EVERY = 7 * 24 * 3600
-local SYNC_MARGIN = 5 * 60 -- spør litt lenger tilbake enn nødvendig, i tilfelle noe kom sent
-local SYNC_SETTLE = 30     -- så lenge de andre får på seg å svare før økten regnes som hørt
+local SYNC_MARGIN = 5 * 60 -- ask a bit further back than necessary, in case something came late
+local SYNC_SETTLE = 30     -- how long the others get to answer before the session counts as heard
 
--- Servertiden, som er lik for alle spillere. Tidene i "R <tid>" er servertid.
+-- The server time, which is the same for all players. The times in "R <tid>" are server time.
 function DW.ServerNow()
     local now = GetServerTime and GetServerTime()
     if type(now) == "number" and not DW.IsSecret(now) then
@@ -187,11 +187,11 @@ function DW.ServerNow()
     return time()
 end
 
-local sessionSince -- nil = ikke bestemt ennå, false = spør etter alt, tall = spør fra da
-local askedAt      -- GetTime() da vi sist spurte
+local sessionSince -- nil = not decided yet, false = ask for everything, number = ask from then
+local askedAt      -- GetTime() when we last asked
 
--- Tiden de andre skal sende endringer fra (servertid), eller nil for alt.
--- Bestemmes første gang den kalles i en økt, så alle moduler spør likt.
+-- The time the others should send changes from (server time), or nil for everything.
+-- Decided the first time it is called in a session, so all modules ask the same.
 function DW.SyncSince()
     if sessionSince == nil then
         local db = type(DragonworldDB) == "table" and DragonworldDB or nil
@@ -207,22 +207,23 @@ function DW.SyncSince()
     return sessionSince or nil
 end
 
--- Meldingen en modul sender for å be de andre om deres: "R" eller "R <tid>".
+-- The message a module sends to ask the others for theirs: "R" or "R <tid>".
 function DW.SyncRequest()
     askedAt = GetTime()
     local since = DW.SyncSince()
     return since and ("R\t%d"):format(since) or "R"
 end
 
--- Fra en slik melding: tiden avsenderen vil ha endringer fra, 0 for alt.
--- Eldre versjoner sender bare "R", og de får alt, som før.
+-- From such a message: the time the sender wants changes from, 0 for everything.
+-- Older versions only send "R", and they get everything, as before.
 function DW.SyncRequestSince(text)
     return tonumber((type(text) == "string" and text:match("^R\t(%d+)$")) or "") or 0
 end
 
--- Ved utlogging (og /reload): har vi spurt og gitt de andre tid til å svare,
--- har vi fått med oss alt fram til nå. Ellers spør vi fra samme sted neste
--- gang. En karakter utenfor guilden hører ingenting, og endrer ikke dette.
+-- On logout (and /reload): if we have asked and given the others time to
+-- answer, we have received everything up to now. Otherwise we ask from the
+-- same point next time. A character outside the guild hears nothing, and does
+-- not change this.
 local logout = CreateFrame("Frame")
 logout:SetScript("OnEvent", function()
     if type(DragonworldDB) ~= "table" or not DW.IsMember() or not askedAt or GetTime() - askedAt < SYNC_SETTLE then

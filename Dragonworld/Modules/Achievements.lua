@@ -1,69 +1,76 @@
--- Dragonworld - Prestasjoner
+-- Dragonworld - Achievements
 --
--- To ting:
---   1. Milepæler. Når noen i guilden når level 20, 30, 40, 50 eller 60, 300
---      (det høyeste) i en profession, eller fullfører en Legacy Challenge,
---      kommer et banner øverst på skjermen hos alle som er pålogget og har
---      addonen: "GUILD-MILEPÆL! Gyongy Fa nådde level 60!", med en Gratz-knapp
---      som gratulerer i guildchatten. Alle milepælene står også i en liste i
---      fanen, nyeste først.
---   2. Guild-prestasjoner. Felles mål for hele guilden (fem på level 60, 50
---      medlemmer, 300 i alle håndverk ...), med hvor langt dere har kommet.
---      Nås et mål mens du er pålogget, kommer det et banner for det også.
+-- Two things:
+--   1. Milestones. When someone in the guild reaches level 20, 30, 40, 50 or
+--      60, 300 (the maximum) in a profession, or completes a Legacy
+--      Challenge, a banner appears at the top of the screen for everyone who
+--      is online and has the addon: "GUILD MILESTONE! Gyongy Fa reached level 60!",
+--      with a Gratz button that congratulates in guild chat. All milestones
+--      are also listed in the tab, newest first.
+--   2. Guild achievements. Shared goals for the whole guild (five at level 60,
+--      50 members, 300 in all crafts ...), with how far you have come.
+--      If a goal is reached while you are online, a banner appears for that
+--      too.
 --
--- Hvor milepælene kommer fra:
---   * Den som når en milepæl, sier fra selv (meldingen M) i det det skjer.
---     Det er eneste kilde for professions og legacy, og den gir nøyaktig tid.
---   * Legacy Challenges er spillets achievements i ny drakt (Blizzards eget
---     Legacy-vindu bygger på GetCategoryList/GetAchievementInfo). Spillet sier
---     fra med ACHIEVEMENT_EARNED når en er fullført; navn, beskrivelse og
---     ikon leses med GetAchievementInfo, og legacy-poengene den gir med
---     C_Traits.GetTraitCurrencyForAchievement(4225, id). Ingenting er listet
---     opp for hånd, så nye utfordringer kommer med av seg selv. En som allerede
---     var fullført på kontoen (en alt), meldes ikke.
---   * For level ser addonen også på spillets medlemsliste. Har et medlem gått
---     forbi en milepæl siden sist, er den nådd, også om medlemmet ikke har
---     addonen. Det gir banner bare når medlemmet er pålogget og vi har sett
---     det tidligere i samme økt; ellers skjedde det mens du var borte, og det
---     blir bare en linje i listen. Spillet oppdaterer medlemslisten når noen
---     ber om den (guildvinduet, Medlemmer-fanen osv.); addonen spør ikke selv
---     hele tiden.
---   * Ved innlogging ber addonen de andre om milepæler siden sist (R), og hver
---     svarer med sine egne. Da får listen riktig tid for dem med addonen.
+-- Where the milestones come from:
+--   * The one who reaches a milestone announces it themselves (message M) as
+--     it happens. This is the only source for professions and legacy, and it
+--     gives the exact time.
+--   * Legacy Challenges are the game's achievements in new clothes (Blizzard's
+--     own Legacy window is built on GetCategoryList/GetAchievementInfo). The
+--     game reports ACHIEVEMENT_EARNED when one is completed; name,
+--     description and icon are read with GetAchievementInfo, and the legacy
+--     points it gives with C_Traits.GetTraitCurrencyForAchievement(4225, id).
+--     Nothing is listed by hand, so new challenges are picked up on their
+--     own. One that was already completed on the account (an alt) is not
+--     announced.
+--   * For level the addon also looks at the game's roster. If a member has
+--     passed a milestone since last time, it has been reached, even if the
+--     member does not have the addon. It gives a banner only when the member
+--     is online and we saw them earlier in the same session; otherwise it
+--     happened while you were away, and it only becomes a line in the list.
+--     The game updates the roster when someone asks for it (the guild
+--     window, the Roster tab etc.); the addon does not ask all the time.
+--   * On login the addon asks the others for milestones since last time (R),
+--     and each replies with their own. That gives the list the right time for
+--     those who have the addon.
 --
--- Meldinger (navn DragonworldAch, felter skilt med tabulator):
---   M nøkkel tid L level navn klasse                 level-milepæl (20-60)
---   M nøkkel tid P skill navn klasse linje navn      profession (300)
---   M nøkkel tid A poeng navn klasse id tittel       legacy challenge (id = achievement)
---   R [tid]                                          send meg deres milepæler etter tid
--- "linje" er spillets nummer på professionen (164 = Blacksmithing), likt i
--- alle klienter; det siste feltet er navnet slik avsenderens klient skriver det.
--- For legacy er id spillets nummer på utfordringen; mottakeren slår opp navnet
--- på sitt eget språk og bruker tittelen bare hvis spillet ikke kjenner den.
+-- Messages (name DragonworldAch, fields separated by tab):
+--   M key time L level name class                    level milestone (20-60)
+--   M key time P skill name class line name          profession (300)
+--   M key time A points name class id title          legacy challenge (id = achievement)
+--   R [time]                                         send me your milestones after time
+-- "line" is the game's number for the profession (164 = Blacksmithing), the
+-- same in all clients; the last field is the name as the sender's client
+-- spells it.
+-- For legacy, id is the game's number for the challenge; the receiver looks
+-- up the name in their own language and uses the title only if the game does
+-- not know it.
 --
--- Guild-prestasjonene regnes ut fra medlemslisten (alle medlemmer) og fra
--- professions delt av dem som har addonen (Medlemmer-fanen). De sendes ikke;
--- hver addon regner selv. Fullføres en mens du er pålogget, og det skjedde
--- akkurat nå (en milepæl, et nytt medlem), kommer banneret. Det som allerede
--- var fullført første gang addonen så etter, regnes som "før addonen".
+-- The guild achievements are calculated from the roster (all members) and
+-- from professions shared by those who have the addon (the Roster tab).
+-- They are not sent; each addon calculates them itself. If one is completed
+-- while you are online, and it happened just now (a milestone, a new member),
+-- the banner appears. Anything already completed the first time the addon
+-- looked counts as "before the addon".
 --
--- All tekst ligger i Locales.lua (navnene som begynner med ACH_).
+-- All text is in Locales.lua (the names that start with ACH_).
 
 local ADDON_NAME, DW = ...
 local L = DW.L
 
 local MODULE_ID = "achievements"
-local PREFIX = "DragonworldAch" -- navnet på meldingene; maks 16 tegn
+local PREFIX = "DragonworldAch" -- the name of the messages; max 16 characters
 local SEP = "\t"
 
-local LEVELS = { 20, 30, 40, 50, 60 } -- level-milepælene
-local PROF_MAX = 300                   -- det høyeste i en profession
-local FEED_MAX = 300                   -- så mange milepæler huskes
-local LIVE_SECONDS = 15 * 60           -- en melding om en milepæl nyere enn dette gir banner
-local LIVE_WINDOW = 30                 -- så lenge etter noe som skjer nå, gir en fullført guild-prestasjon banner
-local GRATZ_HOURS = 3                  -- Gratz-knapp i listen for milepæler nyere enn dette
-local HELLO_DELAY = 12                 -- etter innlogging
-local BANNER_SECONDS = 12              -- så lenge banneret står (lenger mens musen er over det)
+local LEVELS = { 20, 30, 40, 50, 60 } -- the level milestones
+local PROF_MAX = 300                   -- the maximum in a profession
+local FEED_MAX = 300                   -- this many milestones are remembered
+local LIVE_SECONDS = 15 * 60           -- a message about a milestone newer than this gives a banner
+local LIVE_WINDOW = 30                 -- how long after something happens now a completed guild achievement gives a banner
+local GRATZ_HOURS = 3                  -- Gratz button in the list for milestones newer than this
+local HELLO_DELAY = 12                 -- after login
+local BANNER_SECONDS = 12              -- how long the banner stays (longer while the mouse is over it)
 local QUEUE_MAX = 6
 local REPLY_MAX = 15
 
@@ -71,25 +78,26 @@ local TITLE_FONT = "Fonts\\MORPHEUS.TTF"
 local TEXT_FONT = "Fonts\\FRIZQT__.TTF"
 local SPARKLE = "Interface\\Cooldown\\star4"
 local QUESTION = "Interface\\Icons\\INV_Misc_QuestionMark"
-local LEGACY_CURRENCY = 4225           -- legacy-poengene som talent-valuta (se Profile.lua)
+local LEGACY_CURRENCY = 4225           -- the legacy points as a talent currency (see Profile.lua)
 local LEGACY_ICON = "Interface\\Icons\\Spell_Holy_ChampionsBond"
 
--- Lagret (for hele kontoen). Settes i OnLoad nederst.
+-- Saved (for the whole account). Set in OnLoad at the bottom.
 --   db.feed[id]     = { id, who, name, class, kind = "L"/"P"/"A", value, line, prof,
 --                       time, exact, bannered, gratz, sent }
---                     who er spillerens faste ID (eller "name:" og navnet);
---                     for P er line professionens nummer og prof navnet, for A
---                     er line utfordringens nummer, prof tittelen og value poengene;
---                     exact = tiden kom fra den som nådde milepælen
---   db.levels[nøkkel] = level sist sett i medlemslisten
---   db.mine[nøkkel] = { [profession] = skill } egne professions sist sett
---   db.guild[id]    = { time } eller { before = true } når en guild-prestasjon ble nådd
---   db.guildInit    = true når addonen har sett etter én gang
---   db.banner, db.sound = false når spilleren har slått dem av
---   db.bannerPos    = { punkt, punkt, x, y } hvis banneret er flyttet
+--                     who is the player's permanent ID (or "name:" and the name);
+--                     for P, line is the profession's number and prof the name;
+--                     for A, line is the challenge's number, prof the title and
+--                     value the points;
+--                     exact = the time came from the one who reached the milestone
+--   db.levels[key]  = level last seen in the roster
+--   db.mine[key]    = { [profession] = skill } own professions last seen
+--   db.guild[id]    = { time } or { before = true } when a guild achievement was reached
+--   db.guildInit    = true once the addon has looked once
+--   db.banner, db.sound = false when the player has turned them off
+--   db.bannerPos    = { point, point, x, y } if the banner has been moved
 local db = { feed = {}, levels = {}, mine = {}, guild = {} }
 
--- Småting -----------------------------------------------------------------------
+-- Small things ------------------------------------------------------------------
 
 local function Num(value)
     if type(value) == "number" and not DW.IsSecret(value) then
@@ -109,7 +117,7 @@ local function Now()
     return DW.ServerNow()
 end
 
--- Et navn uten tegn som brukes som skilletegn eller fargekoder.
+-- A name without characters used as separators or color codes.
 local function CleanName(text)
     text = Text(text):gsub("[%c|]", " ")
     text = text:gsub("^%s+", "")
@@ -133,11 +141,11 @@ local function IsLevelMilestone(value)
     return false
 end
 
--- Medlemslisten sist vi leste den, for å finne et medlem igjen.
+-- The roster as of the last time we read it, to find a member again.
 local rosterByGuid, rosterByName = {}, {}
 
--- Nøkkelen vi lagrer en spiller under. Har spillets medlemsliste ikke faste
--- ID-er, brukes navnet, så det samme medlemmet ikke får to nøkler.
+-- The key we store a player under. If the game's roster has no permanent
+-- IDs, the name is used, so the same member does not get two keys.
 local function Canonical(key, name)
     local member = rosterByName[DW.NameKey(name)]
     if type(key) == "string" and key:find("^Player%-") and (rosterByGuid[key] or not member) then
@@ -149,7 +157,7 @@ local function Canonical(key, name)
     return key
 end
 
--- Nøkkelen vi sender om oss selv (den faste ID-en), og navnet.
+-- The key we send about ourselves (the permanent ID), and the name.
 local function MySendKey()
     local _, name = DW.CharacterKey()
     if not name then
@@ -176,9 +184,9 @@ end
 
 -- Professions -------------------------------------------------------------------
 
--- Spillets nummer på hver profession, navnet i engelske klienter, hvilken
--- gruppe den hører til, og et ikon (Professions-fanen har egne ikoner for de
--- fleste, se ProfessionIcon).
+-- The game's number for each profession, the name in English clients, which
+-- group it belongs to, and an icon (the Professions tab has its own icons for
+-- most of them, see ProfessionIcon).
 local PROFESSIONS = {
     [171] = { "Alchemy", "craft", "Interface\\Icons\\Trade_Alchemy" },
     [164] = { "Blacksmithing", "craft", "Interface\\Icons\\Trade_BlackSmithing" },
@@ -193,15 +201,15 @@ local PROFESSIONS = {
     [129] = { "First Aid", "secondary", "Interface\\Icons\\Spell_Holy_SealOfSacrifice" },
     [356] = { "Fishing", "secondary", "Interface\\Icons\\Trade_Fishing" },
 }
--- Rekkefølgen de vises i (i tooltips).
+-- The order they are shown in (in tooltips).
 local PROFESSION_ORDER = { 171, 164, 333, 202, 165, 197, 186, 182, 393, 185, 129, 356 }
 
-local LINE_BY_NAME = { smelting = 186 } -- vinduet til Mining kan hete Smelting
+local LINE_BY_NAME = { smelting = 186 } -- the Mining window can be called Smelting
 for line, profession in pairs(PROFESSIONS) do
     LINE_BY_NAME[profession[1]:lower()] = line
 end
 
--- Nummeret på en profession, ut fra nummeret vi fikk eller navnet.
+-- The number of a profession, from the number we got or the name.
 local function LineOf(name, line)
     line = line ~= nil and tonumber(line) or nil
     if line and line > 0 and line < 100000 then
@@ -210,7 +218,7 @@ local function LineOf(name, line)
     return LINE_BY_NAME[Text(name):lower()]
 end
 
--- Navnet slik denne klienten skriver det.
+-- The name as this client spells it.
 local function ProfessionName(line, fallback)
     if line and C_TradeSkillUI and type(C_TradeSkillUI.GetProfessionInfoBySkillLineID) == "function" then
         local ok, info = pcall(C_TradeSkillUI.GetProfessionInfoBySkillLineID, line)
@@ -241,7 +249,7 @@ end
 
 -- Legacy Challenges -----------------------------------------------------------------
 
--- Det spillet vet om en utfordring (en achievement): { name, description, icon, isGuild }.
+-- What the game knows about a challenge (an achievement): { name, description, icon, isGuild }.
 local function ChallengeInfo(id)
     if not id or type(GetAchievementInfo) ~= "function" then
         return nil
@@ -254,7 +262,7 @@ local function ChallengeInfo(id)
     return { name = name, description = Text(description), icon = picture, isGuild = isGuild == true }
 end
 
--- Legacy-poengene en utfordring gir, eller nil hvis spillet ikke sier det.
+-- The legacy points a challenge gives, or nil if the game does not say.
 local function ChallengePoints(id)
     local get = C_Traits and C_Traits.GetTraitCurrencyForAchievement
     if not id or type(get) ~= "function" then
@@ -268,7 +276,7 @@ local function ChallengePoints(id)
     return nil
 end
 
--- Navnet på en utfordring på ditt språk, ellers det avsenderen skrev.
+-- The name of a challenge in your language, otherwise what the sender wrote.
 local function ChallengeTitle(entry)
     local info = ChallengeInfo(entry.line)
     if info then
@@ -277,7 +285,7 @@ local function ChallengeTitle(entry)
     return Text(entry.prof) ~= "" and entry.prof or "?"
 end
 
--- Milepælene ----------------------------------------------------------------------
+-- Milestones ----------------------------------------------------------------------
 
 local function EntryID(entry)
     if entry.kind == "L" then
@@ -288,7 +296,7 @@ local function EntryID(entry)
     return entry.who .. ":P" .. tostring(entry.line or Text(entry.prof):lower())
 end
 
--- Hva milepælen er, uten farger: "level 60", "300 i Blacksmithing" eller
+-- What the milestone is, without colors: "level 60", "300 i Blacksmithing" or
 -- "legacy-utfordringen Master Druid (+1)".
 local function WhatText(entry)
     if entry.kind == "L" then
@@ -302,7 +310,7 @@ local function WhatText(entry)
     return L.ACH_PROFESSION:format(entry.value, ProfessionName(entry.line, entry.prof))
 end
 
--- Tekstene for "nådde" eller, for legacy, "fullførte".
+-- The texts for "reached" or, for legacy, "completed".
 local function Wording(entry)
     if entry.kind == "A" then
         return L.ACH_BANNER_OTHER_DONE, L.ACH_BANNER_YOU_DONE, L.ACH_ROW_DONE
@@ -335,7 +343,7 @@ local function Gold(text)
     return "|cffffd100" .. text .. "|r"
 end
 
--- Fjerner de eldste når listen blir for lang.
+-- Removes the oldest when the list gets too long.
 local function Prune()
     local list = {}
     for _, entry in pairs(db.feed) do
@@ -352,8 +360,9 @@ local function Prune()
     end
 end
 
--- Tar vare på en milepæl. Finnes den fra før, får den tiden fra den som nådde
--- den (exact), hvis vi ikke hadde den. Returnerer oppføringen og om den er ny.
+-- Saves a milestone. If it already exists, it gets the time from the one who
+-- reached it (exact), if we did not have that. Returns the entry and whether
+-- it is new.
 local function Remember(entry)
     entry.id = EntryID(entry)
     local old = db.feed[entry.id]
@@ -371,7 +380,7 @@ local function Remember(entry)
     return entry, true
 end
 
--- Banneret ------------------------------------------------------------------------
+-- The banner ----------------------------------------------------------------------
 
 local banner
 local queue = {}
@@ -389,7 +398,7 @@ local function SendGuildChat(text)
     return (pcall(send, text, "GUILD"))
 end
 
--- Gratulerer i guildchatten, én gang per milepæl.
+-- Congratulates in guild chat, once per milestone.
 local function Gratz(entry)
     if type(entry) ~= "table" or entry.gratz or entry.sample then
         return false
@@ -402,9 +411,9 @@ local function Gratz(entry)
     return false
 end
 
--- Lyden spillet bruker når man får en achievement. Ulike klienter kjenner den
--- under ulike navn (samme leting som DungeonJournal gjør), ellers en annen
--- festlig lyd.
+-- The sound the game uses when you get an achievement. Different clients know
+-- it under different names (same lookup as DungeonJournal does), otherwise
+-- another festive sound.
 local soundKit
 local function FanfareKit()
     if soundKit ~= nil then
@@ -449,7 +458,7 @@ local function PlaceBanner()
     end
 end
 
--- Skriver teksten for det banneret viser nå (også når språket byttes).
+-- Writes the text for the banner shown now (also when the language changes).
 local function FillBanner()
     local item = banner.item
     if not item then
@@ -474,7 +483,7 @@ local function FillBanner()
     end
 end
 
--- Lukker banneret og viser det neste som venter.
+-- Closes the banner and shows the next one waiting.
 local function FinishBanner()
     if banner then
         banner.item = nil
@@ -485,9 +494,9 @@ local function FinishBanner()
     end
 end
 
--- Banneret tones inn, et lysglimt går over det én gang, stjernene i hjørnene
--- blinker sakte, og etter en stund tones det ut. Står musen over det, blir det
--- stående.
+-- The banner fades in, a flash of light passes over it once, the stars in the
+-- corners twinkle slowly, and after a while it fades out. If the mouse is
+-- over it, it stays.
 local function AnimateBanner(self, elapsed)
     self.age = self.age + elapsed
     local alpha = math.min(1, self.age / 0.35)
@@ -536,13 +545,13 @@ local function CreateBanner()
     b:SetBackdropColor(0.07, 0.07, 0.09, 0.96)
     b:Hide()
 
-    -- En svak gyllen tone innenfor kanten.
+    -- A faint golden tint inside the edge.
     local warm = b:CreateTexture(nil, "BACKGROUND", nil, 1)
     warm:SetPoint("TOPLEFT", 6, -6)
     warm:SetPoint("BOTTOMRIGHT", -6, 6)
     warm:SetColorTexture(1, 0.78, 0.25, 0.05)
 
-    -- Guild-skjoldet til venstre.
+    -- The guild shield on the left.
     b.shield = b:CreateTexture(nil, "ARTWORK")
     b.shield:SetSize(104, 104)
     b.shield:SetPoint("LEFT", 12, 0)
@@ -563,7 +572,7 @@ local function CreateBanner()
     pcall(b.text.SetFont, b.text, TEXT_FONT, 17, "")
     b.text:SetTextColor(1, 1, 1)
 
-    -- Gratz! (eller Hurra! når det gjelder deg selv eller hele guilden).
+    -- Gratz! (or Hurra! when it is about you or the whole guild).
     b.button = DW.CreateButton(b, 150, 36, "gold")
     b.button:SetPoint("RIGHT", -28, -10)
     b.button:SetScript("OnClick", function()
@@ -578,7 +587,7 @@ local function CreateBanner()
     b.close:SetPoint("TOPRIGHT", -2, -2)
     b.close:SetScript("OnClick", FinishBanner)
 
-    -- Stjerner som blinker i hjørnene, og et lysglimt som går over banneret.
+    -- Stars that twinkle in the corners, and a flash of light that passes over the banner.
     b.stars = {}
     for index, corner in ipairs({ "TOPLEFT", "TOPRIGHT", "BOTTOMRIGHT", "BOTTOMLEFT" }) do
         local star = b:CreateTexture(nil, "OVERLAY")
@@ -595,7 +604,7 @@ local function CreateBanner()
     b.shine:SetSize(110, 128)
     b.shine:SetAlpha(0)
 
-    -- Kan flyttes; plassen huskes.
+    -- Can be moved; the position is remembered.
     b:SetScript("OnDragStart", function(self)
         self.dragging = true
         self:StartMoving()
@@ -635,8 +644,8 @@ NextBanner = function()
     end
 end
 
--- Legger et banner i kø. Er bannere slått av, vises ingenting (unntatt
--- eksempelet, som spilleren ber om selv).
+-- Puts a banner in the queue. If banners are turned off, nothing is shown
+-- (except the example, which the player asks for themselves).
 local function Enqueue(item)
     if db.banner == false and not item.sample then
         return
@@ -648,10 +657,10 @@ local function Enqueue(item)
     NextBanner()
 end
 
--- Guild-prestasjoner ---------------------------------------------------------------
+-- Guild achievements ---------------------------------------------------------------
 
--- Alt vi vet om guilden: hvor mange er på level 60/40, hvor mange medlemmer,
--- og hvem som har 300 i hver profession ([linje] = { navn, ... }).
+-- Everything we know about the guild: how many are level 60/40, how many
+-- members, and who has 300 in each profession ([line] = { name, ... }).
 local function GuildStats()
     local members = DW.ReadGuildRoster()
     local stats = { members = #members, at60 = 0, at40 = 0, masters = {}, challenges = 0 }
@@ -673,7 +682,7 @@ local function GuildStats()
         names[#names + 1] = name
     end
 
-    -- Milepælene vi har hørt om, i tilfelle medlemslisten ikke er oppdatert ennå.
+    -- The milestones we have heard about, in case the roster is not updated yet.
     local best = {}
     for _, entry in pairs(db.feed) do
         if entry.kind == "L" then
@@ -701,7 +710,7 @@ local function GuildStats()
         end
     end
 
-    -- Dine egne rett fra spillet.
+    -- Your own, straight from the game.
     local _, myName = DW.CharacterKey()
     local mine = DW.ReadMyProfessions and DW.ReadMyProfessions()
     for _, profession in ipairs(type(mine) == "table" and mine or {}) do
@@ -730,8 +739,8 @@ local function CountMastered(stats)
     return count
 end
 
--- Prestasjonene. value(stats) gir hvor langt guilden har kommet mot goal.
--- Describe() gir beskrivelsen på valgt språk.
+-- The achievements. value(stats) gives how far the guild has come toward goal.
+-- Describe() gives the description in the chosen language.
 local GUILD = {}
 
 local function AddLevel(id, name, goal, level, firstText)
@@ -772,7 +781,7 @@ AddProfessions("prof_craft", "ACH_G_CRAFT", "ACH_G_CRAFT_D", "craft", 6, PROFESS
 AddProfessions("prof_gather", "ACH_G_GATHER", "ACH_G_GATHER_D", "gather", 3, PROFESSIONS[186][3])
 AddProfessions("prof_second", "ACH_G_SECOND", "ACH_G_SECOND_D", "secondary", 3, PROFESSIONS[185][3])
 
--- Legacy Challenges fullført i guilden, slik addonen har hørt om dem.
+-- Legacy Challenges completed in the guild, as far as the addon has heard.
 local function AddLegacy(id, name, goal)
     GUILD[#GUILD + 1] = {
         id = id, name = name, goal = goal, icon = LEGACY_ICON,
@@ -783,18 +792,18 @@ end
 AddLegacy("legacy_25", "ACH_G_LEGACY25", 25)
 AddLegacy("legacy_100", "ACH_G_LEGACY100", 100)
 
-local liveUntil = 0 -- GetTime() til når en fullført guild-prestasjon gir banner
+local liveUntil = 0 -- GetTime() until when a completed guild achievement gives a banner
 
--- Ser om noen guild-prestasjoner er nådd. Det som er nådd første gang
--- addonen ser etter, er nådd "før addonen". Ellers får det tiden nå, og
--- banner hvis det skjedde akkurat nå.
+-- Checks whether any guild achievements have been reached. What is reached the
+-- first time the addon looks counts as reached "before the addon". Otherwise
+-- it gets the current time, and a banner if it happened just now.
 local function Evaluate()
     if not DW.IsMember() then
         return
     end
     local stats = GuildStats()
     if stats.members == 0 then
-        return -- medlemslisten er ikke lastet ennå
+        return -- the roster is not loaded yet
     end
     local live = GetTime() <= liveUntil
     for _, achievement in ipairs(GUILD) do
@@ -812,7 +821,7 @@ local function Evaluate()
     db.guildInit = true
 end
 
--- Deling ------------------------------------------------------------------------
+-- Sharing -----------------------------------------------------------------------
 
 local Send = DW.CreateSender(PREFIX)
 local QueueRefresh
@@ -830,8 +839,8 @@ local function SendEntry(entry)
     }, SEP))
 end
 
--- Sender egne milepæler (bare for karakteren du spiller nå). Uten since: de
--- som ikke er sendt ennå. Med since: alle etter den tiden (0 = alle).
+-- Sends your own milestones (only for the character you are playing now).
+-- Without since: those not sent yet. With since: all after that time (0 = all).
 local function Publish(since)
     local myKey = MyKey()
     if not myKey then
@@ -851,7 +860,7 @@ local function Publish(since)
     end
 end
 
--- Du nådde en milepæl selv: husk den, vis banneret og si fra til guilden.
+-- You reached a milestone yourself: remember it, show the banner and tell the guild.
 local function OwnMilestone(kind, value, line, prof)
     local sendKey, name = MySendKey()
     if not sendKey then
@@ -873,8 +882,9 @@ local function OwnMilestone(kind, value, line, prof)
     QueueRefresh()
 end
 
--- Du fullførte en achievement: er det en Legacy Challenge (ikke en guild-
--- achievement, og ikke en som en annen karakter på kontoen alt hadde), meldes den.
+-- You completed an achievement: if it is a Legacy Challenge (not a guild
+-- achievement, and not one that another character on the account already
+-- had), it is announced.
 local function OnAchievementEarned(id, alreadyEarned)
     id = id ~= nil and Num(tonumber(id)) or nil
     if not id or alreadyEarned == true then
@@ -884,8 +894,8 @@ local function OnAchievementEarned(id, alreadyEarned)
     if info and info.isGuild then
         return
     end
-    -- Sier spillet at den ikke gir legacy-poeng, er det ikke en utfordring.
-    -- (Kan ikke spillet si det, meldes den likevel, uten poeng.)
+    -- If the game says it gives no legacy points, it is not a challenge.
+    -- (If the game cannot say, it is announced anyway, without points.)
     local points = ChallengePoints(id)
     if points == 0 then
         return
@@ -900,8 +910,8 @@ local function OnLevelUp(level)
     end
 end
 
--- Ser etter egne professions som har nådd 300 siden sist. Første gang vi ser
--- en profession, huskes bare hvor den står.
+-- Looks for own professions that have reached 300 since last time. The first
+-- time we see a profession, we only remember where it stands.
 local function CheckOwnProfessions()
     local key = MySendKey()
     local list = DW.ReadMyProfessions and DW.ReadMyProfessions()
@@ -996,7 +1006,7 @@ DW.OnGuildMessage(PREFIX, function(text, sender)
         entry.bannered = true
         liveUntil = GetTime() + LIVE_WINDOW
         Enqueue({ kind = "milestone", entry = entry })
-        -- Be om fersk medlemsliste, så level-tallene stemmer.
+        -- Ask for a fresh roster, so the level numbers are right.
         if C_GuildInfo and C_GuildInfo.GuildRoster then
             C_GuildInfo.GuildRoster()
         end
@@ -1005,11 +1015,11 @@ DW.OnGuildMessage(PREFIX, function(text, sender)
     QueueRefresh()
 end)
 
--- Medlemslisten ------------------------------------------------------------------
+-- The roster ---------------------------------------------------------------------
 
-local rosterSeen = {}  -- [nøkkel] = true for medlemmer vi har lest før i denne økten
-local rosterCount      -- antall medlemmer sist vi leste
-local firstReadAt      -- GetTime() da vi leste medlemslisten første gang i økten
+local rosterSeen = {}  -- [key] = true for members we have read before in this session
+local rosterCount      -- number of members the last time we read
+local firstReadAt      -- GetTime() when we first read the roster in the session
 
 local function ReadRoster()
     if not DW.IsMember() then
@@ -1035,8 +1045,8 @@ local function ReadRoster()
         local level = member.level
         local before = Num(db.levels[key])
         if level > 0 and before and level > before then
-            -- Har vi sett medlemmet før i denne økten, og det er pålogget,
-            -- skjedde det nå. Ellers mens du var borte.
+            -- If we have seen the member before in this session, and they are
+            -- online, it happened now. Otherwise while you were away.
             local live = rosterSeen[key] and member.online
             for _, milestone in ipairs(LEVELS) do
                 if before < milestone and milestone <= level then
@@ -1061,8 +1071,8 @@ local function ReadRoster()
         end
         rosterSeen[key] = true
     end
-    -- Et nytt medlem mens du er pålogget, er også noe som skjer nå. (Rett
-    -- etter innlogging kan listen komme litt etter litt, så ikke da.)
+    -- A new member while you are online is also something that happens now.
+    -- (Right after login the list can arrive bit by bit, so not then.)
     if rosterCount and #members > rosterCount and now - firstReadAt > 60 then
         liveUntil = now + LIVE_WINDOW
     end
@@ -1071,7 +1081,7 @@ local function ReadRoster()
     QueueRefresh()
 end
 
--- Fanen -----------------------------------------------------------------------------
+-- The tab ---------------------------------------------------------------------------
 
 local FEED_ROW, GUILD_ROW = 32, 48
 local BAR_WIDTH = 150
@@ -1080,7 +1090,7 @@ local view = "feed"
 local feedRows, guildRows = {}, {}
 local RefreshPanel
 
--- "for 5 min siden", "for 3 timer siden" ... eller datoen når det er lenge siden.
+-- "5 min ago", "3 hours ago" ... or the date when it is a long time ago.
 local function Ago(when)
     local seconds = math.max(0, Now() - (when or 0))
     if seconds < 60 then
@@ -1177,7 +1187,7 @@ local function GetFeedRow(index)
     return row
 end
 
--- Hvem som har 300 i hver profession i gruppen, for tooltipen.
+-- Who has 300 in each profession in the group, for the tooltip.
 local function AddMastersToTooltip(achievement)
     local stats = GuildStats()
     for _, line in ipairs(PROFESSION_ORDER) do
@@ -1372,7 +1382,7 @@ QueueRefresh = function()
     end)
 end
 
--- Et eksempel på banneret, med ditt eget navn, så du ser hvordan det ser ut.
+-- An example of the banner, with your own name, so you see what it looks like.
 local function ShowSample()
     local _, name = DW.CharacterKey()
     Enqueue({
@@ -1399,7 +1409,7 @@ local function CreatePanel(parent)
     f.title = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     f.title:SetPoint("TOP", 0, -12)
 
-    -- Milepæler eller guild-prestasjoner.
+    -- Milestones or guild achievements.
     f.feedChip = DW.CreateChip(f, 170, 26)
     f.feedChip:SetPoint("TOPLEFT", 14, -40)
     f.feedChip:SetScript("OnClick", function()
@@ -1424,7 +1434,7 @@ local function CreatePanel(parent)
     f.empty:SetPoint("TOP", scroll, "TOP", 0, -40)
     f.empty:SetWidth(440)
 
-    -- Banner på/av, lyd på/av, og et eksempel.
+    -- Banner on/off, sound on/off, and an example.
     f.bannerCheck = CreateCheck(f, function(self)
         db.banner = self:GetChecked() and true or false
     end)
@@ -1446,7 +1456,7 @@ local function CreatePanel(parent)
     return f
 end
 
--- Hendelser -------------------------------------------------------------------
+-- Events ----------------------------------------------------------------------
 
 local helloSent = false
 local rosterQueued, professionsQueued = false, false
@@ -1484,7 +1494,7 @@ local function PlanHello()
             return
         end
         helloSent = true
-        -- Hvor egne professions står nå, så vi merker når de når 300.
+        -- Where own professions stand now, so we notice when they reach 300.
         CheckOwnProfessions()
         Publish()
         Send(DW.SyncRequest())
@@ -1537,9 +1547,9 @@ DW.OnLanguageChanged(function()
     end
 end)
 
--- For andre filer og testene --------------------------------------------------------
+-- For other files and the tests ------------------------------------------------------
 
--- Guild-prestasjonene med hvor langt guilden har kommet:
+-- The guild achievements with how far the guild has come:
 -- { { id, value, goal, done = { time } / { before = true } / nil }, ... }
 function DW.GuildAchievements()
     local stats = GuildStats()
@@ -1550,7 +1560,7 @@ function DW.GuildAchievements()
     return list
 end
 
--- Viser et eksempel på banneret ("/dw achievements test").
+-- Shows an example of the banner ("/dw achievements test").
 DW.ShowMilestoneSample = ShowSample
 
 DW.AddDebug("prestasjoner", function(add)
@@ -1581,7 +1591,7 @@ DW.AddDebug("prestasjoner", function(add)
     add(("guild-prestasjoner: %d av %d | banner: %s | lyd: %s (kit %s) | PlaySound: %s"):format(GuildDoneCount(), #GUILD,
         tostring(db.banner ~= false), tostring(db.sound ~= false), tostring(FanfareKit()), tostring(type(PlaySound) == "function")))
 
-    -- Legacy Challenges: hva spillet gir ut, så vi ser at det stemmer i Forever.
+    -- Legacy Challenges: what the game returns, so we can see it is right in Forever.
     local text = DW.DebugText
     add(("legacy: GetCategoryList %s | GetAchievementInfo %s | GetTraitCurrencyForAchievement %s"):format(
         text(type(GetCategoryList) == "function"), text(type(GetAchievementInfo) == "function"),
@@ -1611,7 +1621,7 @@ DW.AddDebug("prestasjoner", function(add)
     end
 end)
 
--- Modul --------------------------------------------------------------------------
+-- Module -------------------------------------------------------------------------
 
 local SAMPLE_WORDS = { test = true, eksempel = true, voorbeeld = true, example = true }
 
@@ -1627,7 +1637,7 @@ DW.RegisterModule({
                 saved[field] = {}
             end
         end
-        -- Oppføringer fra en ødelagt fil tas ikke med.
+        -- Entries from a corrupted file are not included.
         for id, entry in pairs(saved.feed) do
             if type(entry) ~= "table" or type(entry.who) ~= "string" or type(entry.name) ~= "string"
                 or (entry.kind ~= "L" and entry.kind ~= "P" and entry.kind ~= "A") or type(entry.value) ~= "number" then

@@ -1,45 +1,45 @@
--- Dragonworld - blinking når noe er nytt
+-- Dragonworld - blinking when something is new
 --
--- Knappen ved minimapet og knappen på action bar (ActionButton.lua) blinker
--- mildt i en farge når det har skjedd noe nytt, f.eks. at noen i guilden ser
--- etter dungeon eller at det er lagt ut en ny event. Er det flere ting, bytter
--- fargen for hvert blink.
+-- The minimap button and the action bar button (ActionButton.lua) blink
+-- softly in a colour when something new has happened, e.g. someone in the
+-- guild is looking for a dungeon or a new event has been posted. If there are
+-- several things, the colour changes with every blink.
 --
--- Blinkingen stopper (varslene regnes som sett) når spilleren
---   * holder musen over knappen: tooltipen viser da en liste over det nye, eller
---   * åpner fanen der det nye er (et klikk på knappen gjør det, også rett
---     etter at musen har vært over den).
+-- The blinking stops (the alerts count as seen) when the player
+--   * holds the mouse over the button: the tooltip then shows a list of what is new, or
+--   * opens the tab where the new thing is (a click on the button does that,
+--     also right after the mouse has been over it).
 --
--- Spilleren kan slå blinkingen av og på under Innstillinger og i første
--- oppsett, og velge hva det skal blinke for. Den er på som standard.
--- Lagres i DragonworldDB.alerts (felles for kontoen):
---   blinkOff = true          blinkingen er slått av
---   off[slag] = true         ikke blink for dette
---   seen[slag] = tid         sist det nye ble sett (serverens klokke)
+-- The player can turn the blinking on and off under Settings and in the first
+-- setup, and choose what it should blink for. It is on by default.
+-- Saved in DragonworldDB.alerts (shared by the whole account):
+--   blinkOff = true          the blinking is turned off
+--   off[kind] = true         don't blink for this
+--   seen[kind] = time        when the new thing was last seen (server clock)
 --
--- Slik melder en modul inn noe som kan blinke (se Events.lua, Dungeons.lua):
+-- This is how a module reports something that can blink (see Events.lua, Dungeons.lua):
 --   DW.RegisterAlert({
---       kind = "event",           kort navn
---       module = "events",        fanen som åpnes og som "ser" det nye
---       labelKey = "AL_EVENT",    teksten i Innstillinger
---       color = { r, g, b },      fargen på blinket og i listen
---       Check = function(since)   true hvis noe er nytt siden tiden since
---       Items = function(since)   (valgfri) det nye som tekstlinjer til listen
---       defaultOff = true         (valgfri) av til spilleren slår det på
---       IsShown = function()      (valgfri) vises det nye nå? Ellers: er fanen åpen
---       Open = function()         (valgfri) åpner der det nye er. Ellers: fanen
+--       kind = "event",           short name
+--       module = "events",        the tab that opens and that "sees" the new thing
+--       labelKey = "AL_EVENT",    the text in Settings
+--       color = { r, g, b },      the colour of the blink and in the list
+--       Check = function(since)   true if something is new since the time since
+--       Items = function(since)   (optional) the new things as text lines for the list
+--       defaultOff = true         (optional) off until the player turns it on
+--       IsShown = function()      (optional) is the new thing shown now? Else: is the tab open
+--       Open = function()         (optional) opens where the new thing is. Else: the tab
 --   })
--- og kaller DW.RefreshAlerts() når dataene endres.
+-- and calls DW.RefreshAlerts() when the data changes.
 
 local ADDON_NAME, DW = ...
 local L = DW.L
 
-local PERIOD = 2.4       -- sekunder per blink
-local MAX_ALPHA = 1.00   -- så sterkt lyser det på det meste
-local TINT = 0.55        -- hvor mye en "tint"-tekstur farges på det meste
-local RECHECK = 30       -- sekunder mellom hver ny sjekk mens noe blinker
+local PERIOD = 2.4       -- seconds per blink
+local MAX_ALPHA = 1.00   -- how strongly it glows at most
+local TINT = 0.55        -- how much a "tint" texture is coloured at most
+local RECHECK = 30       -- seconds between each new check while something blinks
 
-DW.ALERTS = {} -- i den rekkefølgen de er meldt inn
+DW.ALERTS = {} -- in the order they were reported
 local ALERT_BY_KIND = {}
 
 function DW.RegisterAlert(alert)
@@ -52,7 +52,7 @@ function DW.RegisterAlert(alert)
     ALERT_BY_KIND[alert.kind] = alert
 end
 
--- Innstillinger -------------------------------------------------------------------
+-- Settings ------------------------------------------------------------------------
 
 local function Now()
     local now = GetServerTime and GetServerTime()
@@ -61,7 +61,7 @@ local function Now()
     end
     return time()
 end
-DW.AlertNow = Now -- samme klokke for moduler som merker når noe kom
+DW.AlertNow = Now -- same clock for modules that note when something came
 
 local function Settings()
     if type(DragonworldDB) ~= "table" then
@@ -79,7 +79,7 @@ local function Settings()
         settings.off = {}
     end
     if type(settings.on) ~= "table" then
-        settings.on = {} -- slått på av spilleren, for det som er av som standard
+        settings.on = {} -- turned on by the player, for what is off by default
     end
     return settings
 end
@@ -108,11 +108,11 @@ end
 
 -- Blinking --------------------------------------------------------------------------
 
--- Det som kan blinke: { glow = tekstur, tint = tekstur eller nil, hidden = true/nil }.
--- glow lyser opp i fargen; tint (rammen ved minimapet) farges litt.
+-- What can blink: { glow = texture, tint = texture or nil, hidden = true/nil }.
+-- glow lights up in the colour; tint (the ring at the minimap) is coloured a little.
 local targets = {}
 
--- Et mål kan ha flere teksturer som lyser: { glows = { ring, glorie } }.
+-- A target can have several textures that glow: { glows = { ring, halo } }.
 function DW.AddGlowTarget(target)
     assert(type(target) == "table" and (target.glow or target.glows), "AddGlowTarget: mangler glow")
     target.glows = target.glows or { target.glow }
@@ -124,9 +124,9 @@ function DW.AddGlowTarget(target)
     return target
 end
 
--- Gjør en av spillets egne bilder klar til å lyse i en farge: grå (så fargen
--- blir ren) og lagt til lyset under (ADD). atlas er spillets navn på bildet;
--- finnes det ikke, brukes filen fallback.
+-- Prepares one of the game's own images to glow in a colour: grey (so the
+-- colour comes out clean) and added to the light below (ADD). atlas is the
+-- game's name for the image; if it does not exist, the file fallback is used.
 function DW.PrepareGlow(texture, atlas, fallback)
     local hasAtlas = atlas and texture.SetAtlas
         and (not (C_Texture and C_Texture.GetAtlasInfo) or C_Texture.GetAtlasInfo(atlas) ~= nil)
@@ -140,13 +140,13 @@ function DW.PrepareGlow(texture, atlas, fallback)
     return texture
 end
 
-local active = {}   -- det som er nytt nå, og som det skal blinkes for
+local active = {}   -- what is new now, and what should blink
 local blinking = false
 local changeListeners = {} -- DW.OnAlertsChanged
 local clock, sinceCheck = 0, 0
 
 local pulse = CreateFrame("Frame")
-DW.alertPulse = pulse -- til testene
+DW.alertPulse = pulse -- for the tests
 
 local function Paint(color, strength)
     for _, target in ipairs(targets) do
@@ -181,7 +181,7 @@ local function OnUpdate(self, elapsed)
             return
         end
     end
-    -- Mykt opp og ned (0 -> 1 -> 0) per blink, og neste farge for hvert blink.
+    -- Fade softly up and down (0 -> 1 -> 0) per blink, and the next colour for each blink.
     local cycle = math.floor(clock / PERIOD)
     local phase = (clock - cycle * PERIOD) / PERIOD
     local strength = 0.5 - 0.5 * math.cos(phase * 2 * math.pi)
@@ -189,9 +189,9 @@ local function OnUpdate(self, elapsed)
     Paint(alert and alert.color, strength)
 end
 
-local testUntil -- GetTime() da testblinkingen (/dw blink) slutter
+local testUntil -- GetTime() when the test blinking (/dw blink) ends
 
--- Blinker i alle fargene i noen sekunder, uansett innstillinger.
+-- Blinks in all the colours for a few seconds, regardless of settings.
 function DW.TestBlink(seconds)
     seconds = seconds or 15
     testUntil = GetTime() + seconds
@@ -201,13 +201,13 @@ function DW.TestBlink(seconds)
     end
 end
 
--- Ser etter hva som er nytt, og starter eller stopper blinkingen.
+-- Looks for what is new, and starts or stops the blinking.
 function DW.RefreshAlerts()
     local list = {}
     local settings = Settings()
     if settings and DW.IsMember() then
         for _, alert in ipairs(DW.ALERTS) do
-            -- Det nye vises nå (som regel: fanen er åpen): da er det sett.
+            -- The new thing is shown now (usually: the tab is open): then it is seen.
             local shown
             if alert.IsShown then
                 local ok, result = pcall(alert.IsShown)
@@ -228,7 +228,7 @@ function DW.RefreshAlerts()
             end
         end
     end
-    -- "/dw blink": alle fargene en liten stund, så man ser hvordan det ser ut.
+    -- "/dw blink": all the colours for a short while, so you can see how it looks.
     local testing = testUntil ~= nil and GetTime() < testUntil
     if testing then
         list = {}
@@ -258,13 +258,13 @@ function DW.RefreshAlerts()
     end
 end
 
--- Det som er nytt nå, også når blinkingen er av (til tooltip).
+-- What is new now, also when the blinking is off (for the tooltip).
 function DW.ActiveAlerts()
     return active
 end
 
--- For knapper som bare blinker for én ting (Dungeons-snarveien i Looking For
--- Group): er det nytt av den sorten, og blinker det nå?
+-- For buttons that blink for just one thing (the Dungeons shortcut in Looking
+-- For Group): is there something new of that kind, and is it blinking now?
 function DW.IsAlertBlinking(kind)
     if not blinking then
         return false
@@ -277,8 +277,8 @@ function DW.IsAlertBlinking(kind)
     return false
 end
 
--- Registrerer en funksjon som kalles hver gang addonen har sett etter hva som
--- er nytt (og blinkingen kan ha startet eller stoppet).
+-- Registers a function that is called every time the addon has looked for what
+-- is new (and the blinking may have started or stopped).
 function DW.OnAlertsChanged(callback)
     changeListeners[#changeListeners + 1] = callback
 end
@@ -312,15 +312,15 @@ function DW.MarkAlertSeen(kind)
     DW.RefreshAlerts()
 end
 
--- Listen over det nye ---------------------------------------------------------------
+-- The list of what is new -----------------------------------------------------------
 
-local MAX_ITEMS = 5     -- linjer per slag i listen; resten blir "...og 3 til"
-local CLICK_MEMORY = 60 -- så lenge etter at musen var over knappen åpner et klikk fanen med det nye
+local MAX_ITEMS = 5     -- lines per kind in the list; the rest becomes "...and 3 more"
+local CLICK_MEMORY = 60 -- for this long after the mouse was over the button, a click opens the tab with the new thing
 
-local shownLines = {}   -- linjene i tooltipen mens musen er over knappen
-local hovered           -- { alerts, at, blinking }: det som ble sett med musen sist
+local shownLines = {}   -- the lines in the tooltip while the mouse is over the button
+local hovered           -- { alerts, at, blinking }: what was seen with the mouse last
 
--- Det nye som linjer: { { alert, text }, ... }, fra modulenes Items(since).
+-- The new things as lines: { { alert, text }, ... }, from the modules' Items(since).
 local function CollectLines(list)
     local lines = {}
     for _, alert in ipairs(list) do
@@ -343,8 +343,8 @@ local function CollectLines(list)
     return lines
 end
 
--- Linjene for det nye av én sort, i sin farge, til en knapp som bare gjelder
--- den (uten at det regnes som sett).
+-- The lines for the new things of one kind, in its colour, for a button that
+-- only concerns that kind (without counting it as seen).
 function DW.AddAlertLinesFor(tooltip, kind)
     local alert = ALERT_BY_KIND[kind]
     if not alert or not DW.IsAlertBlinking(kind) then
@@ -358,8 +358,8 @@ function DW.AddAlertLinesFor(tooltip, kind)
     end
 end
 
--- Legger listen (fra sist musen kom over knappen) i tooltipen. Brukes også
--- når spillet tegner tooltipen på action bar-knappen på nytt.
+-- Puts the list (from when the mouse last came over the button) in the tooltip.
+-- Also used when the game redraws the tooltip on the action bar button.
 function DW.AddAlertLines(tooltip)
     if #shownLines == 0 then
         return
@@ -372,8 +372,8 @@ function DW.AddAlertLines(tooltip)
     end
 end
 
--- Musen kommer over knappen ved minimapet eller på action bar: vis listen over
--- det nye i tooltipen, og regn det som sett, så blinkingen stopper.
+-- The mouse comes over the minimap button or the action bar button: show the
+-- list of what is new in the tooltip, and count it as seen, so the blinking stops.
 function DW.AlertsHovered(tooltip)
     DW.RefreshAlerts()
     shownLines = CollectLines(active)
@@ -392,11 +392,11 @@ function DW.AlertsHovered(tooltip)
     end
 end
 
--- Knappene ------------------------------------------------------------------------
+-- The buttons ---------------------------------------------------------------------
 
--- Klikk på knappen ved minimapet eller på action bar: blinker den (eller
--- blinket den til musen kom over den nettopp), åpnes fanen med det nye.
--- Ellers åpnes eller lukkes hovedvinduet som vanlig.
+-- Click on the minimap button or the action bar button: if it is blinking (or
+-- was blinking until the mouse just came over it), the tab with the new thing opens.
+-- Otherwise the main window opens or closes as usual.
 function DW.ClickOpen()
     if DW.IsMainWindowShown and DW.IsMainWindowShown() then
         DW.ToggleMainWindow()
@@ -417,9 +417,9 @@ function DW.ClickOpen()
     end
 end
 
--- Hendelser -------------------------------------------------------------------------
+-- Events ----------------------------------------------------------------------------
 
--- Spillet melder ofte om medlemslisten. Sjekk høyst én gang i sekundet.
+-- The game often reports the member list. Check at most once a second.
 local queued = false
 local function QueueRefresh()
     if queued or not (C_Timer and C_Timer.After) then

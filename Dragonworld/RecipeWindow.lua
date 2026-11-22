@@ -1,24 +1,24 @@
--- Dragonworld - oppskriftsvindu
--- Klikk på en profession i Medlemmer (eller på medlemskortet), så kommer dette
--- vinduet opp over hovedvinduet med alt medlemmet kan lage i den professionen:
---   * hva oppskriften lager (ikon og navn i gjenstandens farge)
---   * hva den trenger
---   * søk i listen, og filter på plass (hode, bryst, belte ...) når listen
---     har ting som tas på forskjellige steder
--- Hold over en oppskrift for gjenstanden. Klikk for å hviske medlemmet om den
--- (med lenken klar i chatten), shift-klikk for å lenke den i chatten.
+-- Dragonworld - recipe window
+-- Click a profession in the Roster tab (or on the member card), and this window
+-- opens above the main window with everything the member can make in that profession:
+--   * what the recipe makes (icon and name in the item's colour)
+--   * what it needs
+--   * search in the list, and filter by slot (head, chest, belt ...) when the list
+--     has things that are worn in different places
+-- Hold over a recipe for the item. Click to whisper the member about it
+-- (with the link ready in the chat), shift-click to link it in the chat.
 --
--- Listen kommer fra medlemmets egen addon (Roster.lua leser den når de åpner
--- professionen sin, og sender den til guilden), så den vises også når
--- medlemmet er avlogget. For dine egne professions er det også en knapp som
--- åpner spillets eget vindu; for andres åpner spillet ingenting fra lenken i
--- Forever (prøvd begge veier), så der er den borte.
+-- The list comes from the member's own addon (Roster.lua reads it when they open
+-- their profession, and sends it to the guild), so it is also shown when
+-- the member is offline. For your own professions there is also a button that
+-- opens the game's own window; for other players' the game opens nothing from the link in
+-- Forever (tried both ways), so the button is not there.
 --
--- Hva en oppskrift lager og trenger spør vi spillet om først
--- (GetRecipeSchematic), så Wowhead-dataene i ProfessionData.lua, og til slutt
--- bare navnet på oppskriften.
+-- What a recipe makes and needs, we ask the game first
+-- (GetRecipeSchematic), then the Wowhead data in ProfessionData.lua, and
+-- finally just the name of the recipe.
 --
--- All tekst ligger i Locales.lua (navnene som begynner med RC_).
+-- All text is in Locales.lua (the names that start with RC_).
 
 local ADDON_NAME, DW = ...
 local L = DW.L
@@ -29,16 +29,16 @@ local NAME_WIDTH = 290
 local MAX_SHOWN_REAGENTS = 4
 
 local view
-local member, profession -- det som vises
+local member, profession -- what is shown
 local rows = {}
 local searchText = ""
-local slotFilter         -- nøkkelen til en plass under (f.eks. "CHEST"), eller nil for alle
-local waitingFor = {}    -- gjenstander vi har bedt spillet laste
+local slotFilter         -- the key of a slot below (e.g. "CHEST"), or nil for all
+local waitingFor = {}    -- items we have asked the game to load
 
--- Plassene filteret kan velge, i rekkefølgen på karakterarket. locs er
--- spillets koder for hvor en gjenstand sitter (fra GetItemInfoInstant).
--- Det som ikke tas på (potions, kits, materialer, enchants) er "Annet".
--- Navnene står i Locales.lua som RC_SLOT_<nøkkel>.
+-- The slots the filter can choose, in the order of the character sheet. locs are
+-- the game's codes for where an item is worn (from GetItemInfoInstant).
+-- What is not worn (potions, kits, materials, enchants) is "Other".
+-- The names are in Locales.lua as RC_SLOT_<key>.
 local SLOTS = {
     { key = "HEAD", locs = { "INVTYPE_HEAD" } },
     { key = "NECK", locs = { "INVTYPE_NECK" } },
@@ -66,14 +66,14 @@ for _, slot in ipairs(SLOTS) do
     end
 end
 
--- Gjenstander og oppskrifter -------------------------------------------------------
+-- Items and recipes ----------------------------------------------------------------
 
 local function Data()
     return DW.ProfessionData or {}
 end
 
--- Navn, kvalitet, ikon og lenke for en gjenstand. Navnet kan mangle til
--- spillet har lastet gjenstanden; da brukes Wowhead-navnet om vi har det.
+-- Name, quality, icon and link for an item. The name may be missing until
+-- the game has loaded the item; then the Wowhead name is used if we have it.
 local function ItemInfo(itemID)
     local name, link, quality
     if C_Item and C_Item.GetItemInfo then
@@ -101,7 +101,7 @@ local function ItemInfo(itemID)
     return name, quality, icon, link
 end
 
-local details = {} -- [oppskrift] = { name, icon, itemID, reagents = { { itemID, antall } } }
+local details = {} -- [recipe] = { name, icon, itemID, reagents = { { itemID, count } } }
 
 local function RecipeDetails(id)
     if details[id] then
@@ -109,7 +109,7 @@ local function RecipeDetails(id)
     end
     local info = { reagents = {} }
 
-    -- 1. Spillet selv.
+    -- 1. The game itself.
     local ui = C_TradeSkillUI
     if ui and ui.GetRecipeSchematic then
         local ok, schematic = pcall(ui.GetRecipeSchematic, id, false)
@@ -133,7 +133,7 @@ local function RecipeDetails(id)
         end
     end
 
-    -- 2. Wowhead-dataene (ProfessionData.lua).
+    -- 2. The Wowhead data (ProfessionData.lua).
     local data = Data().recipes and Data().recipes[id]
     if type(data) == "table" then
         info.name = info.name or data[1]
@@ -145,7 +145,7 @@ local function RecipeDetails(id)
         end
     end
 
-    -- 3. Navnet på oppskriften.
+    -- 3. The name of the recipe.
     local spellName = DW.SpellName(id)
     info.name = info.name or spellName
     if not info.icon and C_Spell and C_Spell.GetSpellTexture then
@@ -155,7 +155,7 @@ local function RecipeDetails(id)
         end
     end
 
-    -- Hvor det oppskriften lager sitter på karakteren (til filteret).
+    -- Where the thing the recipe makes is worn on the character (for the filter).
     info.slot = "OTHER"
     if info.itemID and C_Item and C_Item.GetItemInfoInstant then
         local ok, _, _, _, loc = pcall(C_Item.GetItemInfoInstant, info.itemID)
@@ -164,7 +164,7 @@ local function RecipeDetails(id)
         end
     end
 
-    -- Et navn spillet ikke hadde ennå ("#1234") huskes ikke, så det prøves igjen.
+    -- A name the game didn't have yet ("#1234") is not remembered, so it is tried again.
     if info.name:sub(1, 1) ~= "#" then
         details[id] = info
     end
@@ -185,7 +185,7 @@ local function ReagentText(reagents)
     return table.concat(parts, ", ")
 end
 
--- Lenken til det oppskriften lager (eller til oppskriften selv).
+-- The link to what the recipe makes (or to the recipe itself).
 local function RecipeLink(id, info)
     if info.itemID then
         local _, _, _, link = ItemInfo(info.itemID)
@@ -202,7 +202,7 @@ local function RecipeLink(id, info)
     return nil
 end
 
--- Chatten ---------------------------------------------------------------------
+-- Chat ------------------------------------------------------------------------
 
 local function InsertLink(link)
     if ChatFrameUtil and ChatFrameUtil.InsertLink then
@@ -213,7 +213,7 @@ local function InsertLink(link)
     return false
 end
 
--- Legger lenken i chatten; er ingen chatlinje åpen, åpnes en.
+-- Puts the link in the chat; if no chat line is open, one is opened.
 local function LinkInChat(link)
     if InsertLink(link) then
         return
@@ -244,7 +244,7 @@ local function Whisper(name)
     end
 end
 
--- Visning ---------------------------------------------------------------------
+-- Display ---------------------------------------------------------------------
 
 local function ProfessionLabel(p)
     if (p.max or 0) > 0 then
@@ -326,7 +326,7 @@ local function GetRow(index)
                 LinkInChat(link)
             end
         elseif CanWhisper(member) then
-            -- Hvisk medlemmet, med det du vil ha laget klart i chatlinjen.
+            -- Whisper the member, with what you want made ready in the chat line.
             Whisper(member.key)
             if link then
                 InsertLink(link)
@@ -348,8 +348,8 @@ Refresh = function()
     view.gameButton.label:SetText(L.RC_OPEN_GAME)
     view.whisper.label:SetText(L.RC_WHISPER)
     view.close.label:SetText(L.RC_CLOSE)
-    -- Spillets eget vindu åpner bare dine egne professions (Forever åpner
-    -- ingenting fra en annen spillers lenke), så knappen er bare der da.
+    -- The game's own window only opens your own professions (Forever opens
+    -- nothing from another player's link), so the button is only there then.
     view.gameButton:SetShown(IsMe(member) and DW.CanOpenMemberProfession ~= nil and DW.CanOpenMemberProfession(member, profession))
     view.whisper:SetShown(CanWhisper(member))
 
@@ -358,8 +358,8 @@ Refresh = function()
         ids, changed = DW.MemberRecipes(member, profession)
     end
 
-    -- Oppskriftene som passer søket og plassen, sortert på navn. Telle
-    -- også hvor mange det er per plass, til menyen.
+    -- The recipes that match the search and the slot, sorted by name. Also
+    -- count how many there are per slot, for the menu.
     local needle = searchText:lower():gsub("^%s+", ""):gsub("%s+$", "")
     local list, counts, kinds = {}, {}, 0
     for _, id in ipairs(ids or {}) do
@@ -373,7 +373,7 @@ Refresh = function()
         end
     end
     view.slotCounts = counts
-    -- Filteret vises bare når listen har mer enn én slags ting.
+    -- The filter is only shown when the list has more than one kind of thing.
     view.slotChip.label:SetText(L.RC_SLOT_LABEL:format(slotFilter and L["RC_SLOT_" .. slotFilter] or L.RC_SLOT_ALL))
     view.slotChip:SetShown(kinds > 1 or slotFilter ~= nil)
     table.sort(list, function(a, b)
@@ -427,7 +427,7 @@ local function SetSlot(key)
     Refresh()
 end
 
--- Menyen for plass: "Alle", og hver plass listen har noe i, med antall.
+-- The menu for slot: "All", and each slot the list has something in, with the count.
 local function OpenSlotMenu(owner)
     local counts = view.slotCounts or {}
     local present = {}
@@ -438,7 +438,7 @@ local function OpenSlotMenu(owner)
     end
 
     if not (MenuUtil and MenuUtil.CreateContextMenu) then
-        -- Uten meny: neste plass for hvert klikk, og til slutt alle.
+        -- Without a menu: the next slot for each click, and finally all.
         local nextKey = present[1]
         for index, key in ipairs(present) do
             if key == slotFilter then
@@ -469,7 +469,7 @@ local function CreateView(window)
     f:SetPoint("TOPLEFT", 14, -92)
     f:SetSize(window:GetWidth() - 28, window:GetHeight() - 92 - 14)
     f:SetFrameStrata("DIALOG")
-    -- Over medlemskortet, som det ofte åpnes fra.
+    -- Above the member card, which it is often opened from.
     f:SetFrameLevel(window:GetFrameLevel() + 40)
     f:EnableMouse(true)
     f:SetBackdrop(DW.PANEL_BACKDROP)
@@ -484,14 +484,14 @@ local function CreateView(window)
 
     f.title = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     f.title:SetPoint("TOPLEFT", 16, -14)
-    f.title:SetWidth(f:GetWidth() - 16 - 300) -- søkefeltet står til høyre
+    f.title:SetWidth(f:GetWidth() - 16 - 300) -- the search field is on the right
     f.title:SetJustifyH("LEFT")
     f.title:SetWordWrap(false)
 
     f.info = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     f.info:SetPoint("TOPLEFT", 16, -40)
 
-    -- Søk i listen mens du skriver.
+    -- Search the list while you type.
     f.searchBox = CreateFrame("EditBox", nil, f, "InputBoxTemplate")
     f.searchBox:SetSize(180, 22)
     f.searchBox:SetPoint("TOPRIGHT", -40, -16)
@@ -510,7 +510,7 @@ local function CreateView(window)
     f.searchLabel = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     f.searchLabel:SetPoint("RIGHT", f.searchBox, "LEFT", -10, 0)
 
-    -- Filter på plass (hode, bryst, belte ...), under søkefeltet.
+    -- Filter by slot (head, chest, belt ...), under the search field.
     f.slotChip = DW.CreateChip(f, 186, 22)
     f.slotChip:SetPoint("TOPRIGHT", -34, -40)
     f.slotChip:SetScript("OnClick", function(self)
@@ -531,7 +531,7 @@ local function CreateView(window)
     local closeX = CreateFrame("Button", nil, f, "UIPanelCloseButton")
     closeX:SetPoint("TOPRIGHT", -2, -2)
 
-    -- Knapper nederst.
+    -- Buttons at the bottom.
     f.gameButton = DW.CreateChip(f, 170, 26)
     f.gameButton:SetPoint("BOTTOMLEFT", 16, 12)
     f.gameButton.label:SetJustifyH("CENTER")
@@ -549,7 +549,7 @@ local function CreateView(window)
         GameTooltip:Hide()
     end)
 
-    -- Samme plass som knappen over: den ene er for deg selv, den andre for andre.
+    -- Same place as the button above: one is for yourself, the other for others.
     f.whisper = DW.CreateChip(f, 110, 26)
     f.whisper:SetPoint("BOTTOMLEFT", 16, 12)
     f.whisper.label:SetJustifyH("CENTER")
@@ -569,8 +569,8 @@ local function CreateView(window)
     return f
 end
 
--- Viser hva et medlem kan lage i en profession. member er en rad fra
--- Medlemmer (med professions og det som er delt), profession én av dem.
+-- Shows what a member can make in a profession. member is a row from
+-- the Roster tab (with professions and what is shared), profession is one of them.
 function DW.ShowRecipes(who, which)
     local window = _G.DragonworldFrame
     if not window or type(who) ~= "table" or type(which) ~= "table" then
@@ -590,7 +590,7 @@ function DW.ShowRecipes(who, which)
     Refresh()
 end
 
--- Hendelser -------------------------------------------------------------------
+-- Events ----------------------------------------------------------------------
 
 local refreshQueued = false
 

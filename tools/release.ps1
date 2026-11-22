@@ -1,8 +1,14 @@
 ﻿# Legger ut en ny versjon av Dragonworld til guilden.
 #
-#   pwsh tools\release.ps1 [-Notes "hva som er nytt"] [-NoInstall]
+#   & tools\release.ps1 -News @{ en = '...'; nb = '...'; nl = '...'; de = '...'; da = '...'; sv = '...'; fr = '...' } [-Notes "hva som er nytt"] [-NoInstall]
 #
 # (Notater som begynner med "-" må gis fra PowerShell: & tools\release.ps1 -Notes $notes)
+#
+# -News is required: what is new, in a sentence or two for each language the
+# addon has (DW.LANGUAGES in Locales.lua), at most 220 bytes each. It goes into Version.lua
+# (DW.RELEASE_NEWS) and is shown in the in-game update window of those who
+# have an older version, and once in chat after updating. -Notes is the longer
+# text on the GitHub release page (English).
 #
 # Gjør alt i én operasjon, i denne rekkefølgen:
 #   1. Versjonen er den i Dragonworld.toc. Er den alt lagt ut (taggen finnes),
@@ -23,6 +29,7 @@
 # fortsatt forrige DW.RELEASE, så ingen i guilden blir bedt om å oppdatere.
 
 param(
+    [hashtable]$News,
     [string]$Notes = '',
     [switch]$NoInstall
 )
@@ -46,6 +53,34 @@ function Invoke-Checked([string]$exe, [string[]]$arguments) {
 
 function Read-Utf8([string]$path) { [System.IO.File]::ReadAllText($path, [System.Text.UTF8Encoding]::new($false)) }
 function Write-Utf8([string]$path, [string]$text) { [System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($false)) }
+
+# Checks -News and turns it into the Lua line for Version.lua. Stops before
+# anything is done if a language is missing or a text is too long: the text
+# travels between addons in one guild message (max 255 bytes with its header).
+function Get-NewsLine([hashtable]$news, [string[]]$languages) {
+    $example = ($languages | ForEach-Object { "$_ = '...'" }) -join '; '
+    $usage = "Give -News @{ $example }: what is new, in a sentence or two per language (see CLAUDE.md)."
+    if (-not $news) { throw "-News is missing. $usage" }
+    foreach ($lang in $news.Keys) {
+        if ($lang -notin $languages) { throw "-News has '$lang', which is not one of the addon's languages ($($languages -join ', '))." }
+    }
+    $parts = foreach ($lang in $languages) {
+        $text = [string]$news[$lang]
+        $text = ($text -replace '\s+', ' ').Trim()
+        if (-not $text) { throw "-News has no '$lang' text. $usage" }
+        if ($text.Contains('|')) { throw "-News '$lang' must not contain '|' (the game reads it as a colour or link code)." }
+        $bytes = [System.Text.Encoding]::UTF8.GetByteCount($text)
+        if ($bytes -gt 220) { throw "-News '$lang' is $bytes bytes; at most 220. Make it shorter." }
+        $lua = $text.Replace('\', '\\').Replace('"', '\"')
+        "$lang = `"$lua`""
+    }
+    return 'DW.RELEASE_NEWS = { ' + ($parts -join ', ') + ' }'
+}
+# The addon's languages, from DW.LANGUAGES in Locales.lua.
+$Locales = Join-Path (Split-Path -Parent $PSScriptRoot) 'Dragonworld\Locales.lua'
+$languages = @([regex]::Matches((Read-Utf8 $Locales), '\{\s*code\s*=\s*"([a-z]{2})"') | ForEach-Object { $_.Groups[1].Value })
+if ($languages.Count -lt 2) { throw 'Fant ikke språkene (DW.LANGUAGES) i Locales.lua' }
+$newsLine = Get-NewsLine $News $languages
 
 Push-Location $Root
 try {
@@ -101,6 +136,9 @@ try {
     $versionText = [regex]::Replace($versionText, 'DW\.RELEASE\s*=\s*"[^"]*"', "DW.RELEASE = `"$version`"")
     $versionText = [regex]::Replace($versionText, 'DW\.RELEASED_AT\s*=\s*\d+', "DW.RELEASED_AT = $([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())")
     $versionText = [regex]::Replace($versionText, 'DW\.AUTO_UPDATE\s*=\s*(true|false)', 'DW.AUTO_UPDATE = false')
+    if ($versionText -notmatch '(?m)^DW\.RELEASE_NEWS\s*=.*$') { throw 'Fant ikke "DW.RELEASE_NEWS = ..." i Version.lua' }
+    # A function, so "$" in the text is not read as a regex substitution.
+    $versionText = [regex]::Replace($versionText, '(?m)^DW\.RELEASE_NEWS\s*=.*$', { param($m) $newsLine })
     if ($restart) {
         $versionText = [regex]::Replace($versionText, 'DW\.RESTART_RELEASE\s*=\s*"[^"]*"', "DW.RESTART_RELEASE = `"$version`"")
     }
@@ -130,8 +168,8 @@ try {
     # Installeringsfilen henter oppdateringsprogrammet herfra (GitHubs kopi av
     # main kan henge noen minutter etter etter en push).
     $updater = Join-Path $Addon 'Updater\update.ps1'
-    if (-not $Notes) { $Notes = "Dragonworld $version" }
-    $Notes += "`n`nFirst time: download Installer-Dragonworld.cmd (or Dragonworld.zip) and double-click Installer-Dragonworld.cmd. In game, the addon tells you when a newer version is out; then double-click Dragonworld Updater on your desktop."
+    if (-not $Notes) { $Notes = [string]$News['en'] }
+    if (-not $Notes.Contains('First time:')) { $Notes += "`n`nFirst time: download Installer-Dragonworld.cmd (or Dragonworld.zip) and double-click Installer-Dragonworld.cmd. In game, the addon tells you when a newer version is out; then double-click Dragonworld Updater on your desktop." }
     Invoke-Checked gh @('release', 'create', "v$version", $zip, $installer, $updater, '--title', "Dragonworld $version", '--notes', $Notes)
 
     # 6. Inn i spillet.

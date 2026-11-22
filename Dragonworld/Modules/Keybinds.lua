@@ -1,22 +1,22 @@
 -- Dragonworld - Keybinds per spec
--- Lagrer tastebindingene dine for hver spec på karakteren, og henter dem igjen
--- når du vil, eller automatisk når du bytter spec.
+-- Saves your key bindings for each spec on the character, and gets them back
+-- when you want, or automatically when you switch spec.
 --
--- I Forever er "spec" de to talentgruppene: hovedspec og sekundærspec.
+-- In Forever "spec" means the two talent groups: main spec and secondary spec.
 --
--- Slik virker det:
---   * "Lagre" tar et bilde av alle tastebindingene du har nå, og legger det
---     på den spec-en du velger.
---   * "Hent" bytter ut tastebindingene dine med de lagrede.
---   * Med automatisk bytte på: når du bytter spec, lagres det du hadde på
---     spec-en du forlot, og det du har lagret for den nye hentes.
---   * Før hvert bytte tas en sikkerhetskopi, så "Angre" gir deg tilbake det
---     du hadde.
+-- This is how it works:
+--   * "Save current" takes a snapshot of all the key bindings you have now, and
+--     puts it on the spec you choose.
+--   * "Load" replaces your key bindings with the saved ones.
+--   * With automatic switching on: when you switch spec, what you had on the
+--     spec you left is saved, and what you have saved for the new one is loaded.
+--   * Before every switch a backup is made, so "Undo last change" gives you back
+--     what you had.
 --
--- Spillet lar ikke addons endre tastebindinger i kamp. Skjer et bytte i kamp,
--- utsettes det til kampen er over.
+-- The game does not let addons change key bindings in combat. If a switch
+-- happens in combat, it is postponed until the combat is over.
 --
--- All tekst ligger i Locales.lua (navnene som begynner med KB_).
+-- All text is in Locales.lua (the names that start with KB_).
 
 local ADDON_NAME, DW = ...
 local L = DW.L
@@ -26,12 +26,12 @@ local MAX_SPECS = 4
 
 local Print = DW.Print
 
--- Lagrede data. Settes i OnLoad nederst.
---   db.characters["Navn-Realm"] = {
---       sets = { [specnummer] = { binds = { [kommando] = { tast, ... } }, count, time } },
---       auto = true hvis bindingene skal byttes automatisk ved spec-bytte,
---       current = specnummeret bindingene du har akkurat nå hører til,
---       backup = { binds, count, time }   det du hadde før siste bytte,
+-- Saved data. Set in OnLoad at the bottom.
+--   db.characters["Name-Realm"] = {
+--       sets = { [specnumber] = { binds = { [command] = { key, ... } }, count, time } },
+--       auto = true if the bindings should be switched automatically on spec switch,
+--       current = the spec number the bindings you have right now belong to,
+--       backup = { binds, count, time }   what you had before the last switch,
 --   }
 local db = { characters = {} }
 
@@ -78,7 +78,7 @@ local function NumSpecs()
     if type(count) ~= "number" or DW.IsSecret(count) or count < 1 then
         count = 1
     end
-    -- Vis alltid minst den aktive, selv om tallet skulle være feil.
+    -- Always show at least the active one, even if the number should be wrong.
     return math.min(MAX_SPECS, math.max(count, ActiveSpec()))
 end
 
@@ -91,14 +91,14 @@ local function SpecName(index)
     return L.KB_SPEC_N:format(index)
 end
 
--- Tastebindinger ----------------------------------------------------------------
+-- Key bindings ------------------------------------------------------------------
 
 local function Pack(...)
     return select("#", ...), { ... }
 end
 
--- Tar et bilde av alle tastebindingene: binds[kommando] = { tast, tast, ... }.
--- Bare kommandoer som har minst én tast tas med.
+-- Takes a snapshot of all the key bindings: binds[command] = { key, key, ... }.
+-- Only commands that have at least one key are included.
 local function Snapshot()
     local binds, count = {}, 0
     for index = 1, (GetNumBindings() or 0) do
@@ -124,9 +124,9 @@ local function InCombat()
     return InCombatLockdown and InCombatLockdown() and true or false
 end
 
--- Bytter ut tastebindingene med et lagret sett. Returnerer true hvis det gikk.
+-- Replaces the key bindings with a saved set. Returns true if it worked.
 local function Apply(binds)
-    -- Et tomt sett ville fjernet alle tastene dine. Det gjør vi aldri.
+    -- An empty set would remove all your keys. We never do that.
     if type(binds) ~= "table" or next(binds) == nil then
         return false
     end
@@ -134,7 +134,7 @@ local function Apply(binds)
         return false
     end
 
-    -- Fjern først alle tastene som står på vanlige kommandoer nå ...
+    -- First remove all the keys that are on regular commands now ...
     for index = 1, (GetNumBindings() or 0) do
         local n, values = Pack(GetBinding(index))
         if type(values[1]) == "string" then
@@ -145,7 +145,7 @@ local function Apply(binds)
             end
         end
     end
-    -- ... og sett så de lagrede.
+    -- ... and then set the saved ones.
     for command, keys in pairs(binds) do
         if type(command) == "string" and type(keys) == "table" then
             for _, key in ipairs(keys) do
@@ -156,12 +156,12 @@ local function Apply(binds)
         end
     end
 
-    -- Lagre, ellers er endringen borte ved neste innlogging.
+    -- Save, otherwise the change is gone at the next login.
     SaveBindings(GetCurrentBindingSet())
     return true
 end
 
--- Handlinger ------------------------------------------------------------------
+-- Actions ---------------------------------------------------------------------
 
 local RefreshPanel
 
@@ -216,10 +216,10 @@ local function Undo()
     RefreshPanel()
 end
 
--- Automatisk bytte --------------------------------------------------------------
+-- Automatic switching -----------------------------------------------------------
 
-local lastSpec      -- spec-en vi sist så karakteren i
-local pendingSwitch -- { from, to } mens et bytte venter på at kampen tar slutt
+local lastSpec      -- the spec we last saw the character in
+local pendingSwitch -- { from, to } while a switch waits for the combat to end
 
 local function TrySwitch()
     if not pendingSwitch or InCombat() then
@@ -233,8 +233,8 @@ local function TrySwitch()
         return
     end
 
-    -- Det du hadde satt opp hører til spec-en du forlot (eller til settet du
-    -- sist hentet for hånd).
+    -- What you had set up belongs to the spec you left (or to the set you
+    -- last loaded by hand).
     local binds, count = Snapshot()
     local owner = character.current or from
     if owner then
@@ -248,7 +248,7 @@ local function TrySwitch()
             Print(L.KB_MSG_SWITCHED:format(SpecName(to)))
         end
     else
-        -- Første gang i denne spec-en: begynn med de samme tastene.
+        -- First time in this spec: start with the same keys.
         character.sets[to] = { binds = binds, count = count, time = time() }
         Print(L.KB_MSG_FIRST:format(SpecName(to)))
     end
@@ -271,9 +271,9 @@ local function OnSpecMayHaveChanged()
     RefreshPanel()
 end
 
--- Panelet i hovedvinduet --------------------------------------------------------
+-- The panel in the main window --------------------------------------------------
 
-local panel -- lages første gang modulen velges i hovedvinduet
+local panel -- created the first time the module is chosen in the main window
 local specRows = {}
 
 local function GetSpecRow(index)
@@ -350,7 +350,7 @@ RefreshPanel = function()
     panel.undo:SetActive(character ~= nil and character.backup ~= nil)
 end
 
--- Kalles av hovedvinduet første gang modulen velges.
+-- Called by the main window the first time the module is chosen.
 local function CreatePanel(parent)
     local f = CreateFrame("Frame", nil, parent)
     f:SetAllPoints(parent)
@@ -374,7 +374,7 @@ local function CreatePanel(parent)
         local character = CharacterData()
         if character then
             character.auto = self:GetChecked() and true or nil
-            -- Fra nå av hører tastene du har til spec-en du står i.
+            -- From now on the keys you have belong to the spec you are in.
             if character.auto then
                 character.current = ActiveSpec()
             end
@@ -399,7 +399,7 @@ local function CreatePanel(parent)
     return f
 end
 
--- Hendelser -------------------------------------------------------------------
+-- Events ----------------------------------------------------------------------
 
 local frame = CreateFrame("Frame")
 
@@ -408,7 +408,7 @@ frame:SetScript("OnEvent", function(self, event)
         return
     end
     if event == "PLAYER_REGEN_ENABLED" then
-        -- Kampen er over: gjør et bytte som måtte vente.
+        -- The combat is over: do a switch that had to wait.
         TrySwitch()
         RefreshPanel()
     else
@@ -428,15 +428,15 @@ DW.OnLanguageChanged(function()
     RefreshPanel()
 end)
 
--- Guild-navnet kan komme sent etter innlogging. Noter da hvilken spec
--- karakteren står i, så første spec-bytte blir oppdaget.
+-- The guild name can arrive late after login. Then note which spec the
+-- character is in, so the first spec switch is detected.
 DW.OnMembershipChanged(function(member)
     if member and lastSpec == nil then
         lastSpec = ActiveSpec()
     end
 end)
 
--- Modul --------------------------------------------------------------------------
+-- Module -------------------------------------------------------------------------
 
 DW.RegisterModule({
     id = MODULE_ID,

@@ -629,6 +629,12 @@ function FontString:SetWordWrap(wrap) end
 function FontString:SetFontObject(font) assert(FONTS[font] or type(font) == "table", "SetFontObject: unknown font " .. tostring(font)); self.fontTemplate = font end
 -- How wide the text is drawn. Here every character is 6 wide.
 function FontString:GetStringWidth() return #(self.text or "") * 6 end
+-- How tall: lines of 12, wrapped at the width it was given (one line without one).
+function FontString:GetStringHeight()
+    local width = self.width or 0
+    if width <= 0 then return 12 end
+    return 12 * math.max(1, math.ceil(self:GetStringWidth() / width))
+end
 function FontString:SetFont(path, size, flags)
     assert(type(path) == "string" and type(size) == "number" and type(flags) == "string", "SetFont(path, size, flags)")
     self.font = { path, size }
@@ -970,31 +976,46 @@ check("no windows or buttons are built at load", DragonworldFrame == nil and Dra
 
 -- ================================ languages =====================================
 do
-    local missing, mismatched = {}, {}
+    local missing, mismatched, codes = {}, {}, {}
+    for _, language in ipairs(ns.LANGUAGES) do
+        if language.code ~= "en" then codes[#codes + 1] = language.code end
+    end
+    -- The placeholders and colour codes of a text, in order: string.format has
+    -- no way to reorder them, so a translation must keep them as they are.
+    local function codesOf(text)
+        local found = {}
+        for code in text:gmatch("%%[%-%d%.]*[sdif%%]") do found[#found + 1] = code end
+        local _, colours = text:gsub("|c%x%x%x%x%x%x%x%x", "")
+        local _, resets = text:gsub("|r", "")
+        found[#found + 1] = colours .. "/" .. resets
+        return table.concat(found, " ")
+    end
     for key, english in pairs(ns.strings.en) do
-        for _, code in ipairs({ "nb", "nl" }) do
-            local text = ns.strings[code][key]
+        for _, code in ipairs(codes) do
+            local text = ns.strings[code] and ns.strings[code][key]
             if type(text) ~= "string" or text == "" then
                 missing[#missing + 1] = code .. "." .. key
-            else
-                local _, a = english:gsub("%%[sd]", "")
-                local _, b = text:gsub("%%[sd]", "")
-                if a ~= b then mismatched[#mismatched + 1] = code .. "." .. key end
+            elseif codesOf(text) ~= codesOf(english) then
+                mismatched[#mismatched + 1] = code .. "." .. key
             end
         end
     end
-    for _, code in ipairs({ "nb", "nl" }) do
-        for key in pairs(ns.strings[code]) do
+    for _, code in ipairs(codes) do
+        for key in pairs(ns.strings[code] or {}) do
             if ns.strings.en[key] == nil then missing[#missing + 1] = "en." .. key end
         end
     end
     local count = 0
     for _ in pairs(ns.strings.en) do count = count + 1 end
-    check("every one of the " .. count .. " texts exists in English, Norwegian and Dutch", #missing == 0, table.concat(missing, ", "))
-    check("the %s placeholders match in all three languages", #mismatched == 0, table.concat(mismatched, ", "))
+    check("every one of the " .. count .. " texts exists in all " .. #ns.LANGUAGES .. " languages", #missing == 0, table.concat(missing, ", "))
+    check("the placeholders and colour codes are the same, in the same order, in every language", #mismatched == 0, table.concat(mismatched, ", "))
 end
-check("languages offered: English, Norsk, Nederlands",
-    #ns.LANGUAGES == 3 and ns.LANGUAGES[1].name == "English" and ns.LANGUAGES[2].name == "Norsk" and ns.LANGUAGES[3].name == "Nederlands")
+do
+    local names = {}
+    for _, language in ipairs(ns.LANGUAGES) do names[#names + 1] = language.code .. "=" .. language.name end
+    check("languages offered: English, Norsk, Nederlands, Deutsch, Dansk, Svenska, Français",
+        table.concat(names, " ") == "en=English nb=Norsk nl=Nederlands de=Deutsch da=Dansk sv=Svenska fr=Français", table.concat(names, " "))
+end
 check("a text name that does not exist shows as its own name", ns.L.FINNES_IKKE == "FINNES_IKKE")
 check("unknown language code is refused", ns.SetLanguage("xx") == false and ns.GetLanguage() == "en")
 
@@ -1083,10 +1104,18 @@ end
 
 local prompt = win.prompt
 check("first time: the language question is shown instead of the modules", prompt ~= nil and prompt:IsVisible() and not win.body:IsVisible())
-check("the question is written in all three languages",
-    #prompt.fontStrings == 3 and prompt.fontStrings[1].text == ns.strings.en.PROMPT and prompt.fontStrings[2].text == ns.strings.nb.PROMPT and prompt.fontStrings[3].text == ns.strings.nl.PROMPT)
-check("three language choices: English, Norsk, Nederlands",
-    #prompt.chips == 3 and prompt.chips[1].label.text == "English" and prompt.chips[2].label.text == "Norsk" and prompt.chips[3].label.text == "Nederlands")
+do
+    local lines, chips = true, true
+    for index, language in ipairs(ns.LANGUAGES) do
+        lines = lines and prompt.fontStrings[index] ~= nil and prompt.fontStrings[index].text == ns.strings[language.code].PROMPT
+        chips = chips and prompt.chips[index] ~= nil and prompt.chips[index].label.text == language.name
+    end
+    check("the question is written in every language", #prompt.fontStrings == #ns.LANGUAGES and lines)
+    check("one choice per language, four in the first row and the rest centred under them",
+        #prompt.chips == 7 and chips and select(4, prompt.chips[1]:GetPoint(1)) == -294 and select(4, prompt.chips[4]:GetPoint(1)) == 294
+        and select(4, prompt.chips[5]:GetPoint(1)) == -196 and select(4, prompt.chips[7]:GetPoint(1)) == 196
+        and select(5, prompt.chips[5]:GetPoint(1)) == select(5, prompt.chips[1]:GetPoint(1)) - 50)
+end
 check("no module content is built while asking", DragonworldRyddesekkScroll == nil and etterPanelsBuilt == 0)
 
 dw("")
@@ -1279,6 +1308,23 @@ check("Settings is Dutch and shows Dutch as the current language",
     settings.languageLabel.text == "Taal" and settings.minimapLabel.text == "Knop bij de minimap tonen"
     and settings.languageChips[3].selected and not settings.languageChips[1].selected and not settings.languageChips[2].selected)
 
+do
+    -- The four added languages work the same way.
+    local all = true
+    for index = 4, 7 do
+        local chip = settings.languageChips[index]
+        chip.scripts.OnClick(chip)
+        local code = ns.LANGUAGES[index].code
+        all = all and ns.GetLanguage() == code and DragonworldDB.language == code and chip.selected
+            and settings.languageLabel.text == ns.strings[code].LANGUAGE and win.settingsChip.label.text == ns.strings[code].SETTINGS
+            and rsChip.label.text == ns.strings[code].RS_TITLE
+    end
+    check("Deutsch, Dansk, Svenska and Français can be picked too, and the window switches to them", all)
+    local chip1, chip7 = settings.languageChips[1], settings.languageChips[7]
+    check("all seven fit side by side under Settings, with room for the names",
+        #settings.languageChips == 7 and chip7.width == 80 and select(4, chip7:GetPoint(1)) + chip7.width <= 612
+        and chip1.label:GetPoint(1) == "LEFT" and select(4, chip1.label:GetPoint(1)) == 4)
+end
 settings.languageChips[2].scripts.OnClick(settings.languageChips[2])           -- Norsk
 check("picking Norsk in Settings saves it", DragonworldDB.language == "nb" and ns.GetLanguage() == "nb")
 check("everything on screen switches to Norwegian at once",
@@ -5987,6 +6033,13 @@ end)()
     check("the version file and the download link are there", ns.RELEASE:match("^%d+%.%d+%.%d+$") ~= nil and ns.DOWNLOAD_URL:find("^https://github%.com/") ~= nil, ns.RELEASE)
     check("at login the addon tells the guild which version it has, once", prefixes[VER] == true and #VERSION_LOGIN == 1 and VERSION_LOGIN[1] == mine, all(VERSION_LOGIN))
     check("nothing is outdated while nobody has said a newer version", not ns.IsOutdated() and ns.NewestVersion() == ns.RELEASE and DragonworldUpdateNotice == nil)
+    check("...and the version that runs is remembered, so the next update can say what is new", DragonworldDB.update.running == ns.RELEASE)
+    local newsOK = type(ns.RELEASE_NEWS) == "table"
+    for _, language in ipairs(ns.LANGUAGES) do
+        local text = newsOK and ns.RELEASE_NEWS[language.code]
+        newsOK = newsOK and type(text) == "string" and text ~= "" and #text <= 220 and not text:find("[|\t\n]")
+    end
+    check("the version file says what is new in every language, each short enough for one message", newsOK)
 
     verReceive("V\t0.14.0\t0.14.0", "Borin-Stormrage")
     check("hearing an older version is not answered at once", #sentNow(VER) == 0)
@@ -6009,6 +6062,19 @@ end)()
         and notice.link.text == ns.DOWNLOAD_URL and notice.ok.label.text == "OK" and notice.logo.texture == ns.ICON)
     check("...says it in chat with the link", has("Versjon 0.99.0 av addonen er ute (du har " .. ns.RELEASE .. ")") and has(ns.DOWNLOAD_URL), chatText())
     check("...and remembers it for the next login", DragonworldDB.update.newest == "0.99.0" and DragonworldDB.update.from == "Altine" and ns.IsOutdated())
+    check("...asks the guild what is new in it, in your language", all(sentNow(VER)) == "Q\t0.99.0\tnb", all(sentNow(VER)))
+    check("...with no news in the window before someone answers", not notice.news:IsShown() and notice.height == 236)
+    verReceive("N\t0.99.0\tnb\tNy fane: Prestasjoner, med |cffff0000banner|r.", "Altine-Stormrage")
+    check("the answer comes into the open window, above the buttons, and the window grows to make room",
+        notice.news:IsShown() and notice.news.text == "|cffffd100Nytt i 0.99.0:|r Ny fane: Prestasjoner, med ||cffff0000banner||r."
+        and notice.height == 236 + notice.news:GetStringHeight() + 10 and notice.news:GetStringHeight() == 24 and ns.NewestNews() ~= nil, notice.news.text)
+    verReceive("N\t0.99.0\ten\tNew tab", "Borin-Stormrage")
+    verReceive("N\t0.98.0\tnb\tGammelt", "Borin-Stormrage")
+    check("...news in another language or for another version is not used", notice.news.text:find("Prestasjoner", 1, true) ~= nil)
+    ns.SetLanguage("en", true)
+    check("changing language asks again, in the new one", all(sentNow(VER)) == "Q\t0.99.0\ten")
+    ns.SetLanguage("nb", true)
+    check("...but not when changing back to one it already has", #sentNow(VER) == 0 and notice.news.text:find("Prestasjoner", 1, true) ~= nil)
     check("Escape closes the window", UISpecialFrames[#UISpecialFrames] == "DragonworldUpdateNotice")
     notice.link:TypeText("hello")
     check("the link can be copied but not changed", notice.link.text == ns.DOWNLOAD_URL and notice.link.highlighted == true)
@@ -6023,12 +6089,16 @@ end)()
     inCombat = false
     fire("PLAYER_REGEN_ENABLED")
     check("...then it shows", notice:IsShown() and notice.text.text == ns.strings.nb.UP_TEXT:format("1.0.0", ns.RELEASE))
+    check("...without the news that belonged to 0.99.0, and asks for the news of 1.0.0",
+        not notice.news:IsShown() and notice.height == 236 and all(sentNow(VER)) == "Q\t1.0.0\tnb")
     notice.ok.scripts.OnClick(notice.ok)
 
-    for _, junk in ipairs({ "V\tbanana\t", "X\t9.0.0\t", "V", "", "V\t9.9.9.9.9.9.9.9.9.9.9\t" }) do
+    for _, junk in ipairs({ "V\tbanana\t", "X\t9.0.0\t", "V", "", "V\t9.9.9.9.9.9.9.9.9.9.9\t",
+        "N\t1.0.0\tnb\t", "N\t1.0.0\tnorsk\tTekst", "N\tbanana\tnb\tTekst", "Q\tbanana\tnb", "Q\t" .. ns.RELEASE .. "\tnorsk" }) do
         verReceive(junk, "Altine-Stormrage")
     end
-    check("garbage is ignored", DragonworldDB.update.newest == "1.0.0" and not notice:IsShown())
+    flush()
+    check("garbage is ignored", DragonworldDB.update.newest == "1.0.0" and not notice:IsShown() and ns.NewestNews() == nil and #sentNow(VER) == 0)
 
     win.settingsChip.scripts.OnClick(win.settingsChip)
     check("Settings shows your version, that a newer one is out, and the link",
@@ -6038,7 +6108,7 @@ end)()
 
     local release = ns.RELEASE
     ns.RELEASE = "1.0.0" -- as if the player had updated
-    check("once updated, the remembered version is forgotten", not ns.IsOutdated() and DragonworldDB.update.newest == nil)
+    check("once updated, the remembered version is forgotten", not ns.IsOutdated() and DragonworldDB.update.newest == nil and DragonworldDB.update.newsFor == nil)
     settings:Refresh()
     check("...and Settings says so", settings.versionStatus.text == "Ingen nyere versjon sett i guilden." and settings.versionStatus.color[2] > 0.8)
     ns.RELEASE = release
@@ -6085,8 +6155,66 @@ end)()
     verReceive(table.concat({ "V", "5.0.0", "5.0.0", "4.0.0", tostring(SERVER_NOW + 5 * 86400) }, "\t"), "Altine-Stormrage")
     check("a release time far in the future is not believed (the window is not held back)", notice:IsShown() and DragonworldDB.update.releasedAt == nil)
     notice.ok.scripts.OnClick(notice.ok)
-
+    check("each newer version's news was asked for once", all(sentNow(VER)) == "Q\t2.0.0\tnb ; Q\t3.0.0\tnb ; Q\t4.0.0\tnb ; Q\t5.0.0\tnb", all(sentNow(VER)))
     ns.AUTO_UPDATE = false
+
+    -- Someone behind asks what is new in the version we have.
+    DragonworldDB.update = { running = ns.RELEASE }
+    verReceive("Q\t" .. ns.RELEASE .. "\tnl", "Borin-Stormrage")
+    check("someone asking what is new in our version is not answered at once", #sentNow(VER) == 0)
+    flush()
+    check("...but a little later, in the language asked for", all(sentNow(VER)) == "N\t" .. ns.RELEASE .. "\tnl\t" .. ns.RELEASE_NEWS.nl, all(sentNow(VER)))
+    verReceive("Q\t" .. ns.RELEASE .. "\ten", "Borin-Stormrage")
+    verReceive("N\t" .. ns.RELEASE .. "\ten\t" .. ns.RELEASE_NEWS.en, "Dagny-Stormrage")
+    flush()
+    check("...unless someone else answered first", #sentNow(VER) == 0)
+    verReceive("Q\t0.1.0\tnb", "Borin-Stormrage")
+    flush()
+    check("questions about other versions are left to those who have them", #sentNow(VER) == 0)
+    local news = ns.RELEASE_NEWS
+    ns.RELEASE_NEWS = { nb = "Bare norsk" }
+    verReceive("Q\t" .. ns.RELEASE .. "\tnl", "Borin-Stormrage")
+    flush()
+    check("a language the news lacks gets English or Norwegian instead", all(sentNow(VER)) == "N\t" .. ns.RELEASE .. "\tnl\tBare norsk")
+    ns.RELEASE_NEWS = { nb = string.rep("æ", 200) } -- 400 bytes
+    verReceive("Q\t" .. ns.RELEASE .. "\tnb", "Borin-Stormrage")
+    flush()
+    local long = sentNow(VER)[1] or ""
+    check("news too long for one message is cut to fit, without splitting a letter", #long <= 255 and #long >= 250 and long:sub(-2) == "æ", #long)
+    ns.RELEASE_NEWS = news
+
+    -- After updating: the news of the version we now have, once, in chat.
+    clearChat()
+    DragonworldDB.update = { running = "0.1.0" }
+    ns.ShowInstalledNews()
+    check("after updating, what is new is put in chat", has("Dragonworld " .. ns.RELEASE .. " er installert. Nytt: " .. ns.RELEASE_NEWS.nb)
+        and DragonworldDB.update.running == ns.RELEASE, chatText())
+    clearChat()
+    ns.ShowInstalledNews()
+    check("...once", chatText() == "", chatText())
+    DragonworldDB.update = {}
+    ns.ShowInstalledNews()
+    check("...also when updating from a version that did not remember which one ran", has(ns.RELEASE_NEWS.nb), chatText())
+    clearChat()
+    DragonworldDB.update = {}
+    local language = DragonworldDB.language
+    DragonworldDB.language = nil
+    ns.ShowInstalledNews()
+    check("...but not on a first install", chatText() == "" and DragonworldDB.update.running == ns.RELEASE, chatText())
+    DragonworldDB.language = language
+
+    dw("nytt")
+    check("/dw nytt shows the window as it looks when a version is ready, with this version's news",
+        notice:IsShown() and notice.title.text == "Ny versjon er klar!" and notice.text.text == ns.strings.nb.UP_READY_RELOAD:format(ns.RELEASE)
+        and notice.news:IsShown() and notice.news.text == "|cffffd100Nytt i " .. ns.RELEASE .. ":|r " .. ns.RELEASE_NEWS.nb
+        and notice.ok.label.text == "Reload nå" and notice.later:IsShown() and notice.height > 160, notice.news.text)
+    RELOADS = 0
+    notice.ok.scripts.OnClick(notice.ok)
+    check("...and its button only closes it", RELOADS == 0 and not notice:IsShown())
+    ns.ShowUpdatePopup()
+    check("the real window afterwards is not the example", not notice.news:IsShown() and notice.title.text == "Oppdater Dragonworld!" and notice.ok.label.text == "OK")
+    notice:Hide()
+
     DragonworldDB.update = {}
     check("nothing else went out", #sentNow(VER) == 0)
 end)()

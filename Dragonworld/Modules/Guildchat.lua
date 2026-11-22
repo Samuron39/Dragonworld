@@ -1,32 +1,33 @@
--- Dragonworld - Guildchat og logg
--- En fane med guildchatten, hviskinger og spillets guildlogg, rett under
--- Medlemmer.
+-- Dragonworld - Guild chat and log
+-- A tab with the guild chat, whispers and the game's guild log, right under
+-- the Roster tab.
 --
---   Chat:      meldingene i guildchatten, med klokkeslett og navnet i
---              klassefarge (klikk på navnet for å hviske, som i vanlig chat).
---              Feltet nederst sender til guildchatten. Øverst står dagens
---              melding (MOTD). De siste 300 meldingene huskes.
---   Hvisking:  samtalene du har på hvisking med hvem som helst, guildmedlem
---              eller ikke: en liste til venstre (nyeste øverst, med antall
---              uleste), og hele samtalen med den du velger til høyre, med
---              dato og klokkeslett, så du kan fortsette der dere slapp. Feltet
---              nederst svarer. En samtale kan slettes, eller åpnes i et eget
---              lite vindu som kan flyttes og endre størrelse (Hviskevinduer).
---              De siste 50 samtalene med opptil 200 meldinger hver huskes.
---   Logg:      spillets guildlogg: hvem som er invitert, har blitt med,
---              sluttet, er kastet ut, forfremmet eller degradert, og hvor
---              lenge siden. Spillet sender loggen når den bes om
---              (QueryGuildEventLog), og sier fra med GUILD_EVENT_LOG_UPDATE.
+--   Chat:      the messages in the guild chat, with time of day and the name in
+--              class color (click the name to whisper, as in normal chat).
+--              The field at the bottom sends to the guild chat. At the top is
+--              the message of the day (MOTD). The last 300 messages are kept.
+--   Hvisking (whisper): the conversations you have by whisper with anyone,
+--              guild member or not: a list on the left (newest on top, with the
+--              number of unread), and the whole conversation with the one you
+--              pick on the right, with date and time, so you can continue where
+--              you left off. The field at the bottom replies. A conversation
+--              can be deleted, or opened in its own small window that can be
+--              moved and resized (Hviskevinduer, the whisper windows).
+--              The last 50 conversations with up to 200 messages each are kept.
+--   Logg (log): the game's guild log: who has been invited, joined, left, been
+--              kicked out, promoted or demoted, and how long ago. The game
+--              sends the log when asked (QueryGuildEventLog), and announces
+--              with GUILD_EVENT_LOG_UPDATE.
 --
--- Chat og hviskinger huskes felles for kontoen, bare på denne PC-en (i
--- SavedVariables), og deles aldri med noen. Bare det som kom mens addonen var
--- på er med: spillet gir ikke addons eldre chat. Hviskinger via Battle.net
--- er ikke med.
+-- Chat and whispers are kept account-wide, only on this PC (in
+-- SavedVariables), and are never shared with anyone. Only what arrived while
+-- the addon was on is included: the game gives addons no older chat. Whispers
+-- via Battle.net are not included.
 --
--- Spillet kan gjøre chat "hemmelig" for addons i noen situasjoner (f.eks. i
--- kamp i instanser). Slike meldinger kan ikke leses, og hoppes over.
+-- The game can make chat "secret" to addons in some situations (e.g. in
+-- combat in instances). Such messages can't be read, and are skipped.
 --
--- All tekst ligger i Locales.lua (navnene som begynner med GC_).
+-- All text is in Locales.lua (the names starting with GC_).
 
 local ADDON_NAME, DW = ...
 local L = DW.L
@@ -39,30 +40,30 @@ local MAX_SEND_LETTERS = 255
 local LIST_WIDTH = 180
 local ROW_HEIGHT = 40
 
--- Lagrede data. Settes i OnLoad nederst.
---   db.messages = { { t = tid (lokal klokke), from = "Navn-Realm", text }, ... }, eldste først
---   db.whispers[nøkkel] = {
---       name   = navnet slik spillet sist oppga det (brukes når du svarer),
---       last   = tiden for siste melding, unread = antall uleste,
---       messages = { { t, out = true hvis du sendte den, me = ditt navn, text }, ... },
---   }   (nøkkel = navnet uten realm og mellomrom, små bokstaver)
---   db.popouts[nøkkel] = { point, relativePoint, x, y, w, h, open = true } for egne hviskevinduer
+-- Saved data. Set in OnLoad at the bottom.
+--   db.messages = { { t = time (local clock), from = "Name-Realm", text }, ... }, oldest first
+--   db.whispers[key] = {
+--       name   = the name as the game last gave it (used when you reply),
+--       last   = the time of the last message, unread = number of unread,
+--       messages = { { t, out = true if you sent it, me = your name, text }, ... },
+--   }   (key = the name without realm and spaces, lowercase)
+--   db.popouts[key] = { point, relativePoint, x, y, w, h, open = true } for own whisper windows
 local db = { messages = {}, whispers = {}, popouts = {} }
 
 local panel
-local view = "chat"  -- "chat", "whisper" eller "log"
-local selectedKey    -- samtalen som vises under Hvisking
-local popouts = {}   -- [nøkkel] = et eget vindu med samtalen (se Hviskevinduer)
+local view = "chat"  -- "chat", "whisper" or "log"
+local selectedKey    -- the conversation shown under Hvisking
+local popouts = {}   -- [key] = a separate window with the conversation (see Hviskevinduer)
 local UpdatePopout, ClosePopout
 
--- Er samtalen åpen i et eget vindu nå?
+-- Is the conversation open in its own window now?
 local function PopoutShown(key)
     return popouts[key] ~= nil and popouts[key]:IsShown()
 end
 
--- Småting -----------------------------------------------------------------------
+-- Small things ------------------------------------------------------------------
 
--- En tekst spillet har gitt oss, eller nil hvis den mangler eller er hemmelig.
+-- A text the game has given us, or nil if it is missing or secret.
 local function Plain(value)
     if type(value) == "string" and not DW.IsSecret(value) and value ~= "" then
         return value
@@ -74,7 +75,7 @@ local function ShortName(name)
     return name:match("^([^-]+)") or name
 end
 
--- Klassen til et medlem, fra medlemslisten (lest på nytt høyst hvert 30. sekund).
+-- A member's class, from the member list (re-read at most every 30 seconds).
 local classByName, classReadAt = {}, nil
 local function ClassOf(name)
     if not classReadAt or GetTime() - classReadAt > 30 then
@@ -87,7 +88,7 @@ local function ClassOf(name)
     return classByName[DW.NameKey(name)]
 end
 
--- Et navn i klassefarge (grått hvis klassen er ukjent, f.eks. utenfor guilden).
+-- A name in class color (gray if the class is unknown, e.g. outside the guild).
 local function Colored(name)
     local color = RAID_CLASS_COLORS and RAID_CLASS_COLORS[ClassOf(name) or ""]
     local code = "ffc8c8c8"
@@ -97,7 +98,7 @@ local function Colored(name)
     return ("|c%s%s|r"):format(code, ShortName(name))
 end
 
--- Fargen spillet bruker for en type chat, eller en reserve.
+-- The color the game uses for a type of chat, or a fallback.
 local function ChatColor(kind, r, g, b)
     local info = ChatTypeInfo and ChatTypeInfo[kind]
     if info and info.r then
@@ -106,7 +107,7 @@ local function ChatColor(kind, r, g, b)
     return r, g, b
 end
 
--- Sender en chatmelding. "|" fjernes: spillet godtar bare ekte lenker.
+-- Sends a chat message. "|" is removed: the game only accepts real links.
 local function Send(text, chatType, target)
     text = (text or ""):gsub("|", "/"):gsub("^%s+", ""):gsub("%s+$", "")
     if text == "" then
@@ -124,8 +125,8 @@ local function Send(text, chatType, target)
     return true
 end
 
--- En rute med linjer som i chatvinduet: lenker kan klikkes, og musehjulet
--- blar.
+-- A pane with lines as in the chat window: links can be clicked, and the
+-- mouse wheel scrolls.
 local function CreateMessageFrame(parent, maxLines)
     local frame = CreateFrame("ScrollingMessageFrame", nil, parent)
     frame:SetFontObject(ChatFontNormal or "ChatFontNormal")
@@ -147,7 +148,7 @@ local function CreateMessageFrame(parent, maxLines)
     return frame
 end
 
--- Et tekstfelt for å skrive en melding; Enter eller knappen sender.
+-- A text field for writing a message; Enter or the button sends.
 local function CreateInput(parent, onSend)
     local box = CreateFrame("EditBox", nil, parent, "InputBoxTemplate")
     box:SetHeight(22)
@@ -170,7 +171,7 @@ end
 
 -- Chat -----------------------------------------------------------------------------
 
--- Én chatlinje: [20:15] [Navn]: tekst. Navnet er en lenke som i vanlig chat.
+-- One chat line: [20:15] [Name]: text. The name is a link as in normal chat.
 local function FormatMessage(message)
     local link = ("|Hplayer:%s|h[%s]|h"):format(message.from, Colored(message.from))
     return ("|cff909090[%s]|r %s: %s"):format(date("%H:%M", message.t), link, message.text)
@@ -202,7 +203,7 @@ local function AddMessage(message)
     end
     if panel and panel:IsVisible() and view == "chat" then
         if #db.messages == 1 then
-            ShowMessages() -- tar bort "ingen meldinger ennå"
+            ShowMessages() -- removes "No messages yet"
         else
             local r, g, b = ChatColor("GUILD", 0.25, 1.00, 0.25)
             panel.chat:AddMessage(FormatMessage(message), r, g, b)
@@ -218,11 +219,11 @@ local function RefreshMotd()
     panel.motd:SetText(motd and L.GC_MOTD:format(motd) or "")
 end
 
--- Hvisking ------------------------------------------------------------------------
+-- Whispers ------------------------------------------------------------------------
 
 local RefreshWhispers
 
--- Samtalene, nyeste først.
+-- The conversations, newest first.
 local function SortedConversations()
     local list = {}
     for key, conversation in pairs(db.whispers) do
@@ -245,7 +246,7 @@ local function UnreadTotal()
     return total
 end
 
--- "Hvisking", med antall uleste i parentes når det er noen.
+-- "Hvisking" (whisper), with the number of unread in parentheses when there are any.
 local function WhisperChipText()
     local unread = UnreadTotal()
     return unread > 0 and ("%s (%d)"):format(L.GC_VIEW_WHISPER, unread) or L.GC_VIEW_WHISPER
@@ -255,7 +256,7 @@ local function IsShowing(key)
     return panel ~= nil and panel:IsVisible() and view == "whisper" and selectedKey == key
 end
 
--- Tar vare på en hvisking, inn (out = false) eller ut (out = true).
+-- Stores a whisper, incoming (out = false) or outgoing (out = true).
 local function AddWhisper(name, text, out)
     local key = DW.NameKey(name)
     if key == "" then
@@ -283,7 +284,7 @@ local function AddWhisper(name, text, out)
         conversation.unread = (conversation.unread or 0) + 1
     end
 
-    -- Bare de 50 nyeste samtalene huskes.
+    -- Only the 50 newest conversations are kept.
     local list = SortedConversations()
     for index = MAX_CONVERSATIONS + 1, #list do
         ClosePopout(list[index].key)
@@ -303,14 +304,14 @@ local function AddWhisper(name, text, out)
     end
 end
 
--- Én linje i en samtale: [21.11 20:15] [Navn]: tekst.
+-- One line in a conversation: [21.11 20:15] [Name]: text.
 local function FormatWhisper(conversation, message)
     local name = message.out and (message.me or "?") or conversation.name
     local link = ("|Hplayer:%s|h[%s]|h"):format(name, Colored(name))
     return ("|cff909090[%s]|r %s: %s"):format(date("%d.%m %H:%M", message.t), link, message.text)
 end
 
--- Hele samtalen i en meldingsrute, nyeste nederst.
+-- The whole conversation in a message pane, newest at the bottom.
 local function ShowConversation(frame, conversation)
     frame:Clear()
     local r, g, b = ChatColor("WHISPER", 1.00, 0.50, 1.00)
@@ -360,7 +361,7 @@ RefreshWhispers = function()
     end
     local selected = selectedKey and db.whispers[selectedKey]
     if selected then
-        selected.unread = 0 -- vises nå, så den er lest
+        selected.unread = 0 -- is shown now, so it is read
     end
 
     local today = date("%d.%m.%Y", time())
@@ -407,12 +408,13 @@ local function DeleteConversation()
     end
 end
 
--- Hviskevinduer ---------------------------------------------------------------
--- En samtale kan åpnes i et eget lite vindu ("Eget vindu"), så man kan prate
--- mens man gjør andre ting. Vinduet kan dras hvor man vil, og gjøres større
--- eller mindre med håndtaket nede til høyre. Plassering og størrelse huskes
--- per samtale (db.popouts), og vinduer som var åpne, åpnes igjen etter /reload
--- og neste innlogging. Meldinger i en åpen samtale er lest, og blinker ikke.
+-- Hviskevinduer (whisper windows) ---------------------------------------------
+-- A conversation can be opened in its own small window ("Own window"),
+-- so you can chat while doing other things. The window can be dragged
+-- anywhere, and made larger or smaller with the handle at the bottom right.
+-- Position and size are remembered per conversation (db.popouts), and windows
+-- that were open open again after /reload and the next login. Messages in an
+-- open conversation are read, and don't flash.
 
 local POPOUT_W, POPOUT_H = 320, 220
 local POPOUT_MIN_W, POPOUT_MIN_H, POPOUT_MAX_W, POPOUT_MAX_H = 220, 140, 700, 520
@@ -465,7 +467,7 @@ local function CreatePopout(key)
     if saved.point then
         f:SetPoint(saved.point, UIParent, saved.relativePoint or saved.point, tonumber(saved.x) or 0, tonumber(saved.y) or 0)
     else
-        -- Nye vinduer litt forskjøvet, så de ikke legger seg oppå hverandre.
+        -- New windows slightly offset, so they don't pile up on top of each other.
         local count = 0
         for _ in pairs(popouts) do
             count = count + 1
@@ -489,7 +491,7 @@ local function CreatePopout(key)
     f.chat:SetPoint("TOPLEFT", 10, -28)
     f.chat:SetPoint("BOTTOMRIGHT", -10, 36)
 
-    -- Svar: Enter sender til den du prater med.
+    -- Reply: Enter sends to the one you are chatting with.
     f.input = CreateFrame("EditBox", nil, f, "InputBoxTemplate")
     f.input:SetPoint("BOTTOMLEFT", 16, 9)
     f.input:SetPoint("BOTTOMRIGHT", -24, 9)
@@ -507,7 +509,7 @@ local function CreatePopout(key)
         self:ClearFocus()
     end)
 
-    -- Håndtaket nede til høyre: dra for å endre størrelsen.
+    -- The handle at the bottom right: drag to resize.
     f.grip = CreateFrame("Button", nil, f)
     f.grip:SetSize(16, 16)
     f.grip:SetPoint("BOTTOMRIGHT", -3, 3)
@@ -525,7 +527,7 @@ local function CreatePopout(key)
     return f
 end
 
--- Tegner samtalen i vinduet på nytt (når den er åpen), og regner den som lest.
+-- Redraws the conversation in the window (when it is open), and counts it as read.
 UpdatePopout = function(key)
     local f = popouts[key]
     local conversation = db.whispers[key]
@@ -563,7 +565,7 @@ ClosePopout = function(key)
     end
 end
 
--- Åpner vinduene som var åpne sist (etter /reload og ved innlogging).
+-- Opens the windows that were open last time (after /reload and at login).
 local function RestorePopouts()
     for key, saved in pairs(db.popouts) do
         if saved.open and db.whispers[key] then
@@ -581,14 +583,14 @@ local function RestoreOnce()
     end
 end
 
--- Logg -----------------------------------------------------------------------------
+-- Log ------------------------------------------------------------------------------
 
 local LOG_TEXT = {
     invite = "GC_LOG_INVITE", join = "GC_LOG_JOIN", promote = "GC_LOG_PROMOTE",
     demote = "GC_LOG_DEMOTE", remove = "GC_LOG_REMOVE", quit = "GC_LOG_QUIT",
 }
 
--- "3 dager siden" ut fra hvor lenge siden spillet sier det er.
+-- "3 dager siden" (3 days ago) from how long ago the game says it is.
 local function Ago(years, months, days, hours)
     if years > 0 then
         return L.GC_AGO_YEARS:format(years)
@@ -609,8 +611,8 @@ local function Number(value)
     return 0
 end
 
--- Loggen fra spillet, eldste først: { { text, ago, index }, ... }, eller nil
--- hvis spillet ikke har funksjonene.
+-- The log from the game, oldest first: { { text, ago, index }, ... }, or nil
+-- if the game doesn't have the functions.
 local function ReadLog()
     if not (GetNumGuildEvents and GetGuildEventInfo) then
         return nil
@@ -663,7 +665,7 @@ local function ShowLog()
     frame:ScrollToBottom()
 end
 
--- Ber spillet om loggen; den vises når spillet svarer.
+-- Asks the game for the log; it is shown when the game answers.
 local function RequestLog()
     if QueryGuildEventLog then
         QueryGuildEventLog()
@@ -671,7 +673,7 @@ local function RequestLog()
     ShowLog()
 end
 
--- Visning ---------------------------------------------------------------------
+-- Display ---------------------------------------------------------------------
 
 local function RefreshPanel()
     if not panel or not panel:IsVisible() then
@@ -689,13 +691,13 @@ local function RefreshPanel()
     panel.whisperPopout.label:SetText(L.GC_POPOUT)
     panel.refresh.label:SetText(L.GC_REFRESH)
 
-    -- Hver visning har sine egne deler; vis bare den valgte.
+    -- Each view has its own parts; show only the selected one.
     for name, parts in pairs(panel.parts) do
         for _, part in ipairs(parts) do
             part:SetShown(view == name)
         end
     end
-    -- Det som vises nå, er sett (blinkingen, Alerts.lua).
+    -- What is shown now has been seen (the flashing, Alerts.lua).
     if DW.RefreshAlerts then
         DW.RefreshAlerts()
     end
@@ -714,7 +716,7 @@ local function CreatePanel(parent)
     f:SetAllPoints(parent)
     panel = f
 
-    -- Chat, hvisking eller logg.
+    -- Chat, whisper or log.
     f.views = {}
     for index, name in ipairs({ "chat", "whisper", "log" }) do
         local chip = DW.CreateChip(f, 120, 26)
@@ -727,7 +729,7 @@ local function CreatePanel(parent)
         f.views[name] = chip
     end
 
-    -- Chat: dagens melding, meldingene, og feltet som sender til guildchatten.
+    -- Chat: the message of the day, the messages, and the field that sends to the guild chat.
     f.motd = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     f.motd:SetPoint("TOPLEFT", 16, -46)
     f.motd:SetPoint("RIGHT", -16, 0)
@@ -744,7 +746,7 @@ local function CreatePanel(parent)
     f.chatInput:SetPoint("RIGHT", -120, 0)
     f.chatInput.button:SetPoint("BOTTOMRIGHT", -14, 12)
 
-    -- Hvisking: samtalene til venstre, den valgte til høyre.
+    -- Whisper: the conversations on the left, the selected one on the right.
     local scroll = CreateFrame("ScrollFrame", "DragonworldWhisperScroll", f, "ScrollFrameTemplate")
     scroll:SetPoint("TOPLEFT", 14, -48)
     scroll:SetPoint("BOTTOMLEFT", 14, 14)
@@ -762,7 +764,7 @@ local function CreatePanel(parent)
     f.whisperDelete:SetPoint("TOPRIGHT", -14, -48)
     f.whisperDelete:SetScript("OnClick", DeleteConversation)
 
-    -- Samtalen i et eget vindu.
+    -- The conversation in its own window.
     f.whisperPopout = DW.CreateChip(f, 110, 22)
     f.whisperPopout:SetPoint("RIGHT", f.whisperDelete, "LEFT", -8, 0)
     f.whisperPopout.label:SetJustifyH("CENTER")
@@ -793,7 +795,7 @@ local function CreatePanel(parent)
     f.whisperInput:SetPoint("RIGHT", -120, 0)
     f.whisperInput.button:SetPoint("BOTTOMRIGHT", -14, 12)
 
-    -- Logg: linjene, og en knapp som ber spillet om dem på nytt.
+    -- Log: the lines, and a button that asks the game for them again.
     f.log = CreateMessageFrame(f, 500)
     f.log:SetPoint("TOPLEFT", 14, -48)
     f.log:SetPoint("BOTTOMRIGHT", -14, 14)
@@ -813,7 +815,7 @@ local function CreatePanel(parent)
     return f
 end
 
--- Hendelser -------------------------------------------------------------------
+-- Events ----------------------------------------------------------------------
 
 local frame = CreateFrame("Frame")
 frame:SetScript("OnEvent", function(self, event, ...)
@@ -831,7 +833,7 @@ frame:SetScript("OnEvent", function(self, event, ...)
         end
     elseif event == "CHAT_MSG_WHISPER_INFORM" then
         if text and name then
-            AddWhisper(name, text, true) -- name er den du hvisket til
+            AddWhisper(name, text, true) -- name is the one you whispered to
         end
     elseif event == "GUILD_EVENT_LOG_UPDATE" then
         if panel and panel:IsVisible() and view == "log" then
@@ -849,7 +851,7 @@ for _, event in ipairs({ "CHAT_MSG_GUILD", "CHAT_MSG_WHISPER", "CHAT_MSG_WHISPER
     pcall(frame.RegisterEvent, frame, event)
 end
 
--- Guild-navnet kan komme etter innlogging; åpne vinduene når det er klart.
+-- The guild name can arrive after login; open the windows when it is ready.
 DW.OnMembershipChanged(function(member)
     if member then
         RestoreOnce()
@@ -870,9 +872,9 @@ DW.AddDebug("guildchat", function(add)
         .. " | i loggen nå: " .. DW.DebugText(GetNumGuildEvents and GetNumGuildEvents()))
 end)
 
--- Blinking (Alerts.lua) -----------------------------------------------------------
+-- Flashing (Alerts.lua) -----------------------------------------------------------
 
--- Kort utdrag av en melding til listen ved knappen (uten å kutte midt i en bokstav).
+-- Short excerpt of a message for the list at the button (without cutting in the middle of a letter).
 local function Excerpt(text)
     if #text <= 60 then
         return text
@@ -885,11 +887,11 @@ local function MyNameKey()
     return name and DW.NameKey(name) or ""
 end
 
--- Hviskinger inn som er nyere enn since, nyeste først: { { conversation, message }, ... }
+-- Incoming whispers newer than since, newest first: { { conversation, message }, ... }
 local function NewWhispers(since)
     local list = {}
     for key, conversation in pairs(db.whispers) do
-        -- En samtale som er åpen i et eget vindu, ser man allerede.
+        -- A conversation that is open in its own window is already seen.
         for index = #conversation.messages, 1, -1 do
             local message = conversation.messages[index]
             if PopoutShown(key) then
@@ -897,7 +899,7 @@ local function NewWhispers(since)
             end
             if not message.out and (message.at or 0) > since then
                 list[#list + 1] = { conversation = conversation, message = message }
-                break -- én linje per person: den nyeste
+                break -- one line per person: the newest
             end
         end
     end
@@ -907,7 +909,7 @@ local function NewWhispers(since)
     return list
 end
 
--- Meldinger i guildchatten fra andre som er nyere enn since, nyeste først.
+-- Messages in the guild chat from others newer than since, newest first.
 local function NewGuildMessages(since)
     local list, me = {}, MyNameKey()
     for index = #db.messages, 1, -1 do
@@ -922,7 +924,7 @@ local function NewGuildMessages(since)
     return list
 end
 
--- Åpner fanen på en bestemt visning.
+-- Opens the tab on a specific view.
 local function OpenView(name)
     view = name
     DW.OpenModule(MODULE_ID)
@@ -933,7 +935,7 @@ DW.RegisterAlert({
     kind = "whisper",
     module = MODULE_ID,
     labelKey = "AL_WHISPER",
-    color = { 1.00, 0.45, 1.00 }, -- rosa, som hvisking i chatten
+    color = { 1.00, 0.45, 1.00 }, -- pink, like whispers in chat
     Check = function(since)
         return #NewWhispers(since) > 0
     end,
@@ -956,12 +958,12 @@ DW.RegisterAlert({
     end,
 })
 
--- Av som standard: i en guild med mye prat ville den blinket hele tiden.
+-- Off by default: in a guild with a lot of chatter it would flash all the time.
 DW.RegisterAlert({
     kind = "guildchat",
     module = MODULE_ID,
     labelKey = "AL_GUILDCHAT",
-    color = { 0.40, 0.85, 1.00 }, -- lyseblå
+    color = { 0.40, 0.85, 1.00 }, -- light blue
     defaultOff = true,
     Check = function(since)
         return #NewGuildMessages(since) > 0
@@ -981,7 +983,7 @@ DW.RegisterAlert({
     end,
 })
 
--- Modul --------------------------------------------------------------------------
+-- Module -------------------------------------------------------------------------
 
 DW.RegisterModule({
     id = MODULE_ID,
@@ -1004,7 +1006,7 @@ DW.RegisterModule({
         if type(saved.whispers) ~= "table" then
             saved.whispers = {}
         end
-        -- Rydd bort noe som ikke ser riktig ut.
+        -- Clean up anything that doesn't look right.
         local function Valid(message)
             return type(message) == "table" and type(message.text) == "string" and type(message.t) == "number"
         end

@@ -1,20 +1,21 @@
--- Dragonworld - hovedvinduet
+-- Dragonworld - the main window
 --
 --   +--------------------------------------------------------------+
 --   | [logo]  Dragonworld                                      [x] |
 --   |--------------------------------------------------------------|
---   | [ Modul 1    ]  +------------------------------------------+ |
---   | [ Modul 2    ]  |                                          | |
---   |                 |   innholdet til den valgte modulen       | |
+--   | [ Module 1   ]  +------------------------------------------+ |
+--   | [ Module 2   ]  |                                          | |
+--   |                 |   the content of the selected module     | |
 --   |                 |                                          | |
---   | [Innstillinger] +------------------------------------------+ |
+--   | [  Settings  ]  +------------------------------------------+ |
 --   +--------------------------------------------------------------+
 --
--- Hver modul som har CreatePanel får en chip i venstre kant, i den rekkefølgen
--- spilleren velger under Innstillinger. Innstillinger er en egen side med
--- språkvalg, minimap-knappen, blinking, knappen til action bar, versjonen og
--- rekkefølgen på fanene. Første gang vinduet åpnes vises første oppsett i
--- stedet for modulene: språkvalget, og så blinking og action bar-knappen.
+-- Each module that has CreatePanel gets a chip on the left edge, in the order
+-- the player chooses under Settings. Settings is a page of its own with
+-- language choice, the minimap button, flashing, the action bar button, the
+-- version and the order of the tabs. The first time the window is opened, the
+-- first-time setup is shown instead of the modules: the language choice, and
+-- then flashing and the action bar button.
 
 local ADDON_NAME, DW = ...
 local L = DW.L
@@ -28,22 +29,23 @@ local HEADER_HEIGHT = 84
 local LOGO_SIZE = 88
 local SIDEBAR_WIDTH = 190
 local CHIP_HEIGHT, CHIP_GAP = 40, 8
+local LANGUAGE_CHIP_WIDTH = 80 -- seven languages side by side under Settings
 
--- Pyntefonten spillet bruker i quest-titler. Finnes den ikke, beholder
--- teksten den vanlige skriften.
+-- The decorative font the game uses in quest titles. If it does not exist,
+-- the text keeps the regular font.
 local TITLE_FONT = "Fonts\\MORPHEUS.TTF"
 local SETTINGS_ICON = "Interface\\Icons\\Trade_Engineering"
 local BODY_WIDTH = WIDTH - 2 * PAD
 local BODY_HEIGHT = HEIGHT - HEADER_HEIGHT - 8 - PAD
 local CONTENT_WIDTH = BODY_WIDTH - SIDEBAR_WIDTH - 10
 
-local SETTINGS = "settings" -- siden for innstillinger; ikke en modul
+local SETTINGS = "settings" -- the settings page; not a module
 
 local window
-local moduleChips = {} -- chips for modulene, ovenfra og ned
-local panels = {}      -- [modul-id eller SETTINGS] = rammen med innholdet
-local selected         -- hva som vises nå
-local pending          -- hva som skal åpnes når språk er valgt
+local moduleChips = {} -- chips for the modules, top to bottom
+local panels = {}      -- [module id or SETTINGS] = the frame with the content
+local selected         -- what is shown now
+local pending          -- what to open when the language is chosen
 
 -- Chips -----------------------------------------------------------------------
 
@@ -54,12 +56,12 @@ local CHIP_BACKDROP = {
     insets = { left = 3, right = 3, top = 3, bottom = 3 },
 }
 
--- Samme ramme brukes av moduler som lager egne små ruter (f.eks. datovelgeren).
+-- The same frame is used by modules that make their own small boxes (e.g. the date picker).
 DW.PANEL_BACKDROP = CHIP_BACKDROP
 
 local function PaintChip(chip)
     if chip.dimmed then
-        -- Kan ikke velges (f.eks. en dag som allerede har vært).
+        -- Cannot be selected (e.g. a day that has already passed).
         chip:SetBackdropColor(0.06, 0.06, 0.07, 0.60)
         chip:SetBackdropBorderColor(0.25, 0.25, 0.25, 1)
         chip.label:SetTextColor(0.40, 0.40, 0.40)
@@ -78,8 +80,8 @@ local function PaintChip(chip)
     end
 end
 
--- En chip er en avrundet knapp med tekst, og eventuelt et ikon til venstre.
--- Den valgte får gullkant. Moduler kan bruke den samme til egne valg.
+-- A chip is a rounded button with text, and optionally an icon on the left.
+-- The selected one gets a gold border. Modules can use the same for their own choices.
 function DW.CreateChip(parent, width, height, icon)
     local chip = CreateFrame("Button", nil, parent, "BackdropTemplate")
     chip:SetSize(width, height)
@@ -114,8 +116,8 @@ function DW.CreateChip(parent, width, height, icon)
         PaintChip(self)
     end
 
-    -- Gråer chipen ut. Brukes sammen med SetEnabled(false) for valg som ikke
-    -- er tilgjengelige.
+    -- Greys the chip out. Used together with SetEnabled(false) for choices that
+    -- are not available.
     function chip:SetDimmed(isDimmed)
         self.dimmed = isDimmed and true or false
         PaintChip(self)
@@ -125,9 +127,9 @@ function DW.CreateChip(parent, width, height, icon)
     return chip
 end
 
--- Knapper ---------------------------------------------------------------------
+-- Buttons ---------------------------------------------------------------------
 
--- Farger for knapper som gjør noe: rød for "kast", gull for hovedhandlingen.
+-- Colors for buttons that do something: red for "Discard", gold for the main action.
 local BUTTON_STYLES = {
     red = {
         normal = { 0.45, 0.06, 0.06 }, hover = { 0.65, 0.10, 0.10 },
@@ -153,8 +155,8 @@ local function PaintButton(button)
     button.label:SetTextColor(style.text[1], style.text[2], style.text[3])
 end
 
--- En farget knapp i samme stil som chipene. style er "red" eller "gold".
--- Bruk button:SetActive(false) for å gråe den ut.
+-- A colored button in the same style as the chips. style is "red" or "gold".
+-- Use button:SetActive(false) to grey it out.
 function DW.CreateButton(parent, width, height, style)
     local button = CreateFrame("Button", nil, parent, "BackdropTemplate")
     button:SetSize(width, height)
@@ -185,12 +187,12 @@ function DW.CreateButton(parent, width, height, style)
     return button
 end
 
--- Rollevalg -------------------------------------------------------------------
+-- Role choice -----------------------------------------------------------------
 
--- Tre chips side om side: Tank, Healer, DPS, med spillets rolleikoner. Man
--- velger én eller to; med to valgt er den tredje grå til man fjerner en.
--- onChange(roles) kalles etter hvert klikk med { T = true, ... }.
--- Brukes i første oppsett (under) og på ditt eget medlemskort.
+-- Three chips side by side: Tank, Healer, DPS, with the game's role icons. You
+-- choose one or two; with two chosen, the third is grey until you remove one.
+-- onChange(roles) is called after each click with { T = true, ... }.
+-- Used in the first-time setup (below) and on your own member card.
 function DW.CreateRoleChoice(parent, chipWidth, chipHeight, iconSize, onChange)
     local box = CreateFrame("Frame", nil, parent)
     local gap = 6
@@ -259,20 +261,20 @@ function DW.CreateRoleChoice(parent, chipWidth, chipHeight, iconSize, onChange)
     return box
 end
 
--- Rekkefølgen på fanene -----------------------------------------------------------
+-- The order of the tabs ---------------------------------------------------------
 
--- Spilleren velger selv rekkefølgen på modul-fanene under Innstillinger. Den
--- lagres i DragonworldDB.tabOrder (felles for alle karakterene på kontoen).
+-- The player chooses the order of the module tabs under Settings. It is
+-- saved in DragonworldDB.tabOrder (shared by all characters on the account).
 
--- Rekkefølgen før spilleren har valgt selv (valgt av guildlederen).
+-- The order before the player has chosen (chosen by the guild leader).
 local DEFAULT_TAB_ORDER = {
     "roster", "guildchat", "dungeons", "guildbank", "events", "achievements", "professions", "materialer", "ryddesekk", "keybinds", "forslag",
 }
 
--- Modulene som har en fane, i valgt rekkefølge (eller standardrekkefølgen).
--- En modul som mangler i spillerens lagrede rekkefølge (f.eks. fordi den er
--- ny), får plassen sin fra standardrekkefølgen: rett etter den som står foran
--- den der. Moduler som ikke er i standardrekkefølgen kommer nederst.
+-- The modules that have a tab, in the chosen order (or the default order).
+-- A module that is missing from the player's saved order (e.g. because it is
+-- new) gets its place from the default order: right after the one that comes
+-- before it there. Modules that are not in the default order come last.
 local function OrderedModuleIDs()
     local list, used = {}, {}
     local saved = type(DragonworldDB) == "table" and DragonworldDB.tabOrder
@@ -289,7 +291,7 @@ local function OrderedModuleIDs()
     for index, id in ipairs(DEFAULT_TAB_ORDER) do
         local module = DW.modules[id]
         if module and module.CreatePanel and not used[id] then
-            -- Etter den nærmeste foran den i standardrekkefølgen som er med.
+            -- After the nearest one before it in the default order that is included.
             local at = 1
             for back = index - 1, 1, -1 do
                 local before = DEFAULT_TAB_ORDER[back]
@@ -315,8 +317,8 @@ local function OrderedModuleIDs()
     return list
 end
 
--- Stiller fanene i venstre kant i valgt rekkefølge. Er det for mange til at
--- de får plass over Innstillinger, rykker de litt tettere sammen.
+-- Lays out the tabs on the left edge in the chosen order. If there are too many
+-- to fit above Settings, they move a little closer together.
 local function LayoutChips()
     local position = {}
     for index, id in ipairs(OrderedModuleIDs()) do
@@ -335,8 +337,8 @@ local function LayoutChips()
     end
 end
 
--- Flytter en modul ett steg opp (step = -1) eller ned (step = 1) og husker det.
--- Returnerer true hvis den ble flyttet.
+-- Moves a module one step up (step = -1) or down (step = 1) and remembers it.
+-- Returns true if it was moved.
 function DW.MoveModule(id, step)
     local list = OrderedModuleIDs()
     for index, current in ipairs(list) do
@@ -359,7 +361,7 @@ function DW.MoveModule(id, step)
     return false
 end
 
--- En liten pilknapp (opp eller ned) med spillets egne pilbilder.
+-- A small arrow button (up or down) with the game's own arrow images.
 local function CreateArrowButton(parent, direction)
     local button = CreateFrame("Button", nil, parent)
     button:SetSize(22, 22)
@@ -371,12 +373,12 @@ local function CreateArrowButton(parent, direction)
     return button
 end
 
--- Innstillinger har to kolonner under språkvalget: knapper, blinking og
--- versjon til venstre, rekkefølgen på fanene til høyre.
+-- Settings has two columns under the language choice: buttons, flashing and
+-- version on the left, the order of the tabs on the right.
 local RIGHT_COLUMN, RIGHT_WIDTH = 330, 266
 local ORDER_TOP, ORDER_ROW = -136, 24
 
--- Én linje i listen over fanene: ikon, navn, og pil opp og ned.
+-- One line in the list of tabs: icon, name, and arrow up and down.
 local function GetOrderRow(panel, index)
     local row = panel.orderRows[index]
     if row then
@@ -412,9 +414,9 @@ local function GetOrderRow(panel, index)
     return row
 end
 
--- Innstillinger -----------------------------------------------------------------
+-- Settings ----------------------------------------------------------------------
 
--- En avkrysningsboks med tekst til høyre.
+-- A checkbox with text on the right.
 local function CreateCheck(parent, x, y, onClick)
     local check = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
     check:SetSize(24, 24)
@@ -426,10 +428,10 @@ local function CreateCheck(parent, x, y, onClick)
     return check
 end
 
--- Valgene for blinking (Alerts.lua): én boks for alt, og med withKinds én boks
--- per ting det kan blinke for, med fargen som en liten firkant. Brukes både
--- under Innstillinger og i første oppsett.
-local KIND_ROW = 22 -- avstanden mellom valgene for hva det blinker for
+-- The flashing choices (Alerts.lua): one box for everything, and with withKinds
+-- one box per thing it can flash for, with the color as a small square. Used
+-- both under Settings and in the first-time setup.
+local KIND_ROW = 22 -- the distance between the choices for what it flashes for
 
 local function CreateBlinkChoices(parent, x, y, withKinds)
     local group = { kinds = {} }
@@ -475,7 +477,7 @@ local function CreateBlinkChoices(parent, x, y, withKinds)
     return group
 end
 
--- Et tekstfelt med lenken til nedlasting, så den kan kopieres med Ctrl+C.
+-- A text field with the download link, so it can be copied with Ctrl+C.
 local function CreateLinkBox(parent, width)
     local box = CreateFrame("EditBox", nil, parent, "InputBoxTemplate")
     box:SetSize(width, 22)
@@ -487,7 +489,7 @@ local function CreateLinkBox(parent, width)
     box:SetScript("OnEditFocusGained", Select)
     box:SetScript("OnTextChanged", function(self, userInput)
         if userInput then
-            Select(self) -- teksten skal ikke kunne endres
+            Select(self) -- the text must not be editable
         end
     end)
     box:SetScript("OnEscapePressed", function(self)
@@ -503,7 +505,7 @@ local function CreateSettingsPanel(parent)
     panel.languageLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     panel.languageLabel:SetPoint("TOPLEFT", 16, -16)
 
-    -- Introen og valgene fra første oppsett, en gang til.
+    -- The intro and the choices from the first-time setup, once more.
     panel.introButton = DW.CreateChip(panel, 140, 24)
     panel.introButton:SetPoint("TOPRIGHT", -14, -10)
     panel.introButton.label:SetJustifyH("CENTER")
@@ -511,10 +513,14 @@ local function CreateSettingsPanel(parent)
         DW.ShowIntro()
     end)
 
+    -- All the languages in one row: narrow chips, with less space around the name.
     panel.languageChips = {}
     for index, language in ipairs(DW.LANGUAGES) do
-        local chip = DW.CreateChip(panel, 150, CHIP_HEIGHT)
-        chip:SetPoint("TOPLEFT", 16 + (index - 1) * 158, -40)
+        local chip = DW.CreateChip(panel, LANGUAGE_CHIP_WIDTH, CHIP_HEIGHT)
+        chip:SetPoint("TOPLEFT", 16 + (index - 1) * (LANGUAGE_CHIP_WIDTH + 4), -40)
+        chip.label:ClearAllPoints()
+        chip.label:SetPoint("LEFT", 4, 0)
+        chip.label:SetPoint("RIGHT", -4, 0)
         chip.label:SetJustifyH("CENTER")
         chip.label:SetText(language.name)
         chip.code = language.code
@@ -524,7 +530,7 @@ local function CreateSettingsPanel(parent)
         panel.languageChips[index] = chip
     end
 
-    -- Venstre kolonne: knappen ved minimapet og blinkingen.
+    -- Left column: the minimap button and the flashing.
     panel.minimapCheck = CreateCheck(panel, 14, -96, function(self)
         if DW.SetMinimapButtonShown then
             DW.SetMinimapButtonShown(self:GetChecked() and true or false)
@@ -535,7 +541,7 @@ local function CreateSettingsPanel(parent)
     panel.blink = CreateBlinkChoices(panel, 14, -122, true)
     local y = -122 - #panel.blink.kinds * KIND_ROW - 32
 
-    -- Knappen til action bar.
+    -- The action bar button.
     panel.actionLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     panel.actionLabel:SetPoint("TOPLEFT", 16, y)
     panel.actionSource = DW.CreateActionButtonSource(panel, 32)
@@ -546,7 +552,7 @@ local function CreateSettingsPanel(parent)
     panel.actionHint:SetJustifyH("LEFT")
     y = y - 18 - 32 - 14
 
-    -- Versjonen, og om det finnes en nyere (Update.lua).
+    -- The version, and whether a newer one exists (Update.lua).
     panel.versionLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     panel.versionLabel:SetPoint("TOPLEFT", 16, y)
     panel.versionText = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
@@ -562,14 +568,14 @@ local function CreateSettingsPanel(parent)
     panel.autoText:SetWidth(290)
     panel.autoText:SetJustifyH("LEFT")
 
-    -- Høyre kolonne: rekkefølgen på fanene i venstre kant.
+    -- Right column: the order of the tabs on the left edge.
     panel.orderLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     panel.orderLabel:SetPoint("TOPLEFT", RIGHT_COLUMN, -96)
     panel.orderLabel:SetWidth(RIGHT_WIDTH)
     panel.orderLabel:SetJustifyH("LEFT")
     panel.orderRows = {}
 
-    -- Skriver teksten på valgt språk og viser gjeldende valg.
+    -- Writes the text in the chosen language and shows the current choices.
     function panel:Refresh()
         self.languageLabel:SetText(L.LANGUAGE)
         self.introButton.label:SetText(L.SHOW_INTRO)
@@ -623,14 +629,14 @@ local function CreateSettingsPanel(parent)
     return panel
 end
 
--- Hører addonen om en nyere versjon mens Innstillinger er åpen, vises det.
+-- If the addon hears about a newer version while Settings is open, it is shown.
 DW.OnNewerVersion(function()
     if panels[SETTINGS] and panels[SETTINGS]:IsShown() then
         panels[SETTINGS]:Refresh()
     end
 end)
 
--- Valg av side ------------------------------------------------------------------
+-- Page selection ----------------------------------------------------------------
 
 local function FirstModuleID()
     return moduleChips[1] and moduleChips[1].id or SETTINGS
@@ -667,19 +673,19 @@ local function Select(id)
             end
             panel = result
         end
-        -- Skjul først, så OnShow alltid kjører når den vises under.
+        -- Hide first, so OnShow always runs when it is shown below.
         panel:Hide()
         panels[id] = panel
     end
     panel:Show()
 
-    -- Det som blinket for denne fanen, er nå sett (Alerts.lua).
+    -- What was flashing for this tab has now been seen (Alerts.lua).
     if DW.RefreshAlerts then
         DW.RefreshAlerts()
     end
 end
 
--- Språkvalg første gang -----------------------------------------------------------
+-- Language choice the first time --------------------------------------------------
 
 local ShowWindow
 
@@ -688,17 +694,24 @@ local function CreateLanguagePrompt(parent)
     prompt:SetPoint("TOPLEFT", PAD, -(HEADER_HEIGHT + 8))
     prompt:SetSize(BODY_WIDTH, BODY_HEIGHT)
 
-    -- Samme setning på alle tre språk, siden vi ikke vet hvilket de kan.
+    -- The same sentence in every language, since we do not know which they know.
+    local count = #DW.LANGUAGES
     for index, language in ipairs(DW.LANGUAGES) do
         local line = prompt:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-        line:SetPoint("TOP", 0, -60 - (index - 1) * 24)
+        line:SetPoint("TOP", 0, -36 - (index - 1) * 22)
         line:SetText(DW.strings[language.code].PROMPT)
     end
 
+    -- The choices under them, at most four in a row, each row centred.
+    local perRow = 4
+    local top = -36 - count * 22 - 24
     prompt.chips = {}
     for index, language in ipairs(DW.LANGUAGES) do
+        local row = math.floor((index - 1) / perRow)
+        local inRow = math.min(perRow, count - row * perRow)
+        local column = (index - 1) % perRow
         local chip = DW.CreateChip(prompt, 180, 40)
-        chip:SetPoint("TOP", (index - 2) * 196, -170)
+        chip:SetPoint("TOP", (column - (inRow - 1) / 2) * 196, top - row * 50)
         chip.label:SetJustifyH("CENTER")
         chip.label:SetText(language.name)
         chip.code = language.code
@@ -714,16 +727,17 @@ local function CreateLanguagePrompt(parent)
     return prompt
 end
 
--- Første oppsett, steg 2 og 3 -----------------------------------------------------
+-- First-time setup, steps 2 and 3 -------------------------------------------------
 
--- Etter språkvalget: en intro (hva addonen kan, og hva du bør åpne i spillet
--- så visningene fylles), og så valgene for hva knappene skal blinke for og
--- knappen til action bar. Vises én gang per konto. SETUP_VERSION økes når
--- oppsettet får noe nytt alle bør se; da får alle det én gang til. "Vis
--- introen" under Innstillinger viser det igjen. Alt kan endres senere.
+-- After the language choice: an intro (what the addon can do, and what you
+-- should open in the game so the views get filled), and then the choices for
+-- what the buttons should flash for and the action bar button. Shown once per
+-- account. SETUP_VERSION is raised when the setup gets something new everyone
+-- should see; then everyone gets it once more. "Show the intro"
+-- under Settings shows it again. Everything can be changed later.
 local SETUP_VERSION = 2
-local setupStep          -- "intro" eller "options" mens oppsettet vises
-local forceSetup = false -- "Vis introen" er trykket
+local setupStep          -- "intro" or "options" while the setup is shown
+local forceSetup = false -- "Vis introen" has been pressed
 
 local function IsSetupDone()
     if forceSetup then
@@ -734,7 +748,7 @@ end
 
 local function FinishSetup()
     if type(DragonworldDB) == "table" then
-        DragonworldDB.setupDone = true -- eldre versjoner av addonen ser etter denne
+        DragonworldDB.setupDone = true -- older versions of the addon look for this
         DragonworldDB.setupVersion = SETUP_VERSION
     end
     forceSetup = false
@@ -747,8 +761,8 @@ end
 local INTRO_TIPS = { "INTRO_TIP_BANK", "INTRO_TIP_PROFESSIONS", "INTRO_TIP_GUILDBANK", "INTRO_TIP_STATUS", "INTRO_TIP_BUTTON" }
 local INTRO_ROW = 26
 
--- Introen: fanene til venstre (ikon, navn og hva de gjør, i fanerekkefølgen),
--- "Kom i gang" til høyre.
+-- The intro: the tabs on the left (icon, name and what they do, in tab order),
+-- "Getting started" on the right.
 local function CreateIntroPrompt(parent)
     local prompt = CreateFrame("Frame", nil, parent)
     prompt:SetPoint("TOPLEFT", PAD, -(HEADER_HEIGHT + 8))
@@ -822,13 +836,13 @@ local function CreateIntroPrompt(parent)
     return prompt
 end
 
--- Valgene: blinking (med hva det blinker for) og knappen til action bar.
+-- The choices: flashing (with what it flashes for) and the action bar button.
 local function CreateSetupPrompt(parent)
     local prompt = CreateFrame("Frame", nil, parent)
     prompt:SetPoint("TOPLEFT", PAD, -(HEADER_HEIGHT + 8))
     prompt:SetSize(BODY_WIDTH, BODY_HEIGHT)
 
-    local LEFT = 190 -- valgene står i en blokk litt inn fra venstre
+    local LEFT = 190 -- the choices sit in a block a bit in from the left
 
     prompt.title = prompt:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     prompt.title:SetPoint("TOP", 0, -24)
@@ -868,12 +882,13 @@ local function CreateSetupPrompt(parent)
     return prompt
 end
 
--- Rollen, første gang på hver karakter ---------------------------------------------
+-- The role, the first time on each character -----------------------------------
 
--- Etter oppsettet over (som er felles for kontoen) spørres hver karakter én
--- gang hvilken rolle den spiller: tank, healer, dps, eller to av dem. Den
--- vises med ikon i Medlemmer, og kan endres på ditt eget kort. "Senere"
--- hopper over, og spør ikke igjen. Selve rollen lagres i Profile.lua.
+-- After the setup above (which is shared by the account), each character is
+-- asked once which role it plays: tank, healer, dps, or two of them. It is
+-- shown with an icon in the Roster tab, and can be changed on your own card.
+-- "Later" skips it, and does not ask again. The role itself is saved in
+-- Profile.lua.
 local function CreateRolePrompt(parent)
     local prompt = CreateFrame("Frame", nil, parent)
     prompt:SetPoint("TOPLEFT", PAD, -(HEADER_HEIGHT + 8))
@@ -910,7 +925,7 @@ local function CreateRolePrompt(parent)
         ShowWindow()
     end)
 
-    -- Begynner med rollen du kanskje har valgt for dungeons alt.
+    -- Starts with the role you may already have chosen for dungeons.
     function prompt:Load()
         local _, entry = DW.GetMyStatus()
         self.choice:SetRoles(entry and entry.roles or {})
@@ -926,19 +941,19 @@ local function CreateRolePrompt(parent)
         self.later.label:SetText(L.ROLE_LATER)
     end
 
-    -- Skjult til den skal vises, så valgene lastes første gang den vises.
+    -- Hidden until it is to be shown, so the choices load the first time it is shown.
     prompt:Hide()
     return prompt
 end
 
--- Status øverst til høyre -----------------------------------------------------------
+-- Status at the top right -----------------------------------------------------------
 
--- Tre knapper ("pills") der spilleren viser hva de holder på med: quester,
--- åpen for dungeons, eller crafter / ikke forstyrr. Bare én kan være på. Et
--- klikk på den som er på slår den av. "Dungeon" åpner først et vindu der man
--- velger hvilke dungeons (Modules\Dungeons.lua). Selve statusen og delingen
--- ligger i Status.lua.
-local PILL_WIDTH, PILL_HEIGHT, PILL_GAP = 134, 26, 6 -- bredt nok til "Do not disturb"
+-- Three buttons ("pills") where the player shows what they are up to: questing,
+-- open for dungeons, or crafter / do not disturb. Only one can be on. A click
+-- on the one that is on turns it off. "Dungeon" first opens a window where you
+-- choose which dungeons (Modules\Dungeons.lua). The status itself and the
+-- sharing are in Status.lua.
+local PILL_WIDTH, PILL_HEIGHT, PILL_GAP = 134, 26, 6 -- wide enough for "Do not disturb"
 
 local function RefreshStatusPills()
     if not window or not window.statusPills then
@@ -956,7 +971,7 @@ local function CreateStatusPills(f)
     local count = #DW.STATUSES
     for index, status in ipairs(DW.STATUSES) do
         local pill = DW.CreateChip(f, PILL_WIDTH, PILL_HEIGHT, status.icon)
-        pill.icon:SetSize(16, 16) -- litt større enn chipene ellers, så ikonet synes
+        pill.icon:SetSize(16, 16) -- a bit larger than in other chips, so the icon is visible
         pill:SetPoint("TOPRIGHT", -46 - (count - index) * (PILL_WIDTH + PILL_GAP), -30)
         pill.status = status
         pill:SetScript("OnClick", function(self)
@@ -984,14 +999,14 @@ end
 
 DW.OnStatusChanged(RefreshStatusPills)
 
--- Vinduet ---------------------------------------------------------------------
+-- The window ------------------------------------------------------------------
 
 local function CreateWindow()
     local f = CreateFrame("Frame", WINDOW_NAME, UIParent, "BackdropTemplate")
     f:SetSize(WIDTH, HEIGHT)
     f:SetFrameStrata("HIGH")
-    -- Nesten helt tett bakgrunn, så tekst fra andre addons bak vinduet ikke
-    -- skinner gjennom og blander seg med innholdet.
+    -- An almost fully opaque background, so text from other addons behind the
+    -- window does not shine through and mix with the content.
     f:SetBackdrop({
         bgFile = "Interface\\Buttons\\WHITE8X8",
         edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
@@ -999,10 +1014,10 @@ local function CreateWindow()
         insets = { left = 4, right = 4, top = 4, bottom = 4 },
     })
     f:SetBackdropColor(0.04, 0.04, 0.06, 0.95)
-    f:SetBackdropBorderColor(0.90, 0.72, 0.30, 1) -- gulltone på kanten
+    f:SetBackdropBorderColor(0.90, 0.72, 0.30, 1) -- gold tone on the border
     f:Hide()
 
-    -- Husk hvor vinduet ble flyttet til.
+    -- Remember where the window was moved to.
     local saved = type(DragonworldDB) == "table" and DragonworldDB.window
     if type(saved) == "table" and type(saved.point) == "string" then
         f:SetPoint(saved.point, UIParent, saved.relativePoint or saved.point, saved.x or 0, saved.y or 0)
@@ -1024,11 +1039,11 @@ local function CreateWindow()
         end
     end)
 
-    -- Escape lukker vinduet.
+    -- Escape closes the window.
     table.insert(UISpecialFrames, WINDOW_NAME)
 
-    -- Topp: skjoldet oppe til venstre, så stort at det stikker litt ut over
-    -- hjørnet, med guildnavnet i store bokstaver ved siden av.
+    -- Top: the shield at the top left, so large that it sticks out a little
+    -- past the corner, with the guild name in capital letters next to it.
     f.logo = f:CreateTexture(nil, "OVERLAY")
     f.logo:SetSize(LOGO_SIZE, LOGO_SIZE)
     f.logo:SetPoint("TOPLEFT", 8, 18)
@@ -1047,7 +1062,7 @@ local function CreateWindow()
     local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
     close:SetPoint("TOPRIGHT", -2, -2)
 
-    -- Statusknappene øverst til høyre, på linje med guildnavnet.
+    -- The status buttons at the top right, in line with the guild name.
     CreateStatusPills(f)
 
     local line = f:CreateTexture(nil, "ARTWORK")
@@ -1056,7 +1071,7 @@ local function CreateWindow()
     line:SetPoint("TOPLEFT", PAD, -HEADER_HEIGHT)
     line:SetPoint("TOPRIGHT", -PAD, -HEADER_HEIGHT)
 
-    -- Alt under toppen: chips til venstre, innhold til høyre.
+    -- Everything below the top: chips on the left, content on the right.
     f.body = CreateFrame("Frame", nil, f)
     f.body:SetPoint("TOPLEFT", PAD, -(HEADER_HEIGHT + 8))
     f.body:SetSize(BODY_WIDTH, BODY_HEIGHT)
@@ -1071,9 +1086,9 @@ local function CreateWindow()
             moduleChips[#moduleChips + 1] = chip
         end
     end
-    LayoutChips() -- i den rekkefølgen spilleren har valgt
+    LayoutChips() -- in the order the player has chosen
 
-    -- Innstillinger ligger nederst i samme kant.
+    -- Settings sits at the bottom of the same edge.
     f.settingsChip = DW.CreateChip(f.body, SIDEBAR_WIDTH, CHIP_HEIGHT, SETTINGS_ICON)
     f.settingsChip:SetPoint("BOTTOMLEFT", 0, 0)
     f.settingsChip:SetScript("OnClick", function()
@@ -1090,7 +1105,7 @@ local function CreateWindow()
     return f
 end
 
--- Skriver chip-tekstene på valgt språk.
+-- Writes the chip texts in the chosen language.
 local function ApplyLanguage()
     if not window then
         return
@@ -1108,24 +1123,25 @@ end
 
 DW.OnLanguageChanged(ApplyLanguage)
 
--- Slutter karakteren å være medlem mens vinduet er åpent, lukkes det.
+-- If the character stops being a member while the window is open, it closes.
 DW.OnMembershipChanged(function(member)
     if not member and window then
         window:Hide()
     end
 end)
 
--- Moduler som vil vise noe når vinduet åpnes (f.eks. en påminnelse første
--- gang) melder seg her. Funksjonen får vinduet, og kalles hver gang vinduet
--- åpnes med modulene synlige, altså etter at språk er valgt.
+-- Modules that want to show something when the window opens (e.g. a reminder
+-- the first time) register here. The function gets the window, and is called
+-- every time the window opens with the modules visible, that is, after the
+-- language is chosen.
 local openedCallbacks = {}
 
 function DW.OnWindowOpened(callback)
     openedCallbacks[#openedCallbacks + 1] = callback
 end
 
--- Viser vinduet. id er modulen (eller SETTINGS) som skal vises; uten id vises
--- det som sto sist, eller den første modulen.
+-- Shows the window. id is the module (or SETTINGS) to show; without id it
+-- shows what was shown last, or the first module.
 ShowWindow = function(id)
     if not DW.Guard() then
         return
@@ -1137,7 +1153,7 @@ ShowWindow = function(id)
     window:Show()
 
     if not DW.HasChosenLanguage() then
-        -- Spør om språk først. Husk hva som skulle åpnes.
+        -- Ask about language first. Remember what was to be opened.
         pending = id or pending
         if not window.prompt then
             window.prompt = CreateLanguagePrompt(window)
@@ -1152,8 +1168,8 @@ ShowWindow = function(id)
     end
 
     if not IsSetupDone() then
-        -- Steg 2 av første oppsett er introen, steg 3 valgene (blinking og
-        -- knappen til action bar).
+        -- Step 2 of the first-time setup is the intro, step 3 the choices
+        -- (flashing and the action bar button).
         pending = id or pending
         if not window.intro then
             window.intro = CreateIntroPrompt(window)
@@ -1174,7 +1190,7 @@ ShowWindow = function(id)
     end
 
     if DW.NeedsRoleChoice and DW.NeedsRoleChoice() then
-        -- Rollen, første gang på denne karakteren.
+        -- The role, the first time on this character.
         pending = id or pending
         if not window.rolePrompt then
             window.rolePrompt = CreateRolePrompt(window)
@@ -1203,9 +1219,9 @@ ShowWindow = function(id)
     end
 end
 
--- Offentlig ---------------------------------------------------------------------
+-- Public ------------------------------------------------------------------------
 
--- Åpner hovedvinduet, eller lukker det hvis det er åpent.
+-- Opens the main window, or closes it if it is open.
 function DW.ToggleMainWindow()
     if window and window:IsShown() then
         window:Hide()
@@ -1214,12 +1230,12 @@ function DW.ToggleMainWindow()
     end
 end
 
--- Åpner hovedvinduet på en bestemt modul.
+-- Opens the main window on a specific module.
 function DW.OpenModule(id)
     ShowWindow(id)
 end
 
--- Som OpenModule, men lukker vinduet hvis modulen alt vises.
+-- Like OpenModule, but closes the window if the module is already shown.
 function DW.ToggleModule(id)
     if DW.IsModuleShown(id) then
         window:Hide()
@@ -1232,7 +1248,7 @@ function DW.OpenSettings()
     ShowWindow(SETTINGS)
 end
 
--- Viser introen og valgene fra første oppsett igjen (knappen under Innstillinger).
+-- Shows the intro and the choices from the first-time setup again (the button under Settings).
 function DW.ShowIntro()
     forceSetup = true
     setupStep = "intro"
@@ -1243,7 +1259,7 @@ function DW.IsMainWindowShown()
     return window ~= nil and window:IsShown()
 end
 
--- Vises denne modulen akkurat nå (vinduet åpent, oppsettet ferdig, fanen valgt)?
+-- Is this module shown right now (window open, setup done, tab selected)?
 function DW.IsModuleShown(id)
     return window ~= nil and window:IsShown() and window.body:IsShown() and selected == id
 end

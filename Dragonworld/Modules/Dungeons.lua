@@ -1,26 +1,26 @@
 -- Dragonworld - Dungeons
--- Viser alle i guilden som er pålogget og har sagt at de er åpne for
--- dungeons, med rolle (tank, healer, dps), hvilke dungeons de vil ta og
--- hvorfor (quest-run, loot, xp). Herfra kan man hviske til dem eller invitere
--- dem.
+-- Shows everyone in the guild who is online and has said they are open to
+-- dungeons, with role (tank, healer, dps), which dungeons they want to do and
+-- why (quest-run, loot, xp). From here you can whisper them or invite
+-- them.
 --
--- Her ligger også vinduet man får opp når man trykker "Dungeon" øverst i
--- hovedvinduet: der velger man rolle (én eller to), dungeons og formål, og
--- lagrer. Selve statusen, dungeon-listen og delingen med guilden ligger i
--- Status.lua.
+-- This is also where the window you get when you press "Dungeon" at the top of
+-- the main window lives: there you pick role (one or two), dungeons and purpose,
+-- and save. The status itself, the dungeon list and the sharing with the guild
+-- are in Status.lua.
 --
--- All tekst ligger i Locales.lua (navnene som begynner med DG_).
+-- All text is in Locales.lua (the names that start with DG_).
 
 local ADDON_NAME, DW = ...
 local L = DW.L
 
 local MODULE_ID = "dungeons"
 
-local COLUMNS, PER_COLUMN = 3, 13 -- dungeonene i velgeren: tre kolonner
+local COLUMNS, PER_COLUMN = 3, 13 -- the dungeons in the picker: three columns
 local CHECK_ROW = 22
 local ROW_HEIGHT = 44
 
--- Småting -----------------------------------------------------------------------
+-- Details -----------------------------------------------------------------------
 
 local function MyLevel()
     local level = UnitLevel and UnitLevel("player")
@@ -52,11 +52,11 @@ local function PurposesText(purposes)
     return #parts > 0 and table.concat(parts, ", ") or L.DG_ANY_REASON
 end
 
--- Rolleikonene til en oppføring, f.eks. tank + dps. Tomt om de ikke har valgt
--- noen (eldre versjon av addonen).
+-- The role icons of an entry, e.g. tank + dps. Empty if they have not chosen
+-- any (older version of the addon).
 local RoleIcons = DW.RoleIcons
 
--- Rollene med ikon og navn, til verktøytips: "[ikon] Tank, [ikon] Healer".
+-- The roles with icon and name, for tooltips: "[icon] Tank, [icon] Healer".
 local RolesText = DW.RoleNames
 
 local function CountOf(set)
@@ -75,8 +75,8 @@ local function MyWish()
     return nil
 end
 
--- Dungeonene i en oppføring, i fast rekkefølge, med dem du selv også vil ta i
--- grønt.
+-- The dungeons in an entry, in a fixed order, with the ones you also want to
+-- do in green.
 local function DungeonsText(dungeons, separator)
     local mine = MyWish() or {}
     local parts = {}
@@ -108,7 +108,7 @@ local function IsMe(member)
     return name ~= nil and DW.NameKey(member.key) == DW.NameKey(name)
 end
 
--- Hviske og invitere: spillets egne funksjoner, den nyere først.
+-- Whisper and invite: the game's own functions, the newer one first.
 local function Whisper(name)
     if ChatFrameUtil and ChatFrameUtil.SendTell then
         ChatFrameUtil.SendTell(name)
@@ -126,11 +126,11 @@ local function Invite(name)
     end
 end
 
--- Velgeren ------------------------------------------------------------------------
+-- The picker ----------------------------------------------------------------------
 
 local picker
 local pickDungeons, pickPurposes, pickRoles = {}, {}, {}
-local OpenTab -- åpner fanen etter at man har lagret
+local OpenTab -- opens the tab after saving
 
 local function RefreshPicker()
     if not picker then
@@ -140,7 +140,7 @@ local function RefreshPicker()
     picker.title:SetText(L.DG_PICK_TITLE)
     picker.hint:SetText(L.DG_PICK_HINT:format(level))
     picker.roleLabel:SetText(L.DG_ROLE)
-    -- Har man valgt to roller, går den tredje ikke an før man fjerner en.
+    -- With two roles chosen, the third can't be picked until one is removed.
     local full = CountOf(pickRoles) >= DW.MAX_ROLES
     for _, check in ipairs(picker.roleChecks) do
         local chosen = pickRoles[check.role.code] and true or false
@@ -185,7 +185,7 @@ local function CreatePicker(window)
     p:SetBackdrop(DW.PANEL_BACKDROP)
     p:SetBackdropColor(0.05, 0.05, 0.07, 1)
     p:SetBackdropBorderColor(1.00, 0.82, 0.00, 1)
-    -- Helt tett bakgrunn innenfor kanten, så det bak ikke skinner gjennom.
+    -- Fully opaque background inside the border, so what is behind doesn't show through.
     p.solid = p:CreateTexture(nil, "BACKGROUND")
     p.solid:SetPoint("TOPLEFT", 3, -3)
     p.solid:SetPoint("BOTTOMRIGHT", -3, 3)
@@ -200,7 +200,7 @@ local function CreatePicker(window)
     p.hint:SetWidth(width - 32)
     p.hint:SetJustifyH("LEFT")
 
-    -- Rolle: tank, healer, dps. Én eller to.
+    -- Role: tank, healer, dps. One or two.
     p.roleLabel = p:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     p.roleLabel:SetPoint("TOPLEFT", 16, -62)
     p.roleChecks = {}
@@ -223,7 +223,7 @@ local function CreatePicker(window)
         p.roleChecks[index] = check
     end
 
-    -- Hvorfor: quest-run, loot, xp. Man kan krysse av flere.
+    -- Why: quest-run, loot, xp. You can tick several.
     p.whyLabel = p:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     p.whyLabel:SetPoint("TOPLEFT", 400, -62)
     p.purposeChecks = {}
@@ -240,7 +240,7 @@ local function CreatePicker(window)
         p.purposeChecks[index] = check
     end
 
-    -- Dungeonene, i tre kolonner.
+    -- The dungeons, in three columns.
     p.dungeonChecks = {}
     local columnWidth = math.floor((width - 32) / COLUMNS)
     for index, dungeon in ipairs(DW.DUNGEONS) do
@@ -266,7 +266,7 @@ local function CreatePicker(window)
     p.error:SetPoint("BOTTOMLEFT", 16, 46)
     p.error:SetTextColor(1.00, 0.35, 0.30)
 
-    -- Knappene nederst.
+    -- The buttons at the bottom.
     p.fitting = DW.CreateChip(p, 190, 28)
     p.fitting:SetPoint("BOTTOMLEFT", 16, 12)
     p.fitting.label:SetJustifyH("CENTER")
@@ -314,7 +314,7 @@ local function CreatePicker(window)
         end
     end)
 
-    -- Bare når man allerede er åpen for dungeons.
+    -- Only when you are already open to dungeons.
     p.off = DW.CreateButton(p, 150, 28, "red")
     p.off:SetPoint("RIGHT", p.save, "LEFT", -8, 0)
     p.off:SetScript("OnClick", function()
@@ -325,7 +325,7 @@ local function CreatePicker(window)
     return p
 end
 
--- Åpner velgeren, med det du valgte sist allerede krysset av.
+-- Opens the picker, with what you chose last already ticked.
 function DW.OpenDungeonPicker()
     local window = _G.DragonworldFrame
     if not window or not DW.IsMember() then
@@ -334,7 +334,7 @@ function DW.OpenDungeonPicker()
     if not picker then
         picker = CreatePicker(window)
     end
-    -- Bare ett slikt vindu oppå om gangen.
+    -- Only one such window on top at a time.
     if _G.DragonworldMemberCard then
         _G.DragonworldMemberCard:Hide()
     end
@@ -349,7 +349,7 @@ function DW.OpenDungeonPicker()
     for code in pairs(entry and entry.roles or {}) do
         pickRoles[code] = true
     end
-    -- Første gang: rollen du har valgt i profilen din (Medlemmer).
+    -- First time: the role you chose in your profile (Roster).
     if not next(pickRoles) and DW.GetMyRoles then
         for code in pairs(DW.GetMyRoles()) do
             pickRoles[code] = true
@@ -360,13 +360,13 @@ function DW.OpenDungeonPicker()
     picker:Show()
 end
 
--- Fanen -----------------------------------------------------------------------
+-- The tab ---------------------------------------------------------------------
 
 local panel
 local rows = {}
 local RefreshPanel
-local filterDungeon -- id-en til én dungeon, eller nil for alle
-local filterRole    -- koden til én rolle ("T", "H", "D"), eller nil for alle
+local filterDungeon -- the id of one dungeon, or nil for all
+local filterRole    -- the code of one role ("T", "H", "D"), or nil for all
 
 local ROLE_BY_CODE = {}
 for _, role in ipairs(DW.ROLES) do
@@ -377,8 +377,8 @@ local function Matches(entry)
     if filterDungeon ~= nil and not (entry.dungeons and entry.dungeons[filterDungeon]) then
         return false
     end
-    -- De som ikke har valgt rolle (eldre versjon) vises ikke når man filtrerer
-    -- på rolle.
+    -- Those who have not chosen a role (older version) are not shown when
+    -- filtering by role.
     if filterRole ~= nil and not (entry.roles and entry.roles[filterRole]) then
         return false
     end
@@ -438,7 +438,7 @@ local function OpenFilterMenu(owner)
     end)
 end
 
--- Filter på rolle: alle tre står alltid i menyen.
+-- Filter by role: all three are always in the menu.
 local function OpenRoleMenu(owner)
     local function IsSelected(data)
         return (filterRole or false) == data
@@ -478,7 +478,7 @@ local function GetRow(index)
     row.name:SetJustifyH("LEFT")
     row.name:SetWordWrap(false)
 
-    -- Rolleikonene (én eller to) mellom navnet og leveln.
+    -- The role icons (one or two) between the name and the level.
     row.roles = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
     row.roles:SetPoint("TOPLEFT", 140, -3)
     row.roles:SetWidth(40)
@@ -519,7 +519,7 @@ local function GetRow(index)
     row.dungeons:SetJustifyH("LEFT")
     row.dungeons:SetWordWrap(false)
 
-    -- Hold over raden for å se alle dungeonene medlemmet vil ta.
+    -- Hold over the row to see all the dungeons the member wants to do.
     row:SetScript("OnEnter", function(self)
         local found = self.found
         if not found then
@@ -622,21 +622,21 @@ local function CreatePanel(parent)
     f.title = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     f.title:SetPoint("TOP", 0, -12)
 
-    -- Bli med selv, eller endre hva du har valgt.
+    -- Join yourself, or change what you have chosen.
     f.mine = DW.CreateButton(f, 200, 26, "gold")
     f.mine:SetPoint("TOPLEFT", 14, -40)
     f.mine:SetScript("OnClick", function()
         DW.OpenDungeonPicker()
     end)
 
-    -- Filter: bare dem som vil ta en bestemt dungeon.
+    -- Filter: only those who want to do a specific dungeon.
     f.filter = DW.CreateChip(f, 236, 26)
     f.filter:SetPoint("TOPRIGHT", -14, -40)
     f.filter:SetScript("OnClick", function(self)
         OpenFilterMenu(self)
     end)
 
-    -- Filter: bare dem som kan ta en bestemt rolle.
+    -- Filter: only those who can take a specific role.
     f.roleFilter = DW.CreateChip(f, 130, 26)
     f.roleFilter:SetPoint("RIGHT", f.filter, "LEFT", -8, 0)
     f.roleFilter:SetScript("OnClick", function(self)
@@ -661,7 +661,7 @@ local function CreatePanel(parent)
     f.footer:SetWordWrap(false)
 
     f:SetScript("OnShow", function()
-        -- Be spillet om fersk medlemsliste, så "pålogget" stemmer.
+        -- Ask the game for a fresh member list, so "online" is correct.
         if C_GuildInfo and C_GuildInfo.GuildRoster then
             C_GuildInfo.GuildRoster()
         end
@@ -676,7 +676,7 @@ OpenTab = function()
     end
 end
 
--- Hendelser -------------------------------------------------------------------
+-- Events ----------------------------------------------------------------------
 
 local frame = CreateFrame("Frame")
 frame:SetScript("OnEvent", function()
@@ -696,7 +696,7 @@ DW.OnLanguageChanged(function()
     RefreshPicker()
 end)
 
--- Modul --------------------------------------------------------------------------
+-- Module -------------------------------------------------------------------------
 
 DW.RegisterModule({
     id = MODULE_ID,
@@ -709,10 +709,10 @@ DW.RegisterModule({
     end,
 })
 
--- Knappene blinker (Alerts.lua) når noen andre er åpne for en dungeon som
--- passer ditt level (2 levels slingringsmonn), eller ikke har valgt noen, og
--- du ikke har åpnet fanen siden. Står du selv som "Ikke forstyrr", blinker
--- det ikke.
+-- The buttons blink (Alerts.lua) when someone else is open to a dungeon that
+-- fits your level (2 levels of leeway), or has not chosen any, and you
+-- have not opened the tab since. If you yourself are set to "Do not disturb",
+-- it does not blink.
 local SLACK = 2
 
 local function WantsMyLevel(entry)
@@ -729,7 +729,7 @@ local function WantsMyLevel(entry)
     return false
 end
 
--- De som er nye siden tiden since: { { member, entry }, ... }.
+-- Those who are new since the time since: { { member, entry }, ... }.
 local function NewWishes(since)
     local list = {}
     if DW.GetMyStatus() == "C" then
@@ -744,8 +744,8 @@ local function NewWishes(since)
     return list
 end
 
--- Én linje i listen ved knappen: hvem, og de av dungeonene deres som passer
--- ditt level (høyst tre), og hvorfor.
+-- One line in the list at the button: who, and those of their dungeons that fit
+-- your level (at most three), and why.
 local function WishLine(found)
     local entry, level = found.entry, MyLevel()
     local names = {}
@@ -775,7 +775,7 @@ DW.RegisterAlert({
     kind = "dungeon",
     module = MODULE_ID,
     labelKey = "AL_DUNGEON",
-    color = { 0.30, 1.00, 0.45 }, -- grønn
+    color = { 0.30, 1.00, 0.45 }, -- green
     Check = function(since)
         return #NewWishes(since) > 0
     end,

@@ -1,31 +1,37 @@
--- Dragonworld - versjonen som er lagt ut
+-- Dragonworld - the released version
 --
--- RELEASE er versjonen guildmedlemmene har fått, altså den som sist ble lagt
--- ut på GitHub. Den sammenlignes med de andre i guilden (Update.lua), og den
--- som har en eldre, får beskjed om å oppdatere.
+-- RELEASE is the version the guild members have received, that is, the one
+-- last released on GitHub. It is compared with everyone else's in the guild
+-- (Update.lua), and whoever has an older one is told to update.
 --
--- Den skrives av tools\release.ps1 når en ny versjon legges ut. Ikke endre den
--- for hånd: versjonen i Dragonworld.toc kan godt være nyere mens noe er under
--- arbeid og testes i spillet, uten at resten av guilden blir bedt om å
--- oppdatere til noe som ikke finnes ennå.
+-- It is written by tools\release.ps1 when a new version is released. Don't
+-- change it by hand: the version in Dragonworld.toc may well be newer while
+-- something is being worked on and tested in the game, without the rest of
+-- the guild being asked to update to something that doesn't exist yet.
 
 local ADDON_NAME, DW = ...
 
-DW.RELEASE = "0.23.0"
+DW.RELEASE = "0.24.0"
 
--- Når RELEASE ble lagt ut (sekunder siden 1970, UTC). Med automatisk
--- oppdatering er den lastet ned noen minutter etter dette. Skrives av release.ps1.
-DW.RELEASED_AT = 1795303035
+-- When RELEASE was released (seconds since 1970, UTC). With automatic updates
+-- it is downloaded a few minutes after this. Written by release.ps1.
+DW.RELEASED_AT = 1795343467
 
--- Den nyeste versjonen som la til eller fjernet filer eller bilder. Har man en
--- eldre enn denne, holder ikke /reload; spillet må startes helt på nytt.
--- Skrives av release.ps1.
+-- The newest version that added or removed files or images. With an older
+-- one than this, /reload is not enough; the game must be fully restarted.
+-- Written by release.ps1.
 DW.RESTART_RELEASE = "0.22.0"
 
--- Settes til true av oppdateringsprogrammet (Updater\update.ps1) på PC-er der
--- automatisk oppdatering er slått på. Da vet addonen at nye versjoner lastes
--- ned av seg selv, og ber bare om /reload.
+-- What is new in RELEASE: a sentence or two per language. Shown in the update
+-- window of those who still have an older version (it travels to them over
+-- the guild channel, so each text must stay within 220 bytes), and once in
+-- chat after updating. Written by release.ps1 from -News.
+DW.RELEASE_NEWS = { en = "Dragonworld now also comes in German, Danish, Swedish and French (choose under Settings). The update window now says what is new. Installing also works on PCs with Smart App Control.", nb = "Dragonworld finnes nå også på tysk, dansk, svensk og fransk (velg under Innstillinger). Oppdateringsvinduet sier nå hva som er nytt. Installering virker også på PC-er med Smart App Control.", nl = "Dragonworld is er nu ook in het Duits, Deens, Zweeds en Frans (kies bij Instellingen). Het updatevenster zegt nu wat er nieuw is. Installeren werkt ook op pc's met Smart App Control.", de = "Dragonworld gibt es jetzt auch auf Deutsch, Dänisch, Schwedisch und Französisch (unter Einstellungen). Das Update-Fenster zeigt, was neu ist. Installieren klappt auch mit Smart App Control.", da = "Dragonworld findes nu også på tysk, dansk, svensk og fransk (vælg under Indstillinger). Opdateringsvinduet viser, hvad der er nyt. Installation virker også med Smart App Control.", sv = "Dragonworld finns nu även på tyska, danska, svenska och franska (välj under Inställningar). Uppdateringsfönstret visar vad som är nytt. Installation fungerar även med Smart App Control.", fr = "Dragonworld existe aussi en allemand, danois, suédois et français (dans Options). La fenêtre de mise à jour indique les nouveautés. L'installation marche aussi avec Smart App Control." }
+
+-- Set to true by the updater (Updater\update.ps1) on PCs where automatic
+-- updates are turned on. Then the addon knows that new versions download by
+-- themselves, and only asks for /reload.
 DW.AUTO_UPDATE = false
 
--- Her henter man siste versjon. Vises i oppdater-vinduet og under Innstillinger.
+-- Where to get the latest version. Shown in the update window and under Settings.
 DW.DOWNLOAD_URL = "https://github.com/Samuron39/Dragonworld/releases/latest"

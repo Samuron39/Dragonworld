@@ -1,23 +1,27 @@
 -- Dragonworld - Professions
--- En guide til raskeste vei opp i en profession (1-300), med det du fortsatt
--- trenger:
---   * Veien videre: stegene igjen fra der du er nå, hvilken oppskrift du lager,
---     hvor mange ganger, og hva det koster i materialer. Ferdige steg vises ikke.
---   * Handleliste: alt du må skaffe for resten av veien, minus det du allerede
---     har i baggene og i banken, så du ikke kjøper mer enn du trenger.
---     Mellomprodukter (bolts, powder, grinding stones ...) som du lager selv
---     underveis står for seg, og materialene til dem er regnet med.
+-- A guide to the fastest way up in a profession (1-300), with what you still
+-- need:
+--   * The way ahead: the steps left from where you are now, which recipe you
+--     craft, how many times, and what it costs in materials. Finished steps
+--     are not shown.
+--   * Shopping list: everything you must get for the rest of the way, minus
+--     what you already have in the bags and in the bank, so you don't buy more
+--     than you need. Intermediate products (bolts, powder, grinding stones ...)
+--     that you make yourself along the way are listed separately, and the
+--     materials for them are included.
 --
--- Ruten er Wowhead sin "Tried & Tested in Forever" (se ProfessionData.lua, som
--- lages av tools\make_profession_data.js). Hvor mange crafts et steg tar regnes
--- ut fra fargen oppskriften har på din skill, med samme modell som Wowhead:
--- oransje gir alltid et poeng, fra gul synker sjansen jevnt til null ved grå.
+-- The route is Wowhead's "Tried & Tested in Forever" (see ProfessionData.lua,
+-- which is made by tools\make_profession_data.js). How many crafts a step takes
+-- is worked out from the color the recipe has at your skill, with the same
+-- model as Wowhead: orange always gives a point, from yellow the chance drops
+-- evenly to zero at gray.
 --
--- Skill leses fra spillet (GetProfessions). Baggene leses når de endrer seg,
--- banken mens den er åpen (og huskes til neste gang). Alt lagres per karakter
--- for hele kontoen, så andre karakterer kan regnes med hvis du vil.
+-- Skill is read from the game (GetProfessions). The bags are read when they
+-- change, the bank while it is open (and remembered until next time). All of
+-- it is saved per character for the whole account, so other characters can be
+-- counted in if you want.
 --
--- All tekst ligger i Locales.lua (navnene som begynner med PROF_).
+-- All text is in Locales.lua (the names starting with PROF_).
 
 local ADDON_NAME, DW = ...
 local L = DW.L
@@ -25,22 +29,22 @@ local DATA = DW.ProfessionData
 
 local MODULE_ID = "professions"
 local MAX_SKILL = 300
-local SAFE_Z = 1.2816 -- 9 av 10 har nok (normalfordeling)
+local SAFE_Z = 1.2816 -- 9 out of 10 have enough (normal distribution)
 local LAST_BAG = NUM_TOTAL_EQUIPPED_BAG_SLOTS or NUM_BAG_SLOTS or 4
 local GetItemInfo = (C_Item and C_Item.GetItemInfo) or GetItemInfo
-local FALLBACK_ICON = 134400 -- spørsmålstegn
+local FALLBACK_ICON = 134400 -- question mark
 local CHECK_ICON = "|TInterface\\RaidFrame\\ReadyCheck-Ready:14|t"
 
--- Lagrede data. Settes i OnLoad nederst.
---   db.characters["Navn-Realm"] = {
+-- Saved data. Set in OnLoad at the bottom.
+--   db.characters["Name-Realm"] = {
 --       name, class,
---       bags = { [itemID] = antall }, bank = { [itemID] = antall }, bankTime,
---       known = { [oppskrift] = true },   oppskrifter vi har sett at du kan
---       selected = skillLine,              professionen som var valgt sist
---       targets = { [skillLine] = mål },   valgt mål per profession
+--       bags = { [itemID] = count }, bank = { [itemID] = count }, bankTime,
+--       known = { [recipe] = true },      recipes we have seen you know
+--       selected = skillLine,              the profession that was selected last
+--       targets = { [skillLine] = target }, chosen target per profession
 --   }
---   db.safe = true   regn litt ekstra (9 av 10 har nok)
---   db.alts = true   regn med det de andre karakterene har
+--   db.safe = true   count a bit extra (9 out of 10 have enough)
+--   db.alts = true   count what the other characters have
 local db = { characters = {} }
 
 local function Number(value)
@@ -57,14 +61,14 @@ local function Text(value)
     return ""
 end
 
--- Professions og oppskrifter --------------------------------------------------------
+-- Professions and recipes -----------------------------------------------------------
 
 local NAME_TO_LINE = {}
 for line, profession in pairs(DATA.professions) do
     NAME_TO_LINE[profession.name:lower()] = line
 end
 
--- Professionene i fast rekkefølge: crafting først, så Cooking og First Aid.
+-- The professions in a fixed order: crafting first, then Cooking and First Aid.
 local ORDERED_LINES = {}
 for line in pairs(DATA.professions) do
     ORDERED_LINES[#ORDERED_LINES + 1] = line
@@ -86,7 +90,7 @@ local function RequestItem(itemID)
     end
 end
 
--- Navn og kvalitet fra spillet (på spillets språk), ellers fra dataene.
+-- Name and quality from the game (in the game's language), otherwise from the data.
 local function ItemName(itemID)
     local name, _, quality = GetItemInfo(itemID)
     if type(name) == "string" and not DW.IsSecret(name) and name ~= "" then
@@ -179,7 +183,7 @@ local function CurrencyName(id)
     return "currency " .. id
 end
 
--- "A" for Alliance, "H" for Horde, nil hvis ukjent.
+-- "A" for Alliance, "H" for Horde, nil if unknown.
 local function MySide()
     local faction = UnitFactionGroup and UnitFactionGroup("player")
     if faction == "Alliance" then
@@ -190,8 +194,8 @@ local function MySide()
     return nil
 end
 
--- Vendorene som selger oppskriften, de for din side først. Hver er
--- { name, zone, price (tekst), limited }.
+-- The vendors that sell the recipe, those for your side first. Each is
+-- { name, zone, price (text), limited }.
 local function RecipeVendors(recipe)
     local list, side = {}, MySide()
     for _, entry in ipairs(recipe.vendors or {}) do
@@ -207,7 +211,7 @@ local function RecipeVendors(recipe)
     return list
 end
 
--- Lagring per karakter ---------------------------------------------------------------
+-- Storage per character -------------------------------------------------------------
 
 local function CurrentCharacter()
     local key, name = DW.CharacterKey()
@@ -229,7 +233,7 @@ local function CurrentCharacter()
     return character, key
 end
 
--- Bagger og bank ----------------------------------------------------------------------
+-- Bags and bank -----------------------------------------------------------------------
 
 local TRACKED = {}
 for itemID in pairs(DATA.items) do
@@ -241,7 +245,7 @@ for bag = 0, LAST_BAG do
     BAG_CONTAINERS[#BAG_CONTAINERS + 1] = bag
 end
 
--- Bankens plasser. I Forever er det 6-14: selve banken og bagene i den.
+-- The bank's slots. In Forever it is 6-14: the bank itself and the bags in it.
 local function BankContainers()
     local list = {}
     if Enum and Enum.BagIndex then
@@ -260,8 +264,8 @@ local function BankContainers()
     return list
 end
 
--- Teller gjenstandene ruten bruker. Gir også hvor mange plasser som fantes,
--- så vi ser forskjell på "tomt" og "ikke tilgjengelig".
+-- Counts the items the route uses. Also gives how many slots existed,
+-- so we can tell "empty" from "not available".
 local function CountTracked(containers)
     local counts, slots = {}, 0
     for _, bag in ipairs(containers) do
@@ -280,7 +284,7 @@ local function CountTracked(containers)
 end
 
 local bankOpen = false
-local version = 0 -- økes hver gang noe endrer seg, så utregninger kan huskes
+local version = 0 -- bumped every time something changes, so calculations can be cached
 
 local function Scan()
     local character = CurrentCharacter()
@@ -290,8 +294,8 @@ local function Scan()
     character.bags = CountTracked(BAG_CONTAINERS)
     if bankOpen then
         local counts, slots = CountTracked(BankContainers())
-        -- Fant vi ingen bankplasser, er banken ikke lesbar akkurat nå. Da
-        -- beholder vi det vi husket, i stedet for å tro at den er tom.
+        -- If we found no bank slots, the bank is not readable right now. Then
+        -- we keep what we remembered, instead of assuming it is empty.
         if slots > 0 then
             character.bank = counts
             character.bankTime = time()
@@ -300,8 +304,8 @@ local function Scan()
     version = version + 1
 end
 
--- Hva du har: din egen karakter, og de andre hvis det er valgt.
--- Gir owned[itemID] = antall, og mine = { bags = {}, bank = {} } for denne karakteren.
+-- What you have: your own character, and the others if chosen.
+-- Gives owned[itemID] = count, and mine = { bags = {}, bank = {} } for this character.
 local function Owned()
     local owned = {}
     local me, myKey = CurrentCharacter()
@@ -321,10 +325,10 @@ local function Owned()
     return owned, me or { bags = {}, bank = {} }, myKey
 end
 
--- Dine professions -----------------------------------------------------------------
+-- Your professions -----------------------------------------------------------------
 
--- Gir mine[skillLine] = { level, max, icon } for professionene ruten har.
--- Leser karakterens egen liste, og håndverkssystemet hvis listen mangler noe.
+-- Gives mine[skillLine] = { level, max, icon } for the professions the route has.
+-- Reads the character's own list, and the crafting system if the list is missing something.
 local function ReadMyProfessions()
     local mine = {}
     local function Add(line, level, max, icon)
@@ -368,8 +372,8 @@ local function ReadMyProfessions()
     return mine
 end
 
--- Husker hvilke av ruteoppskriftene du kan, når ditt eget håndverksvindu er
--- åpent. (En annens profession du har åpnet fra Medlemmer teller ikke.)
+-- Remembers which of the route's recipes you know, when your own crafting
+-- window is open. (Someone else's profession you opened from the Roster tab doesn't count.)
 local function LearnKnownRecipes()
     local ui = C_TradeSkillUI
     if not (ui and ui.GetAllRecipeIDs and ui.GetRecipeInfo) then
@@ -420,10 +424,10 @@ local function KnowsRecipe(recipeID)
     return false
 end
 
--- Utregning ---------------------------------------------------------------------------
+-- Calculation -------------------------------------------------------------------------
 
--- Sjansen for et skillpoeng når du har skill `skill`, med oppskriftens farger
--- { oransje, gul, grønn, grå }: alltid før gul, så jevnt ned til null ved grå.
+-- The chance of a skill point when you have skill `skill`, with the recipe's colors
+-- { orange, yellow, green, gray }: always before yellow, then evenly down to zero at gray.
 local function Chance(colors, skill)
     local yellow, grey = colors[2], colors[4]
     if skill < yellow then
@@ -435,14 +439,14 @@ local function Chance(colors, skill)
     return (grey - skill) / (grey - yellow)
 end
 
--- Hvor mange crafts det tar å gå fra `from` til `to` med oppskriften. Med safe
--- regnes det slik at 9 av 10 rekker det, ellers gjennomsnittet.
+-- How many crafts it takes to go from `from` to `to` with the recipe. With safe
+-- it is counted so that 9 out of 10 make it, otherwise the average.
 local function StepCrafts(recipe, from, to, safe)
     local mean, variance, points = 0, 0, 0
     local up = recipe.up or 1
     local skill = from
     while skill < to do
-        local p = math.max(Chance(recipe[3], skill), 0.05) -- grå skal ikke forekomme i ruten
+        local p = math.max(Chance(recipe[3], skill), 0.05) -- gray should not occur in the route
         mean = mean + 1 / p
         variance = variance + (1 - p) / (p * p)
         points = points + 1
@@ -456,9 +460,9 @@ local function StepCrafts(recipe, from, to, safe)
     end
     return math.max(points, crafts)
 end
-DW.ProfessionStepCrafts = StepCrafts -- for testene
+DW.ProfessionStepCrafts = StepCrafts -- for the tests
 
--- Rekkefølgen målene kan velges i.
+-- The order the targets can be chosen in.
 local function TargetChoices(skill)
     local list = {}
     for _, cap in ipairs({ 75, 150, 225, MAX_SKILL }) do
@@ -469,24 +473,24 @@ local function TargetChoices(skill)
     return list
 end
 
--- Lager hele planen for en profession fra skill `skill` opp til `target`:
---   plan.rows  stegene (kind "step") og rank-kravene (kind "gate") i rekkefølge
---   plan.shop  det du må skaffe, i den rekkefølgen ruten trenger det:
+-- Builds the whole plan for a profession from skill `skill` up to `target`:
+--   plan.rows  the steps (kind "step") and the rank requirements (kind "gate") in order
+--   plan.shop  what you must get, in the order the route needs it:
 --              { itemID, need, have, missing, row }
---   plan.make  mellomprodukter du lager selv: { itemID, crafts, count, have, used }
---   plan.tools verktøy: { key, name, items, bags, bank, madeIn }
---   plan.crafts  crafts i alt
+--   plan.make  intermediate products you make yourself: { itemID, crafts, count, have, used }
+--   plan.tools tools: { key, name, items, bags, bank, madeIn }
+--   plan.crafts  crafts in total
 local function BuildPlan(line, skill, max, target, owned, safe)
     local profession = DATA.professions[line]
     local plan = { line = line, skill = skill, max = max, target = target, rows = {}, shop = {}, make = {}, tools = {}, crafts = 0 }
 
-    local produced = {} -- laget i tidligere steg, kan brukes i senere
-    local left = {}     -- det du har som ikke er brukt opp ennå
+    local produced = {} -- made in earlier steps, can be used in later ones
+    local left = {}     -- what you have that is not used up yet
     for itemID, count in pairs(owned) do
         left[itemID] = count
     end
     local used, missing, extra, firstRow, order = {}, {}, {}, {}, {}
-    local createdIn = {} -- [itemID] = raden som lager den
+    local createdIn = {} -- [itemID] = the row that makes it
 
     local function Need(itemID, count, row, depth)
         if count <= 0 then
@@ -526,7 +530,7 @@ local function BuildPlan(line, skill, max, target, owned, safe)
     for _, step in ipairs(profession.steps) do
         local from, to = math.max(step[1], skill), math.min(step[2], target)
         if from < to then
-            -- Rank-krav som må læres før dette steget kan fullføres.
+            -- Rank requirement that must be learned before this step can be completed.
             while profession.gates[gateIndex] and profession.gates[gateIndex][1] < to do
                 local gate = profession.gates[gateIndex]
                 if max <= gate[1] and gate[1] < target then
@@ -565,7 +569,7 @@ local function BuildPlan(line, skill, max, target, owned, safe)
                     createdIn[recipe.creates] = createdIn[recipe.creates] or index
                 end
             else
-                row.crafts = to - from -- tekststeg (disenchant): ett poeng hver gang
+                row.crafts = to - from -- text step (disenchant): one point each time
             end
             plan.crafts = plan.crafts + row.crafts
         end
@@ -588,9 +592,9 @@ local function BuildPlan(line, skill, max, target, owned, safe)
     end
     return plan
 end
-DW.ProfessionBuildPlan = BuildPlan -- for testene
+DW.ProfessionBuildPlan = BuildPlan -- for the tests
 
--- Valgt mål og profession ----------------------------------------------------------
+-- Chosen target and profession -----------------------------------------------------
 
 local function TargetFor(line, skill)
     local character = CurrentCharacter()
@@ -601,8 +605,8 @@ local function TargetFor(line, skill)
     return target
 end
 
--- Planene for dine egne professions, til tooltipen. Regnes på nytt bare når
--- noe har endret seg.
+-- The plans for your own professions, for the tooltip. Recalculated only when
+-- something has changed.
 local tooltipPlans, tooltipVersion
 
 local function MyPlans()
@@ -619,8 +623,8 @@ local function MyPlans()
     return tooltipPlans
 end
 
--- Tooltip: hvor mange flere av en gjenstand du trenger, når du ser på den
--- (f.eks. i auksjonshuset).
+-- Tooltip: how many more of an item you need, when you look at it
+-- (e.g. in the auction house).
 local shownItem = {}
 
 local function OnTooltipItem(tooltip, data)
@@ -660,22 +664,22 @@ if TooltipDataProcessor and TooltipDataProcessor.AddTooltipPostCall and Enum and
     TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Item, OnTooltipItem)
 end
 
--- Visning ---------------------------------------------------------------------------
+-- Display ---------------------------------------------------------------------------
 
 local ROUTE_ROW, GATE_ROW, SHOP_ROW = 38, 24, 24
 local DIFFICULTY = {
-    { 1.00, 0.50, 0.25 }, -- oransje
-    { 1.00, 1.00, 0.00 }, -- gul
-    { 0.25, 0.75, 0.25 }, -- grønn
-    { 0.50, 0.50, 0.50 }, -- grå
+    { 1.00, 0.50, 0.25 }, -- orange
+    { 1.00, 1.00, 0.00 }, -- yellow
+    { 0.25, 0.75, 0.25 }, -- green
+    { 0.50, 0.50, 0.50 }, -- gray
 }
 
 local panel
 local rows = {}
 local RefreshPanel
-local view = "route" -- "route" eller "shop"
-local selectedLine   -- professionen som vises
-local currentPlan    -- siste plan som ble vist
+local view = "route" -- "route" or "shop"
+local selectedLine   -- the profession being shown
+local currentPlan    -- the last plan that was shown
 
 local function RankName(index)
     return L["PROF_RANK_" .. index]
@@ -697,7 +701,7 @@ local function GateText(gate)
     return text
 end
 
--- Kan du lære ranken nå (skill og level holder)?
+-- Can you learn the rank now (skill and level are enough)?
 local function GateReady(gate, skill)
     local level = Number(UnitLevel and UnitLevel("player")) or 0
     return skill >= (gate.needSkill or 0) and level >= (gate.needLevel or 0)
@@ -713,7 +717,7 @@ local function NoteText(note)
     return note
 end
 
--- Kort tekst om hvor du får oppskriften.
+-- Short text about where you get the recipe.
 local function SourceText(recipeID, recipe)
     if KnowsRecipe(recipeID) then
         return "|cff40ff40" .. L.PROF_SRC_KNOWN .. "|r"
@@ -745,7 +749,7 @@ local function InsertLink(link)
     end
 end
 
--- Tooltip for et steg i ruten.
+-- Tooltip for a step in the route.
 local function ShowStepTooltip(owner, row)
     GameTooltip:SetOwner(owner, "ANCHOR_RIGHT")
     local owned = Owned()
@@ -849,8 +853,8 @@ local function KindText(itemID)
     return L.PROF_KIND_OTHER
 end
 
--- Tooltip for en gjenstand i handlelisten: gjenstanden selv, hvor den kommer
--- fra, og hvor mye som ligger hvor.
+-- Tooltip for an item in the shopping list: the item itself, where it comes
+-- from, and how much is where.
 local function ShowItemTooltip(owner, entry)
     GameTooltip:SetOwner(owner, "ANCHOR_RIGHT")
     if GameTooltip.SetItemByID then
@@ -945,7 +949,7 @@ local function GetRow(index)
     return row
 end
 
--- Gjør en rad klar for en bestemt type innhold.
+-- Prepares a row for a given type of content.
 local function LayoutRow(row, kind, y, height)
     row:ClearAllPoints()
     row:SetPoint("TOPLEFT", 0, -y)
@@ -1142,8 +1146,8 @@ local function FillShop(plan, y)
     return count, y
 end
 
--- Velger hvilken profession som skal vises: den som var valgt sist, ellers
--- din første, ellers den første i listen.
+-- Chooses which profession to show: the one selected last, otherwise
+-- your first, otherwise the first in the list.
 local function ChooseLine(mine)
     if selectedLine and DATA.professions[selectedLine] then
         return selectedLine
@@ -1172,7 +1176,7 @@ end
 
 local function OpenProfessionMenu(owner, mine)
     if not (MenuUtil and MenuUtil.CreateContextMenu) then
-        -- Uten meny: gå til neste profession for hvert klikk.
+        -- Without a menu: go to the next profession on each click.
         local nextLine = ORDERED_LINES[1]
         for index, line in ipairs(ORDERED_LINES) do
             if line == selectedLine then
@@ -1246,7 +1250,7 @@ RefreshPanel = function()
     local plan = BuildPlan(line, skill, max, target, owned, db.safe)
     currentPlan = plan
 
-    -- Chips for dine egne professions, og en for å velge hvilken som helst.
+    -- Chips for your own professions, and one for choosing any profession.
     local chipIndex = 0
     for _, ownLine in ipairs(ORDERED_LINES) do
         if mine[ownLine] and chipIndex < #panel.professionChips then
@@ -1262,7 +1266,7 @@ RefreshPanel = function()
     for index = chipIndex + 1, #panel.professionChips do
         panel.professionChips[index]:Hide()
     end
-    -- Chipene deler bredden (584 punkter), men blir ikke bredere enn 140.
+    -- The chips share the width (584 points), but get no wider than 140.
     local width = math.min(140, math.floor((584 - chipIndex * 4) / (chipIndex + 1)))
     for index = 1, chipIndex do
         local chip = panel.professionChips[index]
@@ -1281,7 +1285,7 @@ RefreshPanel = function()
         panel.otherChip:SetSelected(true)
     end
 
-    -- Status: skill og hva som er igjen.
+    -- Status: skill and what is left.
     if info then
         local status = ("%s: %d / %d"):format(profession.name, skill, max)
         if skill >= target or plan.crafts == 0 then
@@ -1293,7 +1297,7 @@ RefreshPanel = function()
         panel.status:SetText(L.PROF_NOT_LEARNED:format(profession.name) .. "  -  " .. L.PROF_STATUS_LEFT:format(plan.crafts, target))
     end
 
-    -- Advarsel når du står fast på taket ditt.
+    -- Warning when you are stuck at your cap.
     local warning = ""
     if info and skill >= max and max < MAX_SKILL then
         for index, gate in ipairs(profession.gates) do
@@ -1340,7 +1344,7 @@ RefreshPanel = function()
     end
     panel.content:SetHeight(math.max(1, height))
 
-    -- Nederst: hvor ruten kommer fra, og når banken sist ble lest.
+    -- At the bottom: where the route comes from, and when the bank was last read.
     local character = CurrentCharacter()
     local updated = profession.updated or ""
     local y, m, d = updated:match("^(%d+)-(%d+)-(%d+)$")
@@ -1353,12 +1357,12 @@ RefreshPanel = function()
     panel.footer:SetText(footer)
 end
 
--- Kalles av hovedvinduet første gang modulen velges.
+-- Called by the main window the first time the module is selected.
 local function CreatePanel(parent)
     local f = CreateFrame("Frame", nil, parent)
     f:SetAllPoints(parent)
 
-    -- Øverst: dine professions, og en chip for å velge en annen.
+    -- At the top: your professions, and a chip for choosing another.
     f.professionChips = {}
     for index = 1, 4 do
         local chip = DW.CreateChip(f, 140, 26, FALLBACK_ICON)
@@ -1387,7 +1391,7 @@ local function CreatePanel(parent)
     f.warning:SetWordWrap(false)
     f.warning:SetTextColor(1, 0.5, 0.25)
 
-    -- Visning, mål og valg.
+    -- View, target and choices.
     f.routeChip = DW.CreateChip(f, 104, 26)
     f.routeChip:SetPoint("TOPLEFT", 14, -76)
     f.routeChip.label:SetJustifyH("CENTER")
@@ -1459,9 +1463,9 @@ local function CreatePanel(parent)
     return f
 end
 
--- Hendelser ---------------------------------------------------------------------------
+-- Events ------------------------------------------------------------------------------
 
--- Endringer kommer ofte flere på rad. Samle dem opp og gjør det én gang.
+-- Changes often come several in a row. Collect them and do it once.
 local queued = false
 
 local function Queue()
@@ -1533,7 +1537,7 @@ DW.OnLanguageChanged(function()
     RefreshPanel()
 end)
 
--- Feilsøking: hva addonen leser av professions, bagger og oppskrifter.
+-- Debugging: what the addon reads of professions, bags and recipes.
 DW.AddDebug("professions", function(add)
     local text = DW.DebugText
     local parts = {}
@@ -1564,7 +1568,7 @@ DW.AddDebug("professions", function(add)
         .. " | IsPlayerSpell: " .. text(IsPlayerSpell ~= nil) .. " | C_Spell.GetSpellName: " .. text(C_Spell ~= nil and C_Spell.GetSpellName ~= nil))
 end)
 
--- Modul -------------------------------------------------------------------------------
+-- Module ------------------------------------------------------------------------------
 
 DW.RegisterModule({
     id = MODULE_ID,

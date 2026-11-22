@@ -1,22 +1,22 @@
--- Dragonworld - medlemskort
--- Klikk på et medlem i Medlemmer, så kommer dette kortet opp over vinduet:
---   * navn, level, klasse, rank, status, hvor de er / når de sist var pålogget
---   * legacy-poeng
---   * rollen (tank, healer, dps; høyst to). På ditt eget kort velger du den.
---   * professions; de som er delt kan åpnes for å se hva medlemmet kan lage
---   * talenter (hvor mange poeng i hvert tre; hold over for alle)
---   * utstyret medlemmet har på seg (hold over en gjenstand for detaljer)
---   * "om meg": en tekst medlemmet har skrevet om seg selv, som alle med
---     addonen ser. På ditt eget kort skriver du din.
---   * dine egne notater om medlemmet. De lagres bare hos deg og deles ikke.
--- Knapper: Inspiser (spillets eget vindu, når medlemmet er target eller i
--- gruppen og i nærheten), Hvisk og Inviter.
+-- Dragonworld - member card
+-- Click a member in the Roster tab (the member list), and this card opens above the window:
+--   * name, level, class, rank, status, where they are / when they were last online
+--   * legacy points
+--   * the role (tank, healer, dps; at most two). On your own card you pick it.
+--   * professions; the shared ones can be opened to see what the member can make
+--   * talents (how many points in each tree; hold over for all of them)
+--   * the gear the member is wearing (hold over an item for details)
+--   * "about me": a text the member has written about themselves, which everyone
+--     with the addon sees. On your own card you write yours.
+--   * your own notes about the member. They are only saved on your side and not shared.
+-- Buttons: Inspect (the game's own window, when the member is your target or in
+-- the group and nearby), Whisper and Invite.
 --
--- Legacy-poeng, talenter og utstyr kommer fra medlemmets egen addon
--- (Profile.lua). Har medlemmet ikke addonen, eller har dere aldri vært
--- pålogget samtidig, står det at det ikke er delt ennå.
+-- Legacy points, talents and gear come from the member's own addon
+-- (Profile.lua). If the member doesn't have the addon, or you have never been
+-- online at the same time, it says that it has not been shared yet.
 --
--- All tekst ligger i Locales.lua (navnene som begynner med MC_).
+-- All text is in Locales.lua (the names that start with MC_).
 
 local ADDON_NAME, DW = ...
 local L = DW.L
@@ -27,7 +27,7 @@ local GEAR_ROW = 18
 local MAX_NOTE_LETTERS = 500
 local MAX_ABOUT_LETTERS = 300
 
--- Spillets egne navn på plassene, i plass-rekkefølge (1 = hode, 19 = tabard).
+-- The game's own names for the slots, in slot order (1 = head, 19 = tabard).
 local SLOT_NAMES = {
     "HEADSLOT", "NECKSLOT", "SHOULDERSLOT", "SHIRTSLOT", "CHESTSLOT", "WAISTSLOT", "LEGSSLOT", "FEETSLOT",
     "WRISTSLOT", "HANDSSLOT", "FINGER0SLOT", "FINGER1SLOT", "TRINKET0SLOT", "TRINKET1SLOT", "BACKSLOT",
@@ -35,15 +35,15 @@ local SLOT_NAMES = {
 }
 
 local card
-local current -- medlemmet som vises
+local current -- the member being shown
 
--- Småting -----------------------------------------------------------------------
+-- Details -----------------------------------------------------------------------
 
 local function NoteKey(member)
     return member.guid or ("name:" .. DW.NameKey(member.key))
 end
 
--- Dine notater: DragonworldDB.notes[nøkkel] = tekst. Felles for kontoen.
+-- Your notes: DragonworldDB.notes[key] = text. Shared by the whole account.
 local function Notes()
     if type(DragonworldDB) ~= "table" then
         return {}
@@ -73,8 +73,8 @@ local function LastSeenText(member)
     return L.MC_LAST_HOURS:format(member.hours or 0)
 end
 
--- En gjenstand fra koden i profilen: navn, kvalitet og ikon (navnet kan mangle
--- til spillet har lastet gjenstanden).
+-- An item from the code in the profile: name, quality and icon (the name may
+-- be missing until the game has loaded the item).
 local waitingFor = {}
 
 local function ItemInfo(code)
@@ -90,8 +90,8 @@ local function ItemInfo(code)
     return type(name) == "string" and name or ("item:" .. tostring(itemID)), quality, icon, itemID
 end
 
--- Finner en "unit" for medlemmet, så spillet kan inspisere: target, den du
--- holder musa over, eller noen i gruppen.
+-- Finds a "unit" for the member, so the game can inspect: target, the one you
+-- hold the mouse over, or someone in the group.
 local function UnitFor(member)
     if type(UnitExists) ~= "function" or type(UnitGUID) ~= "function" or not member.guid then
         return nil
@@ -138,7 +138,7 @@ local function Invite(name)
     end
 end
 
--- Visning ---------------------------------------------------------------------
+-- Display ---------------------------------------------------------------------
 
 local function Heading(parent, x, y)
     local text = parent:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -193,8 +193,8 @@ local function GetGearRow(index)
     return row
 end
 
--- Professions står i to kolonner (to rader), eller i tre kolonner med
--- mindre skrift når medlemmet har flere enn fire.
+-- Professions are in two columns (two rows), or in three columns with
+-- smaller text when the member has more than four.
 local MAX_CARD_PROFESSIONS = 6
 
 local function GetProfessionChip(index)
@@ -252,12 +252,12 @@ local function RefreshCard()
     local status = statusCode and DW.STATUS_BY_CODE[statusCode]
     card.seen:SetText(LastSeenText(member) .. (status and ("  -  " .. L[status.key]) or ""))
 
-    -- Legacy-poeng, som i spillets eget vindu: "2 / 65".
+    -- Legacy points, as in the game's own window: "2 / 65".
     local points, max = DW.LegacyPointsOf(member)
     local pointsText = points and (max and ("%d / %d"):format(points, max) or tostring(points)) or L.MC_UNKNOWN
     card.legacy:SetText(L.MC_LEGACY:format(pointsText))
 
-    -- Rollen.
+    -- The role.
     card.rolesLabel:SetText(L.MC_ROLE)
     if IsMe(member) then
         card.roleChoice:SetRoles(DW.GetMyRoles())
@@ -299,7 +299,7 @@ local function RefreshCard()
         chip:SetSize(width, 22)
         chip:ClearAllPoints()
         chip:SetPoint("TOPLEFT", 16 + ((index - 1) % columns) * (width + 6), -148 - math.floor((index - 1) / columns) * 26)
-        -- Med tre kolonner er det ikke plass til "/150": den står i tooltipen.
+        -- With three columns there is no room for "/150": it is in the tooltip.
         chip.label:SetFontObject(columns == 3 and "GameFontHighlightSmall" or "GameFontHighlight")
         chip.label:SetText(columns == 3 and ("%s %d"):format(profession.name, profession.level) or full)
         chip:SetDimmed(not linked)
@@ -313,7 +313,7 @@ local function RefreshCard()
 
     local profile = DW.ProfileOf(member) or {}
 
-    -- Talenter: poeng per tre. Hold over for alle talentene.
+    -- Talents: points per tree. Hold over for all the talents.
     card.talentsLabel:SetText(L.MC_TALENTS)
     local trees = type(profile.talents) == "table" and profile.talents.trees
     if type(trees) == "table" and #trees > 0 then
@@ -328,7 +328,7 @@ local function RefreshCard()
         card.talentsHover.trees = nil
     end
 
-    -- Utstyr.
+    -- Gear.
     card.gearLabel:SetText(L.MC_GEAR)
     local items = type(profile.gear) == "table" and type(profile.gear.items) == "table" and profile.gear.items or {}
     local index = 0
@@ -363,7 +363,7 @@ local function RefreshCard()
         card.gearWhen:SetText("")
     end
 
-    -- Om meg.
+    -- About me.
     if IsMe(member) then
         card.aboutLabel:SetText(L.MC_ABOUT_ME)
         card.aboutBox:Show()
@@ -381,10 +381,10 @@ local function RefreshCard()
         card.aboutText:Show()
     end
 
-    -- Notater.
+    -- Notes.
     card.notesLabel:SetText(L.MC_NOTES)
 
-    -- Knapper.
+    -- Buttons.
     local me = IsMe(member)
     card.inspect.label:SetText(L.MC_INSPECT)
     card.whisper.label:SetText(L.MC_WHISPER)
@@ -404,7 +404,7 @@ local function CreateCard(window)
     c:SetBackdrop(DW.PANEL_BACKDROP)
     c:SetBackdropColor(0.05, 0.05, 0.07, 1)
     c:SetBackdropBorderColor(1.00, 0.82, 0.00, 1)
-    -- Helt tett bakgrunn innenfor kanten, så listen bak ikke skinner gjennom.
+    -- Fully opaque background inside the border, so the list behind doesn't show through.
     c.solid = c:CreateTexture(nil, "BACKGROUND")
     c.solid:SetPoint("TOPLEFT", 3, -3)
     c.solid:SetPoint("BOTTOMRIGHT", -3, 3)
@@ -412,7 +412,7 @@ local function CreateCard(window)
     c.gearRows, c.professionChips = {}, {}
     card = c
 
-    -- Venstre: hvem, legacy, professions, talenter, notater.
+    -- Left: who, legacy, professions, talents, notes.
     c.name = c:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     c.name:SetPoint("TOPLEFT", 16, -14)
 
@@ -429,8 +429,8 @@ local function CreateCard(window)
     c.legacy = c:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     c.legacy:SetPoint("TOPLEFT", 16, -80)
 
-    -- Rollen: på ditt eget kort velger du den her (lagres med en gang og
-    -- sendes til guilden), ellers står rollen medlemmet har valgt.
+    -- The role: on your own card you pick it here (saved right away and
+    -- sent to the guild), otherwise the role the member has chosen is shown.
     c.rolesLabel = Heading(c, 16, -104)
     c.rolesText = c:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
     c.rolesText:SetPoint("TOPLEFT", 80, -104)
@@ -453,7 +453,7 @@ local function CreateCard(window)
     c.talents:SetWidth(LEFT_WIDTH)
     c.talents:SetJustifyH("LEFT")
     c.talents:SetWordWrap(false)
-    -- Usynlig felt over talentlinjen: hold over for å se alle talentene.
+    -- Invisible area over the talent line: hold over to see all the talents.
     c.talentsHover = CreateFrame("Frame", nil, c)
     c.talentsHover:SetPoint("TOPLEFT", 16, -218)
     c.talentsHover:SetSize(LEFT_WIDTH, 20)
@@ -475,8 +475,8 @@ local function CreateCard(window)
         GameTooltip:Hide()
     end)
 
-    -- "Om meg": på ditt eget kort et felt du skriver i, ellers teksten
-    -- medlemmet har skrevet om seg selv.
+    -- "About me": on your own card a field you write in, otherwise the text
+    -- the member has written about themselves.
     c.aboutLabel = Heading(c, 16, -248)
     local aboutHolder = CreateFrame("Frame", nil, c, "BackdropTemplate")
     aboutHolder:SetPoint("TOPLEFT", 16, -264)
@@ -503,7 +503,7 @@ local function CreateCard(window)
             DW.SetMyAbout(self:GetText() or "")
         end
     end)
-    -- Ferdig å skrive: send det til guilden.
+    -- Done writing: send it to the guild.
     c.aboutBox:SetScript("OnEditFocusLost", function()
         DW.PublishProfile()
     end)
@@ -531,7 +531,7 @@ local function CreateCard(window)
     c.notes:SetScript("OnEscapePressed", function(self)
         self:ClearFocus()
     end)
-    -- Lagres mens du skriver.
+    -- Saved while you write.
     c.notes:HookScript("OnTextChanged", function(self)
         if current and not c.loadingNote then
             local text = self:GetText() or ""
@@ -543,7 +543,7 @@ local function CreateCard(window)
         c.notes:SetFocus()
     end)
 
-    -- Høyre: utstyr.
+    -- Right: gear.
     c.gearLabel = Heading(c, RIGHT_X, -14)
     c.gearWhen = c:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     c.gearWhen:SetPoint("LEFT", c.gearLabel, "RIGHT", 10, 0)
@@ -555,7 +555,7 @@ local function CreateCard(window)
     local closeX = CreateFrame("Button", nil, c, "UIPanelCloseButton")
     closeX:SetPoint("TOPRIGHT", -2, -2)
 
-    -- Knapper nederst.
+    -- Buttons at the bottom.
     c.inspect = DW.CreateChip(c, 110, 26)
     c.inspect:SetPoint("BOTTOMLEFT", 16, 12)
     c.inspect.label:SetJustifyH("CENTER")
@@ -586,7 +586,7 @@ local function CreateCard(window)
         c:Hide()
     end)
 
-    -- Lukkes kortet, sendes det du har skrevet om deg selv (om noe er endret).
+    -- When the card is closed, what you wrote about yourself is sent (if anything changed).
     c:SetScript("OnHide", function()
         DW.PublishProfile()
     end)
@@ -594,7 +594,7 @@ local function CreateCard(window)
     return c
 end
 
--- Viser kortet for et medlem (en rad fra Medlemmer, eller fra DW.ReadGuildRoster()).
+-- Shows the card for a member (a row from the Roster tab, or from DW.ReadGuildRoster()).
 function DW.ShowMemberCard(member)
     local window = _G.DragonworldFrame
     if not window or type(member) ~= "table" then
@@ -603,7 +603,7 @@ function DW.ShowMemberCard(member)
     if not card then
         CreateCard(window)
     end
-    -- Bare ett slikt vindu oppå om gangen.
+    -- Only one such window on top at a time.
     if _G.DragonworldDungeonPicker then
         _G.DragonworldDungeonPicker:Hide()
     end
@@ -616,7 +616,7 @@ function DW.ShowMemberCard(member)
     RefreshCard()
 end
 
--- Hendelser -------------------------------------------------------------------
+-- Events ----------------------------------------------------------------------
 
 local frame = CreateFrame("Frame")
 frame:SetScript("OnEvent", function(self, event, itemID)

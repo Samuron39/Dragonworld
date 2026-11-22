@@ -1,59 +1,63 @@
--- Dragonworld - Guild-events
--- To ting i én modul:
---   1. Egne events med påmelding. Et medlem lager en event, alle i guilden som
---      har addonen får den, og hver enkelt svarer Kommer / Kanskje / Kommer ikke.
---   2. En oversikt over det som ligger i spillets egen kalender.
+-- Dragonworld - Guild events
+-- Two things in one module:
+--   1. Our own events with sign-ups. A member creates an event, everyone in the
+--      guild who has the addon gets it, and each one answers Coming / Maybe /
+--      Not coming.
+--   2. An overview of what is in the game's own calendar.
 --
--- Slik deles events mellom medlemmene:
---   * Addonen sender små meldinger på guild-kanalen som bare andre addoner
---     ser. Ingenting vises i chatten.
---   * Hver event og hver påmelding har et tidsstempel. Kommer det to versjoner
---     av det samme, vinner den nyeste.
---   * Når du logger inn, sender addonen en kort liste over hva du har. De som
---     er pålogget svarer med det du mangler, og ber om det de selv mangler.
---     Den som var avlogget da en event ble laget, får den altså neste gang
---     vedkommende er pålogget samtidig med noen som har den.
---   * Spillet tillater omtrent én melding i sekundet og 255 tegn per melding.
---     Meldinger legges derfor i kø, og tittel og beskrivelse har makslengde.
+-- How events are shared between members:
+--   * The addon sends small messages on the guild channel that only other
+--     addons see. Nothing shows up in chat.
+--   * Every event and every sign-up has a timestamp. If two versions of the
+--     same thing arrive, the newest wins.
+--   * When you log in, the addon sends a short list of what you have. Those who
+--     are online answer with what you are missing, and ask for what they are
+--     missing themselves. Someone who was offline when an event was created
+--     gets it the next time they are online at the same time as someone who
+--     has it.
+--   * The game allows about one message per second and 255 characters per
+--     message. Messages are therefore queued, and title and description have
+--     a maximum length.
 --
--- Begrensninger det er greit å vite om:
---   * Bare den som laget en event kan slette den (i vinduet). Det er ingen
---     ekte tilgangskontroll: alle i guilden kan i prinsippet sende hva som helst.
---   * Events forsvinner fra listen 12 timer etter start, og glemmes helt etter
---     en uke.
+-- Limitations worth knowing about:
+--   * Only the one who created an event can delete it (in the window). There
+--     is no real access control: anyone in the guild can in principle send
+--     anything.
+--   * Events disappear from the list 12 hours after the start, and are
+--     forgotten completely after a week.
 --
--- All tekst ligger i Locales.lua (navnene som begynner med EV_).
+-- All text is in Locales.lua (the names that start with EV_).
 
 local ADDON_NAME, DW = ...
 local L = DW.L
 
 local MODULE_ID = "events"
-local PREFIX = "DragonworldEv" -- navnet på meldingene; maks 16 tegn
-local SEP = "\t"               -- skiller feltene i en melding
+local PREFIX = "DragonworldEv" -- the name of the messages; max 16 characters
+local SEP = "\t"               -- separates the fields in a message
 
 local HOUR, DAY = 3600, 86400
-local SHOW_AFTER_START = 12 * HOUR -- så lenge etter start vises en event
-local KEEP_AFTER_START = 7 * DAY   -- så lenge etter start huskes og deles den
+local SHOW_AFTER_START = 12 * HOUR -- how long after the start an event is shown
+local KEEP_AFTER_START = 7 * DAY   -- how long after the start it is remembered and shared
 local MAX_TITLE_BYTES = 60
 local MAX_NOTE_BYTES = 100
-local MAX_MESSAGE_BYTES = 250      -- spillets grense er 255
+local MAX_MESSAGE_BYTES = 250      -- the game's limit is 255
 
-local STATUSES = { "Y", "M", "N" } -- kommer, kanskje, kommer ikke
+local STATUSES = { "Y", "M", "N" } -- coming, maybe, not coming
 local STATUS_KEY = { Y = "EV_YES", M = "EV_MAYBE", N = "EV_NO" }
 
--- Lagrede data. Settes i OnLoad nederst.
+-- Saved data. Set in OnLoad at the bottom.
 --   db.events[id] = {
 --       id, creator, title, note,
---       when     = tidspunktet eventen starter,
---       updated  = når den sist ble endret (nyeste versjon vinner),
---       deleted  = true hvis den er slettet (huskes så slettingen sprer seg),
+--       when     = the time the event starts,
+--       updated  = when it was last changed (newest version wins),
+--       deleted  = true if it is deleted (kept so the deletion spreads),
 --       signups  = { ["Navn-Realm"] = { status = "Y"/"M"/"N", updated, class } },
---       arrived  = når vi fikk den fra en annen (serverens klokke), til blinkingen
+--       arrived  = when we got it from someone else (server clock), for the blinking
 --   }
---   db.seq = teller som gjør hver id unik
+--   db.seq = counter that makes every id unique
 local db = { events = {} }
 
--- Småting -----------------------------------------------------------------------
+-- Small things ------------------------------------------------------------------
 
 local function Num(value)
     return ("%d"):format(value)
@@ -67,8 +71,8 @@ local function ShortName(key)
     return (type(key) == "string" and key:match("^([^-]+)")) or tostring(key)
 end
 
--- Kutter en tekst til et antall byte uten å etterlate et halvt tegn
--- (æ, ø og å er to byte hver).
+-- Cuts a text to a number of bytes without leaving half a character
+-- (æ, ø and å are two bytes each).
 local function Truncate(text, maxBytes)
     if #text <= maxBytes then
         return text
@@ -83,8 +87,8 @@ local function Truncate(text, maxBytes)
     return text
 end
 
--- Rydder tekst som skal sendes eller vises: fjerner linjeskift, tabulator og
--- tegnet | (som spillet bruker til farger og lenker), og kutter lengden.
+-- Cleans text that is to be sent or shown: removes line breaks, tabs and the
+-- character | (which the game uses for colors and links), and cuts the length.
 local function Clean(text, maxBytes)
     text = tostring(text or "")
     text = text:gsub("[%c|]", " ")
@@ -110,19 +114,19 @@ local function SortedKeys(tbl)
     return keys
 end
 
--- En id ser slik ut: "Navn-Realm:tidspunkt:teller". Den som laget eventen står
--- altså først.
+-- An id looks like this: "Navn-Realm:time:counter". The one who created the
+-- event is thus first.
 local function CreatorOf(id)
     return id:match("^(.+):%d+:%d+$")
 end
 
--- Skal eventen fortsatt huskes og deles?
+-- Should the event still be remembered and shared?
 local function Syncable(event)
     return not event.stub and type(event.when) == "number" and event.when > time() - KEEP_AFTER_START
 end
 
--- Antall påmeldinger og tidsstempelet på den nyeste. Brukes til å oppdage at
--- to medlemmer har ulike påmeldinger til samme event.
+-- Number of sign-ups and the timestamp of the newest. Used to detect that
+-- two members have different sign-ups for the same event.
 local function Digest(event)
     local count, newest = 0, 0
     for _, signup in pairs(event.signups) do
@@ -144,11 +148,11 @@ end
 
 -- Sending -----------------------------------------------------------------------
 
--- Køen og takten ligger i Comm.lua. Send legger en melding i kø til guilden.
+-- The queue and the pacing are in Comm.lua. Send queues a message to the guild.
 local Send = DW.CreateSender(PREFIX)
 
--- Versjoner vi har sett sendt (av oss eller andre) siden noen sist ba om dem.
--- Brukes til å la være å sende det en annen allerede har sendt.
+-- Versions we have seen sent (by us or others) since someone last asked for them.
+-- Used to avoid sending what someone else has already sent.
 local seen = { events = {}, signups = {} }
 
 local function MarkSeenEvent(id, updated)
@@ -176,11 +180,11 @@ local function CountKeys(tbl)
     return count
 end
 
--- Hvem eventen gjelder, som tekst i meldingen: "A" for alle, "L20-40" for et
--- level-spenn, "P7" for sju utvalgte (hvem de er sendes i egne meldinger).
--- Foran står 0 hvis den ikke skal i spillets kalender, 1 hvis den skal, og 2
--- hvis den skal, men den som laget den ikke fikk laget en guild-event (da
--- legger hver enkelt den i sin egen kalender).
+-- Who the event is for, as text in the message: "A" for all, "L20-40" for a
+-- level range, "P7" for seven picked members (who they are is sent in separate
+-- messages). In front is 0 if it should not go in the game's calendar, 1 if it
+-- should, and 2 if it should, but the creator could not make a guild event
+-- (then each member puts it in their own calendar).
 local function MetaOf(event)
     local spec = "A"
     if event.aud == "L" then
@@ -198,8 +202,8 @@ local function SendEvent(event)
             event.title or "", note, MetaOf(event),
         }, SEP)
     end
-    -- En melding kan ikke være lengre enn spillet tillater. Er navnet på den
-    -- som laget eventen langt, kortes beskrivelsen ned i meldingen.
+    -- A message cannot be longer than the game allows. If the name of the
+    -- creator is long, the description is shortened in the message.
     local note = event.note or ""
     local message = Build(note)
     if #message > MAX_MESSAGE_BYTES then
@@ -208,7 +212,7 @@ local function SendEvent(event)
     Send(message)
     MarkSeenEvent(event.id, event.updated)
 
-    -- De utvalgte sendes for seg, så mange per melding som det er plass til.
+    -- The picked members are sent separately, as many per message as fit.
     if event.aud == "P" and not event.deleted and type(event.invited) == "table" then
         local head = table.concat({ "I", event.id, Num(event.updated) }, SEP) .. SEP
         local chunk = ""
@@ -225,8 +229,8 @@ local function SendEvent(event)
     end
 end
 
--- Sender påmeldinger til en event, flere per melding så langt det er plass.
--- players er hvilke som skal med ({ [nøkkel] = true }), eller nil for alle.
+-- Sends sign-ups for an event, several per message as far as there is room.
+-- players is which ones to include ({ [key] = true }), or nil for all.
 local function SendSignups(event, players)
     local parts, size = { "S", event.id }, 2 + #event.id
     local function Flush()
@@ -251,7 +255,7 @@ local function SendSignups(event, players)
     Flush()
 end
 
--- Sender en liste med tekstbiter fordelt på så få meldinger som mulig.
+-- Sends a list of text pieces spread over as few messages as possible.
 local function SendList(kind, entries)
     local parts, size = { kind }, #kind
     for _, entry in ipairs(entries) do
@@ -267,22 +271,22 @@ local function SendList(kind, entries)
     end
 end
 
--- Utveksling -------------------------------------------------------------------
+-- Exchange ---------------------------------------------------------------------
 
 local RefreshPanel
 
-local hello = {}  -- [avsender] = { [id] = true } mens vi mottar listen deres
-local offers = {} -- [id] = { event = true/false, signups = true/false }: det vi skal sende
-local wanted = {} -- [id] = true: det vi skal be om
+local hello = {}  -- [sender] = { [id] = true } while we receive their list
+local offers = {} -- [id] = { event = true/false, signups = true/false }: what we will send
+local wanted = {} -- [id] = true: what we will ask for
 local exchangeScheduled = false
 
--- Noter at vi skal sende en event og/eller påmeldingene til den.
+-- Note that we will send an event and/or its sign-ups.
 local function Offer(id, withEvent, withSignups)
     local offer = offers[id]
     if not offer then
         offer = {}
         offers[id] = offer
-        -- Fra nå av teller vi hva andre rekker å sende før oss.
+        -- From now on we count what others manage to send before us.
         seen.events[id] = nil
         seen.signups[id] = nil
     end
@@ -297,12 +301,12 @@ local function RunExchange()
         return
     end
 
-    -- Be om det vi mangler.
+    -- Ask for what we are missing.
     local ids = SortedKeys(wanted)
     wanted = {}
     SendList("G", ids)
 
-    -- Send det andre mangler, med mindre noen andre rakk det først.
+    -- Send what others are missing, unless someone else got there first.
     for _, id in ipairs(SortedKeys(offers)) do
         local offer, event = offers[id], db.events[id]
         if event and not event.stub then
@@ -332,11 +336,11 @@ local function ScheduleExchange()
         return
     end
     exchangeScheduled = true
-    -- Tilfeldig ventetid, så ikke alle som er pålogget svarer samtidig.
+    -- Random delay, so not everyone who is online answers at the same time.
     C_Timer.After(1 + math.random() * 3, RunExchange)
 end
 
--- Forteller de andre hva vi har, så de kan sende det vi mangler.
+-- Tells the others what we have, so they can send what we are missing.
 local function SayHello()
     PurgeExpired()
     local entries = {}
@@ -351,9 +355,9 @@ local function SayHello()
     Send("Q")
 end
 
--- Mottak ----------------------------------------------------------------------
+-- Receiving -------------------------------------------------------------------
 
--- Tar imot en event fra en annen. Returnerer true hvis noe ble endret.
+-- Receives an event from someone else. Returns true if anything changed.
 local function ApplyEvent(id, updated, when, deleted, title, note, meta)
     local creator = CreatorOf(id)
     local now = time()
@@ -363,10 +367,10 @@ local function ApplyEvent(id, updated, when, deleted, title, note, meta)
 
     local event = db.events[id]
     if event and not event.stub and updated <= event.updated then
-        return false -- vi har samme eller nyere versjon
+        return false -- we have the same or a newer version
     end
     if not event or event.stub then
-        -- Ny for oss: knappene blinker til fanen er åpnet (Alerts.lua).
+        -- New to us: the buttons blink until the tab is opened (Alerts.lua).
         event = event or { id = id, signups = {} }
         db.events[id] = event
         event.arrived = DW.AlertNow and DW.AlertNow() or now
@@ -379,8 +383,8 @@ local function ApplyEvent(id, updated, when, deleted, title, note, meta)
     event.title = Clean(title, MAX_TITLE_BYTES)
     event.note = Clean(note, MAX_NOTE_BYTES)
 
-    -- Hvem den gjelder, og om den skal i spillets kalender. Meldinger fra
-    -- eldre versjoner har ikke dette feltet; da gjelder eventen alle.
+    -- Who it is for, and whether it goes in the game's calendar. Messages from
+    -- older versions do not have this field; then the event is for everyone.
     local cal, spec = tostring(meta or ""):match("^(%d):(.+)$")
     local low, high = (spec or ""):match("^L(%d+)%-(%d+)$")
     local picked = (spec or ""):match("^P(%d+)$")
@@ -390,13 +394,13 @@ local function ApplyEvent(id, updated, when, deleted, title, note, meta)
     if low then
         event.aud, event.min, event.max = "L", tonumber(low), tonumber(high)
     elseif picked then
-        -- Listen over de utvalgte kommer i egne meldinger rett etter.
+        -- The list of picked members comes in separate messages right after.
         event.aud, event.invited, event.invitedCount = "P", {}, tonumber(picked)
     end
     return true
 end
 
--- Tar imot en påmelding. Returnerer true hvis noe ble endret.
+-- Receives a sign-up. Returns true if anything changed.
 local function ApplySignup(id, player, status, updated, class)
     if not STATUS_KEY[status] or updated > time() + DAY or #player > 80 then
         return false
@@ -404,7 +408,7 @@ local function ApplySignup(id, player, status, updated, class)
 
     local event = db.events[id]
     if not event then
-        -- Påmelding til en event vi ikke kjenner. Ta vare på den, og be om eventen.
+        -- Sign-up for an event we do not know. Keep it, and ask for the event.
         event = { id = id, stub = true, updated = 0, signups = {} }
         db.events[id] = event
         wanted[id] = true
@@ -428,8 +432,8 @@ local function OnMessage(text, sender)
             MarkSeenEvent(id, updated)
             changed = ApplyEvent(id, updated, when, fields[5] == "1", fields[6], fields[7], fields[8])
 
-            -- Gjelder den et utvalg, skal listen over hvem komme rett etter.
-            -- Mangler noe av den om litt, ber vi om eventen på nytt.
+            -- If it is for a selection, the list of who comes right after.
+            -- If part of it is missing after a while, we ask for the event again.
             local event = db.events[id]
             if changed and event.aud == "P" and (event.invitedCount or 0) > 0 then
                 C_Timer.After(20, function()
@@ -442,8 +446,8 @@ local function OnMessage(text, sender)
         end
 
     elseif kind == "I" and #fields >= 4 then
-        -- Hvem en event for utvalgte gjelder. Tas bare imot for den versjonen
-        -- av eventen vi har.
+        -- Who an event for picked members is for. Only accepted for the version
+        -- of the event we have.
         local event = db.events[fields[2]]
         if event and not event.stub and event.aud == "P" and tonumber(fields[3]) == event.updated then
             event.invited = event.invited or {}
@@ -471,7 +475,7 @@ local function OnMessage(text, sender)
         end
 
     elseif kind == "H" then
-        -- Listen over hva avsenderen har. Sammenlign med vårt eget.
+        -- List of what the sender has. Compare with our own.
         local listed = hello[sender]
         if not listed then
             listed = {}
@@ -503,7 +507,7 @@ local function OnMessage(text, sender)
         end
 
     elseif kind == "Q" then
-        -- Listen er ferdig. Alt vi har som ikke sto på den, mangler avsenderen.
+        -- The list is finished. Everything we have that was not on it, the sender is missing.
         local listed = hello[sender] or {}
         hello[sender] = nil
         for id, event in pairs(db.events) do
@@ -513,7 +517,7 @@ local function OnMessage(text, sender)
         end
 
     elseif kind == "G" then
-        -- Noen ber om bestemte events.
+        -- Someone asks for specific events.
         for index = 2, #fields do
             local event = db.events[fields[index]]
             if event and Syncable(event) then
@@ -533,22 +537,22 @@ local function OnMessage(text, sender)
     end
 end
 
--- Handlinger ------------------------------------------------------------------
+-- Actions ---------------------------------------------------------------------
 
-local selectedID -- eventen som vises til høyre
+local selectedID -- the event shown on the right
 local formOpen = false
 
--- Det som er valgt i skjemaet for en ny event.
-local formAudience = "A" -- hvem den gjelder: "A" alle, "L" level, "P" utvalgte
-local formInvited = {}   -- de utvalgte: [nøkkel] = true
-local membersOpen = false -- listen for å velge medlemmer er oppe
+-- What is selected in the form for a new event.
+local formAudience = "A" -- who it is for: "A" all, "L" level, "P" picked
+local formInvited = {}   -- the picked members: [key] = true
+local membersOpen = false -- the list for choosing members is open
 local memberSearch = ""
 
--- audience sier hvem eventen gjelder:
---   { aud = "A" }                        alle
---   { aud = "L", min = 20, max = 40 }    et level-spenn
---   { aud = "P", invited = { [nøkkel] = true } }   utvalgte medlemmer
--- og audience.cal = true hvis den også skal i spillets kalender.
+-- audience says who the event is for:
+--   { aud = "A" }                        everyone
+--   { aud = "L", min = 20, max = 40 }    a level range
+--   { aud = "P", invited = { [key] = true } }   picked members
+-- and audience.cal = true if it should also go in the game's calendar.
 local function CreateEvent(title, note, when, audience)
     local me = MyKey()
     if not me then
@@ -582,8 +586,8 @@ local function CreateEvent(title, note, when, audience)
     return event
 end
 
--- Nøklene som kan stå for karakteren du spiller i en liste over utvalgte:
--- spillerens faste ID, og navnet uten mellomrom for klienter som ikke oppgir ID.
+-- The keys that can stand for the character you play in a list of picked members:
+-- the player's permanent ID, and the name without spaces for clients that give no ID.
 local function MyInviteKeys()
     local keys = {}
     local guid = DW.MyGUID()
@@ -597,7 +601,7 @@ local function MyInviteKeys()
     return keys
 end
 
--- Gjelder eventen karakteren du spiller nå? Den som laget den ser den alltid.
+-- Is the event for the character you are playing now? Its creator always sees it.
 local function AppliesToMe(event)
     if not event.aud or event.aud == "A" or event.creator == MyKey() then
         return true
@@ -617,7 +621,7 @@ local function AppliesToMe(event)
     return false
 end
 
--- Kort tekst om hvem eventen gjelder.
+-- Short text about who the event is for.
 local function AudienceText(event)
     if event.aud == "L" then
         return L.EV_FOR_LEVEL:format(event.min or 1, event.max or 99)
@@ -627,14 +631,14 @@ local function AudienceText(event)
     return L.EV_FOR_ALL
 end
 
--- Spillets kalender: legge inn ----------------------------------------------------
+-- The game's calendar: adding ----------------------------------------------------
 
--- Legger eventen i spillets egen kalender. Må kalles direkte fra et klikk,
--- fordi spillet krever det for å lagre en kalender-event.
---   forGuild = true   en guild-event som alle i guilden ser i kalenderen sin
---   forGuild = false  en personlig oppføring som bare du ser
--- Returnerer true hvis kalenderen tok imot kallene. Gikk det galt, huskes
--- grunnen i calendarProblem, som /dw debug viser.
+-- Puts the event in the game's own calendar. Must be called directly from a
+-- click, because the game requires that to save a calendar event.
+--   forGuild = true   a guild event that everyone in the guild sees in their calendar
+--   forGuild = false  a personal entry that only you see
+-- Returns true if the calendar accepted the calls. If it went wrong, the reason
+-- is remembered in calendarProblem, which /dw debug shows.
 local calendarProblem
 
 local function AddToGameCalendar(event, forGuild)
@@ -656,7 +660,7 @@ local function AddToGameCalendar(event, forGuild)
             calendar.EventSetDescription((event.note and event.note ~= "") and event.note or event.title)
         end
         if calendar.EventSetType then
-            calendar.EventSetType(4) -- typen "annet"
+            calendar.EventSetType(4) -- the type "other"
         end
         calendar.EventSetDate(when.month, when.day, when.year)
         calendar.EventSetTime(when.hour, when.min)
@@ -666,8 +670,8 @@ local function AddToGameCalendar(event, forGuild)
     return ok
 end
 
--- Hvilke events denne karakteren alt har lagt i kalenderen sin, så de ikke
--- legges inn to ganger.
+-- Which events this character has already put in its calendar, so they are not
+-- added twice.
 local function CalendarLog()
     local me = MyKey()
     if not me then
@@ -682,8 +686,8 @@ local function CalendarLog()
     return db.inCalendar[me]
 end
 
--- Har denne karakteren lov til å lage guild-events i spillets kalender? Det
--- styres av rangen i guilden.
+-- Is this character allowed to make guild events in the game's calendar? That
+-- is controlled by the rank in the guild.
 local function CanMakeGuildEvent()
     if not (C_Calendar and C_Calendar.CreateGuildSignUpEvent) then
         return false
@@ -697,18 +701,17 @@ local function CanMakeGuildEvent()
     return true
 end
 
--- Skal eventen ligge i spillets kalender som én guild-event alle ser? Ellers
--- legger hver enkelt den i sin egen kalender.
+-- Should the event be in the game's calendar as one guild event everyone sees?
+-- Otherwise each member puts it in their own calendar.
 local function IsGuildWide(event)
     return event.aud == nil and not event.own
 end
 
--- Det siste vi prøvde å legge i kalenderen. Spillet sier fra om feil litt
--- etterpå, og da må vi vite hvilken event det gjaldt.
+-- The last thing we tried to put in the calendar. The game reports errors a
+-- little later, and then we need to know which event it was about.
 local lastCalendarTry
 
--- Legger eventen i spillets kalender én gang, og sier fra i chatten hvordan
--- det gikk.
+-- Puts the event in the game's calendar once, and says in chat how it went.
 local function PutInGameCalendar(event, forGuild)
     local log = CalendarLog()
     if log[event.id] then
@@ -723,8 +726,8 @@ local function PutInGameCalendar(event, forGuild)
     end
 end
 
--- Spillet avviste en kalender-event. Var det den vi nettopp la inn, sier vi
--- fra, og glemmer at den er lagt inn så den kan prøves på nytt.
+-- The game rejected a calendar event. If it was the one we just added, we say
+-- so, and forget that it was added so it can be tried again.
 local function OnCalendarError(reason)
     if not lastCalendarTry or GetTime() - lastCalendarTry.at > 5 then
         return
@@ -754,17 +757,17 @@ local function SetSignup(event, status)
     local previous = event.signups[me]
     event.signups[me] = {
         status = status,
-        -- Alltid nyere enn forrige svar, selv om klokka står stille i ett sekund.
+        -- Always newer than the previous answer, even if the clock stands still for a second.
         updated = math.max(time(), previous and (previous.updated + 1) or 0),
         class = select(2, UnitClass("player")),
     }
     SendSignups(event, { [me] = true })
 end
 
--- Legger eventen ut i guild-chatten som vanlig tekst, så også de uten addonen
--- ser den: én linje med overskrift og tidspunkt, én med beskrivelsen, og én
--- om addonen. Returnerer true hvis det ble sendt.
-local lastShare = {} -- [id] = når eventen sist ble delt, så et dobbeltklikk ikke gir dobbel tekst
+-- Posts the event in guild chat as plain text, so those without the addon see
+-- it too: one line with title and time, one with the description, and one
+-- about the addon. Returns true if it was sent.
+local lastShare = {} -- [id] = when the event was last shared, so a double click does not post twice
 
 local function ShareToGuildChat(event)
     local send = (C_ChatInfo and C_ChatInfo.SendChatMessage) or SendChatMessage
@@ -781,7 +784,7 @@ local function ShareToGuildChat(event)
     end
     lastShare[event.id] = now
 
-    -- En chatmelding kan være 255 tegn, så hver del sendes for seg.
+    -- A chat message can be 255 characters, so each part is sent separately.
     local head = L.EV_SHARE_HEAD:format(event.title, date("%d.%m.%Y %H:%M", event.when))
     if event.aud then
         head = head .. " (" .. AudienceText(event) .. ")"
@@ -794,7 +797,7 @@ local function ShareToGuildChat(event)
     return true
 end
 
--- Kalenderregning ----------------------------------------------------------------
+-- Calendar arithmetic ------------------------------------------------------------
 
 local function DaysInMonth(year, month)
     if month == 2 then
@@ -804,7 +807,7 @@ local function DaysInMonth(year, month)
     return (month == 4 or month == 6 or month == 9 or month == 11) and 30 or 31
 end
 
--- Ukedagen for en dato: 1 = mandag ... 7 = søndag.
+-- The weekday of a date: 1 = Monday ... 7 = Sunday.
 local MONTH_OFFSETS = { 0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4 }
 
 local function Weekday(year, month, day)
@@ -816,8 +819,8 @@ local function Weekday(year, month, day)
     return (sundayFirst + 6) % 7 + 1
 end
 
--- Leser en dato skrevet som DD.MM.ÅÅÅÅ (eller DD.MM.ÅÅ). Returnerer år, måned
--- og dag, eller ingenting hvis datoen ikke finnes.
+-- Reads a date written as DD.MM.YYYY (or DD.MM.YY). Returns year, month and
+-- day, or nothing if the date does not exist.
 local function ParseDate(dateText)
     local day, month, year = tostring(dateText):match("^%s*(%d%d?)[%./%-](%d%d?)[%./%-](%d%d%d?%d?)%s*$")
     day, month, year = tonumber(day), tonumber(month), tonumber(year)
@@ -833,8 +836,8 @@ local function ParseDate(dateText)
     return year, month, day
 end
 
--- Leser dato og klokkeslett. Klokkeslettet kan skrives 20:00, 20.00, 2000
--- eller bare 20. Returnerer tidspunktet, eller ingenting hvis noe er feil.
+-- Reads date and time of day. The time can be written 20:00, 20.00, 2000 or
+-- just 20. Returns the timestamp, or nothing if something is wrong.
 local function ParseWhen(dateText, timeText)
     local year, month, day = ParseDate(dateText)
     if not year then
@@ -857,8 +860,8 @@ local function ParseWhen(dateText, timeText)
     return time({ year = year, month = month, day = day, hour = hour, min = minute, sec = 0 })
 end
 
--- Events som skal vises: ikke slettet, ikke for lenge siden, og bare de som
--- gjelder karakteren du spiller. Nærmeste først.
+-- Events that should be shown: not deleted, not too long ago, and only those
+-- that apply to the character you are playing. Nearest first.
 local function VisibleEvents()
     local list = {}
     local limit = time() - SHOW_AFTER_START
@@ -877,7 +880,7 @@ local function VisibleEvents()
     return list
 end
 
--- Spillets kalender ---------------------------------------------------------------
+-- The game's calendar -------------------------------------------------------------
 
 local CALENDAR_TYPE_KEY = {
     GUILD_EVENT = "EV_CAL_GUILD",
@@ -887,8 +890,8 @@ local CALENDAR_TYPE_KEY = {
     COMMUNITY_EVENT = "EV_CAL_COMMUNITY",
 }
 
--- Leser det som ligger i spillets kalender fra i dag og ut neste måned.
--- Returnerer en liste, eller ingenting hvis kalenderen ikke finnes.
+-- Reads what is in the game's calendar from today to the end of next month.
+-- Returns a list, or nothing if the calendar does not exist.
 local function ReadCalendar()
     if not (C_Calendar and C_Calendar.GetMonthInfo and C_Calendar.GetNumDayEvents and C_Calendar.GetDayEvent
             and C_DateAndTime and C_DateAndTime.GetCurrentCalendarTime) then
@@ -900,9 +903,9 @@ local function ReadCalendar()
         return nil
     end
 
-    -- Kalenderen regner måneder ut fra den måneden som er valgt i den. Før den
-    -- har vært åpnet i økten er det november 2004. Pek den på denne måneden,
-    -- men ikke hvis spilleren har kalenderen åpen og blar i den.
+    -- The calendar counts months from the month selected in it. Before it has
+    -- been opened in the session that is November 2004. Point it at this month,
+    -- but not if the player has the calendar open and is browsing it.
     local offset = (today.year - selected.year) * 12 + (today.month - selected.month)
     if offset ~= 0 and C_Calendar.SetAbsMonth and not (CalendarFrame and CalendarFrame:IsShown()) then
         C_Calendar.SetAbsMonth(today.month, today.year)
@@ -939,15 +942,15 @@ local function ReadCalendar()
     return list
 end
 
--- Panelet i hovedvinduet --------------------------------------------------------
+-- The panel in the main window ---------------------------------------------------
 
 local LIST_WIDTH = 250
 local EVENT_ROW_HEIGHT = 46
 local CALENDAR_ROW_HEIGHT = 22
 
-local panel -- lages første gang modulen velges i hovedvinduet
-local view = "guild" -- "guild" eller "calendar"
-local picker -- den lille månedsoversikten i skjemaet; lages første gang kalenderknappen trykkes
+local panel -- created the first time the module is selected in the main window
+local view = "guild" -- "guild" or "calendar"
+local picker -- the small month overview in the form; created the first time the calendar button is pressed
 local RefreshPicker
 local eventRows, calendarRows = {}, {}
 
@@ -1010,13 +1013,13 @@ local function GetCalendarRow(index)
     return row
 end
 
--- Listen for å velge medlemmer ----------------------------------------------------
+-- The list for choosing members --------------------------------------------------
 
 local memberRows = {}
 local RefreshMembers
 
--- Nøkkelen et medlem står under i listen over utvalgte: spillerens faste ID,
--- eller navnet uten mellomrom hvis klienten ikke oppgir ID.
+-- The key a member is stored under in the list of picked members: the player's
+-- permanent ID, or the name without spaces if the client gives no ID.
 local function MemberKey(member)
     return member.guid or ("name:" .. DW.NameKey(member.key))
 end
@@ -1117,7 +1120,7 @@ local function RefreshGuildView()
     local me = MyKey()
     local events = VisibleEvents()
 
-    -- Valgt event kan være slettet eller utløpt. Velg da den første.
+    -- The selected event may be deleted or expired. Then choose the first one.
     local selected
     for _, event in ipairs(events) do
         if event.id == selectedID then
@@ -1148,8 +1151,8 @@ local function RefreshGuildView()
     g.content:SetHeight(math.max(1, #events * EVENT_ROW_HEIGHT))
     g.newButton.label:SetText(L.EV_NEW)
 
-    -- Høyre side: skjema (eller listen for å velge medlemmer), valgt event,
-    -- eller en tekst om at listen er tom.
+    -- Right side: form (or the list for choosing members), selected event,
+    -- or a text saying the list is empty.
     local d, form = g.detail, g.form
     form:SetShown(formOpen and not membersOpen)
     g.members:SetShown(formOpen and membersOpen)
@@ -1164,7 +1167,7 @@ local function RefreshGuildView()
     form.save.label:SetText(L.EV_SAVE)
     form.cancel.label:SetText(L.EV_CANCEL)
 
-    -- Hvem eventen gjelder.
+    -- Who the event is for.
     form.audienceLabel:SetText(L.EV_FORM_AUDIENCE)
     form.audienceChips.A.label:SetText(L.EV_AUD_ALL)
     form.audienceChips.L.label:SetText(L.EV_AUD_LEVEL)
@@ -1227,7 +1230,7 @@ RefreshPanel = function()
         return
     end
 
-    -- Datovelgeren hører til skjemaet. Lukk den når skjemaet ikke er oppe.
+    -- The date picker belongs to the form. Close it when the form is not open.
     if picker and (view ~= "guild" or not formOpen) then
         picker:Hide()
     end
@@ -1252,14 +1255,14 @@ local function SetView(newView)
     view = newView
     formOpen = false
     if view == "calendar" and C_Calendar and C_Calendar.OpenCalendar then
-        -- Ber spillet hente kalenderen. Svaret kommer som en hendelse.
+        -- Ask the game to fetch the calendar. The answer comes as an event.
         C_Calendar.OpenCalendar()
     end
     RefreshPanel()
 end
 
--- Et skrivefelt. Grensen oppgis enten som antall tegn (maxLetters) eller som
--- antall byte (maxBytes, for tekst som skal sendes til guilden).
+-- A text field. The limit is given either as a number of characters
+-- (maxLetters) or as a number of bytes (maxBytes, for text sent to the guild).
 local function CreateEditBox(parent, width, maxBytes, maxLetters)
     local box = CreateFrame("EditBox", nil, parent, "InputBoxTemplate")
     box:SetSize(width, 22)
@@ -1267,8 +1270,8 @@ local function CreateEditBox(parent, width, maxBytes, maxLetters)
     if maxLetters then
         box:SetMaxLetters(maxLetters)
     else
-        -- Spillet regner med ett tegn mer enn det slipper inn, så grensen må
-        -- settes én høyere enn det vi vil ha plass til.
+        -- The game counts one character more than it lets in, so the limit must
+        -- be set one higher than what we want room for.
         box:SetMaxBytes(maxBytes + 1)
     end
     box:SetScript("OnEscapePressed", function(self)
@@ -1280,9 +1283,9 @@ local function CreateEditBox(parent, width, maxBytes, maxLetters)
     return box
 end
 
--- Datovelgeren ------------------------------------------------------------------
+-- The date picker ---------------------------------------------------------------
 
-local pickerYear, pickerMonth -- måneden datovelgeren viser
+local pickerYear, pickerMonth -- the month the date picker shows
 
 local function Today()
     return ParseDate(date("%d.%m.%Y"))
@@ -1301,13 +1304,13 @@ RefreshPicker = function()
         picker.weekdays[index]:SetText(L["WEEKDAY_" .. index])
     end
 
-    local blanks = Weekday(pickerYear, pickerMonth, 1) - 1 -- tomme ruter før den første
+    local blanks = Weekday(pickerYear, pickerMonth, 1) - 1 -- empty cells before the first
     local days = DaysInMonth(pickerYear, pickerMonth)
     for index = 1, 42 do
         local button = picker.days[index]
         local day = index - blanks
         if day >= 1 and day <= days then
-            -- Dager som har vært kan ikke velges.
+            -- Days that have passed cannot be chosen.
             local past = todayYear ~= nil and (pickerYear < todayYear
                 or (pickerYear == todayYear and (pickerMonth < todayMonth
                     or (pickerMonth == todayMonth and day < todayDay))))
@@ -1341,11 +1344,11 @@ local function CreatePicker()
     local p = CreateFrame("Frame", nil, panel, "BackdropTemplate")
     p:SetSize(7 * CELL_WIDTH + 20, 56 + 6 * CELL_HEIGHT + 10)
     p:SetPoint("TOPLEFT", form.dateBox, "BOTTOMLEFT", -6, -4)
-    p:SetFrameStrata("DIALOG") -- over resten av vinduet
+    p:SetFrameStrata("DIALOG") -- above the rest of the window
     p:SetBackdrop(DW.PANEL_BACKDROP)
     p:SetBackdropColor(0.05, 0.05, 0.07, 0.98)
     p:SetBackdropBorderColor(0.90, 0.72, 0.30, 1)
-    p:EnableMouse(true) -- klikk i ruten skal ikke treffe det som ligger under
+    p:EnableMouse(true) -- clicks in the box must not hit what is underneath
     p:Hide()
 
     p.title = p:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -1379,7 +1382,7 @@ local function CreatePicker()
         chip.label:SetPoint("CENTER", 0, 0)
         chip:SetScript("OnClick", function(self)
             if self.day then
-                -- Skriv den valgte dagen inn i datofeltet og lukk.
+                -- Write the chosen day into the date field and close.
                 form.dateBox:SetText(("%02d.%02d.%04d"):format(self.day, pickerMonth, pickerYear))
                 form.error:SetText("")
                 p:Hide()
@@ -1390,8 +1393,8 @@ local function CreatePicker()
     return p
 end
 
--- Åpner datovelgeren på måneden som står i datofeltet (eller denne måneden),
--- eller lukker den hvis den alt er åpen.
+-- Opens the date picker on the month in the date field (or this month), or
+-- closes it if it is already open.
 local function TogglePicker()
     if not picker then
         picker = CreatePicker()
@@ -1428,10 +1431,10 @@ local function SubmitForm()
         return
     end
 
-    -- Hvem den gjelder.
+    -- Who it is for.
     local audience = { aud = formAudience, cal = form.calendarCheck:GetChecked() and true or nil }
-    -- Har du ikke lov til å lage guild-events, legger hver enkelt den i sin
-    -- egen kalender i stedet.
+    -- If you are not allowed to make guild events, each member puts it in their
+    -- own calendar instead.
     audience.own = (audience.cal and formAudience == "A" and not CanMakeGuildEvent()) or nil
     if formAudience == "L" then
         local low, high = tonumber(form.levelMin:GetText()), tonumber(form.levelMax:GetText())
@@ -1453,9 +1456,9 @@ local function SubmitForm()
         return
     end
 
-    -- Spillets kalender. For alle blir det en guild-event som hele guilden
-    -- ser. Gjelder den et utvalg, legges den i din egen kalender nå, og hos
-    -- de andre når de svarer at de kommer.
+    -- The game's calendar. For everyone it becomes a guild event that the whole
+    -- guild sees. If it is for a selection, it goes in your own calendar now,
+    -- and for the others when they answer that they are coming.
     if event.cal then
         PutInGameCalendar(event, IsGuildWide(event))
     end
@@ -1470,7 +1473,7 @@ local function SubmitForm()
     RefreshPanel()
 end
 
--- Kalles av hovedvinduet første gang modulen velges.
+-- Called by the main window the first time the module is selected.
 local function CreatePanel(parent)
     local width, height = parent:GetWidth(), parent:GetHeight()
     local bodyHeight = height - 72
@@ -1481,7 +1484,7 @@ local function CreatePanel(parent)
     f.title = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     f.title:SetPoint("TOP", 0, -12)
 
-    -- Fanene: egne events, eller spillets kalender.
+    -- The tabs: our own events, or the game's calendar.
     f.tabs = {}
     for index, name in ipairs({ "guild", "calendar" }) do
         local chip = DW.CreateChip(f, 170, 26)
@@ -1493,7 +1496,7 @@ local function CreatePanel(parent)
         f.tabs[name] = chip
     end
 
-    -- Egne events: listen til venstre, valgt event eller skjema til høyre.
+    -- Our own events: the list on the left, selected event or form on the right.
     local g = CreateFrame("Frame", nil, f)
     g:SetPoint("TOPLEFT", 0, -72)
     g:SetSize(width, bodyHeight)
@@ -1528,7 +1531,7 @@ local function CreatePanel(parent)
     g.empty:SetWidth(rightWidth)
     g.empty:SetJustifyH("LEFT")
 
-    -- Valgt event.
+    -- The selected event.
     local d = CreateFrame("Frame", nil, g)
     d:SetPoint("TOPLEFT", rightX, 0)
     d:SetSize(rightWidth, bodyHeight - 12)
@@ -1545,7 +1548,7 @@ local function CreatePanel(parent)
     d.when:SetWidth(rightWidth)
     d.when:SetJustifyH("LEFT")
 
-    -- Hvem eventen gjelder: alle, et level-spenn eller utvalgte.
+    -- Who the event is for: everyone, a level range or picked members.
     d.audience = d:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     d.audience:SetPoint("TOPLEFT", d.when, "BOTTOMLEFT", 0, -4)
     d.audience:SetWidth(rightWidth)
@@ -1556,7 +1559,7 @@ local function CreatePanel(parent)
     d.note:SetWidth(rightWidth)
     d.note:SetJustifyH("LEFT")
 
-    -- Svarknappene: ett klikk melder deg på, eller endrer svaret ditt.
+    -- The answer buttons: one click signs you up, or changes your answer.
     d.chips, d.lists = {}, {}
     local chipWidth = math.floor((rightWidth - 12) / 3)
     for index, status in ipairs(STATUSES) do
@@ -1567,10 +1570,11 @@ local function CreatePanel(parent)
             local event = selectedID and db.events[selectedID]
             if event and not event.deleted then
                 SetSignup(event, status)
-                -- En event for et utvalg legges i din egen kalender i spillet
-                -- når du svarer at du kommer eller kanskje kommer. (Events
-                -- for alle ligger der allerede, som guild-event.) Laget du
-                -- den selv og spillet sa nei første gang, prøves det på nytt.
+                -- An event for a selection is put in your own calendar in the
+                -- game when you answer that you are coming or maybe coming.
+                -- (Events for everyone are already there, as a guild event.)
+                -- If you created it yourself and the game said no the first
+                -- time, it is tried again.
                 if status ~= "N" and event.cal then
                     if event.creator == MyKey() then
                         PutInGameCalendar(event, IsGuildWide(event))
@@ -1598,7 +1602,7 @@ local function CreatePanel(parent)
         anchor = list
     end
 
-    -- Legger eventen ut i guild-chatten, for dem som ikke har addonen.
+    -- Posts the event in guild chat, for those who do not have the addon.
     d.share = DW.CreateButton(d, 160, 26, "gold")
     d.share:SetPoint("BOTTOMLEFT", 0, 0)
     d.share:SetScript("OnClick", function()
@@ -1612,7 +1616,7 @@ local function CreatePanel(parent)
     d.delete:SetPoint("BOTTOMRIGHT", 0, 0)
     d.delete:SetScript("OnClick", function()
         local event = selectedID and db.events[selectedID]
-        -- Bare den som laget eventen kan slette den.
+        -- Only the one who created the event can delete it.
         if event and event.creator == MyKey() then
             DeleteEvent(event)
             selectedID = nil
@@ -1620,7 +1624,7 @@ local function CreatePanel(parent)
         end
     end)
 
-    -- Skjemaet for ny event.
+    -- The form for a new event.
     local form = CreateFrame("Frame", nil, g)
     form:SetPoint("TOPLEFT", rightX, 0)
     form:SetSize(rightWidth, bodyHeight - 12)
@@ -1637,10 +1641,10 @@ local function CreatePanel(parent)
     form.titleBox:SetPoint("TOPLEFT", 6, -16)
 
     form.dateLabel = Label(0, -48)
-    form.dateBox = CreateEditBox(form, 110, nil, 10) -- "20.11.2026" er ti tegn
+    form.dateBox = CreateEditBox(form, 110, nil, 10) -- "20.11.2026" is ten characters
     form.dateBox:SetPoint("TOPLEFT", 6, -62)
 
-    -- Kalenderknappen: åpner en månedsoversikt der du klikker på dagen.
+    -- The calendar button: opens a month overview where you click the day.
     form.calendarButton = CreateFrame("Button", nil, form)
     form.calendarButton:SetSize(24, 24)
     form.calendarButton:SetPoint("LEFT", form.dateBox, "RIGHT", 6, 0)
@@ -1659,14 +1663,14 @@ local function CreatePanel(parent)
     end)
 
     form.timeLabel = Label(166, -48)
-    form.timeBox = CreateEditBox(form, 70, nil, 5) -- "20:00" er fem tegn
+    form.timeBox = CreateEditBox(form, 70, nil, 5) -- "20:00" is five characters
     form.timeBox:SetPoint("TOPLEFT", 172, -62)
 
     form.noteLabel = Label(0, -94)
     form.noteBox = CreateEditBox(form, rightWidth - 12, MAX_NOTE_BYTES)
     form.noteBox:SetPoint("TOPLEFT", 6, -108)
 
-    -- Hvem eventen gjelder: alle, et level-spenn eller utvalgte medlemmer.
+    -- Who the event is for: everyone, a level range or picked members.
     form.audienceLabel = Label(0, -140)
     form.audienceChips = {}
     local audienceWidth = math.floor((rightWidth - 12) / 3)
@@ -1681,7 +1685,7 @@ local function CreatePanel(parent)
         form.audienceChips[key] = chip
     end
 
-    -- Level-spennet. Vises bare når "etter level" er valgt.
+    -- The level range. Only shown when "by level" is selected.
     form.levelRow = CreateFrame("Frame", nil, form)
     form.levelRow:SetPoint("TOPLEFT", 0, -190)
     form.levelRow:SetSize(rightWidth, 24)
@@ -1697,8 +1701,8 @@ local function CreatePanel(parent)
     form.levelMax:SetPoint("LEFT", form.levelTo, "RIGHT", 12, 0)
     form.levelMax:SetText("60")
 
-    -- Knappen som åpner listen for å velge medlemmer. Vises bare når
-    -- "utvalgte" er valgt.
+    -- The button that opens the list for choosing members. Only shown when
+    -- "picked" is selected.
     form.membersButton = DW.CreateButton(form, 220, 24, "gold")
     form.membersButton:SetPoint("TOPLEFT", 0, -190)
     form.membersButton:SetScript("OnClick", function()
@@ -1709,7 +1713,7 @@ local function CreatePanel(parent)
         RefreshPanel()
     end)
 
-    -- Skal eventen også legges i spillets egen kalender?
+    -- Should the event also be put in the game's own calendar?
     form.calendarCheck = CreateFrame("CheckButton", nil, form, "UICheckButtonTemplate")
     form.calendarCheck:SetSize(24, 24)
     form.calendarCheck:SetPoint("TOPLEFT", -4, -220)
@@ -1735,7 +1739,7 @@ local function CreatePanel(parent)
         RefreshPanel()
     end)
 
-    -- Listen for å velge medlemmer. Den legger seg over skjemaet mens du velger.
+    -- The list for choosing members. It covers the form while you choose.
     local m = CreateFrame("Frame", nil, g)
     m:SetPoint("TOPLEFT", rightX, 0)
     m:SetSize(rightWidth, bodyHeight - 12)
@@ -1770,7 +1774,7 @@ local function CreatePanel(parent)
         RefreshPanel()
     end)
 
-    -- Spillets kalender.
+    -- The game's calendar.
     local c = CreateFrame("Frame", nil, f)
     c:SetPoint("TOPLEFT", 0, -72)
     c:SetSize(width, bodyHeight)
@@ -1800,16 +1804,16 @@ local function CreatePanel(parent)
     return f
 end
 
--- Hendelser -------------------------------------------------------------------
+-- Game events -----------------------------------------------------------------
 
--- Meldinger fra andre medlemmer. Comm.lua har alt sjekket at de kommer på
--- guild-kanalen, fra et annet medlem, og fanger feil i ødelagte meldinger.
+-- Messages from other members. Comm.lua has already checked that they come on
+-- the guild channel, from another member, and catches errors in broken messages.
 DW.OnGuildMessage(PREFIX, OnMessage)
 
 local helloSent = false
 
--- Si fra om hva vi har, én gang per økt, litt etter innlogging når spillet er
--- ferdig med å laste og guild-navnet er kjent.
+-- Say what we have, once per session, a little after login when the game has
+-- finished loading and the guild name is known.
 local function PlanHello()
     if helloSent or not (C_Timer and C_Timer.After) then
         return
@@ -1844,7 +1848,7 @@ for _, event in ipairs({ "PLAYER_ENTERING_WORLD", "CALENDAR_UPDATE_EVENT_LIST", 
     pcall(frame.RegisterEvent, frame, event)
 end
 
--- Guild-navnet kan komme sent etter innlogging. Si da fra når det er klart.
+-- The guild name can arrive late after login. Then announce when it is ready.
 DW.OnMembershipChanged(function(member)
     if member then
         PlanHello()
@@ -1855,7 +1859,7 @@ DW.OnLanguageChanged(function()
     RefreshPanel()
 end)
 
--- Feilsøking: hva vi har lagret, og om spillets kalender er tilgjengelig.
+-- Debugging: what we have saved, and whether the game's calendar is available.
 DW.AddDebug("events", function(add)
     local text = DW.DebugText
     local total, visible = 0, #VisibleEvents()
@@ -1872,7 +1876,7 @@ DW.AddDebug("events", function(add)
     add("lov til guild-events: " .. text(CanMakeGuildEvent()) .. " | siste kalenderfeil: " .. text(calendarProblem))
 end)
 
--- Modul --------------------------------------------------------------------------
+-- Module -------------------------------------------------------------------------
 
 DW.RegisterModule({
     id = MODULE_ID,
@@ -1893,8 +1897,8 @@ DW.RegisterModule({
     end,
 })
 
--- Knappene blinker (Alerts.lua) når en annen har lagt ut en event som gjelder
--- deg, og du ikke har åpnet fanen siden den kom.
+-- The buttons blink (Alerts.lua) when someone else has posted an event that
+-- applies to you, and you have not opened the tab since it arrived.
 local function NewEvents(since)
     local list = {}
     local me = MyKey()
@@ -1910,11 +1914,11 @@ DW.RegisterAlert({
     kind = "event",
     module = MODULE_ID,
     labelKey = "AL_EVENT",
-    color = { 1.00, 0.70, 0.15 }, -- gull
+    color = { 1.00, 0.70, 0.15 }, -- gold
     Check = function(since)
         return #NewEvents(since) > 0
     end,
-    -- Linjene i listen ved knappen: tittel, når, og hvem som la den ut.
+    -- The lines in the list at the button: title, when, and who posted it.
     Items = function(since)
         local items = {}
         for _, event in ipairs(NewEvents(since)) do

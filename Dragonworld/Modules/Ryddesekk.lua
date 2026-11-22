@@ -1,22 +1,22 @@
 -- Dragonworld - Ryddesekk
--- Legger til en linje i tooltipen på quest-gjenstander i baggen som forteller
--- om gjenstanden fortsatt trengs, eller om den kan kastes. I hovedvinduet
--- lister den det som kan kastes, med en avkrysningsboks for det du vil beholde.
+-- Adds a line to the tooltip of quest items in the bag that says whether the
+-- item is still needed or can be thrown away. In the main window it lists
+-- what can be thrown away, with a checkbox for what you want to keep.
 --
--- Slik avgjøres det, i denne rekkefølgen:
---   1. Har du selv merket gjenstanden, gjelder det.
---   2. Nevnes gjenstanden i en quest du har i questloggen, trengs den fortsatt.
---   3. Er den et håndverksmateriale, skal den ikke kastes. Hvilke professions
---      som bruker den, skriver Materialer-modulen i tooltipen.
---   4. Er den ikke bundet til deg, kan den selges på auksjon eller gis bort,
---      og skal heller ikke kastes.
---   5. Starter gjenstanden en quest du allerede har fullført, kan den kastes.
---   6. Er det en quest-gjenstand som ingen av questene dine nevner, kan den
---      trolig kastes.
--- Spillet oppgir ikke hvilken quest en gjenstand hører til, så punkt 6 er et
--- kvalifisert gjett. Derfor står det "trolig".
+-- This is how it is decided, in this order:
+--   1. If you have marked the item yourself, that applies.
+--   2. If the item is mentioned in a quest in your quest log, it is still needed.
+--   3. If it is a crafting material, it must not be thrown away. Which
+--      professions use it is written by the Materialer module in the tooltip.
+--   4. If it is not bound to you, it can be sold at the auction house or given
+--      away, and must not be thrown away either.
+--   5. If the item starts a quest you have already completed, it can be thrown away.
+--   6. If it is a quest item that none of your quests mention, it can
+--      probably be thrown away.
+-- The game does not say which quest an item belongs to, so point 6 is an
+-- educated guess. That is why it says "trolig" (probably).
 --
--- All tekst ligger i Locales.lua (navnene som begynner med RS_).
+-- All text is in Locales.lua (the names that start with RS_).
 
 local ADDON_NAME, DW = ...
 local L = DW.L
@@ -26,7 +26,7 @@ local MODULE_ID = "ryddesekk"
 local STATUS_TRASH, STATUS_MAYBE, STATUS_UNSURE, STATUS_KEEP = 1, 2, 3, 4
 local STATUS_MATERIAL, STATUS_SELLABLE = 5, 6
 
--- Tekst (navnet i Locales.lua) og farge for hver status.
+-- Text (the name in Locales.lua) and color for each status.
 local DISPLAY = {
     [STATUS_TRASH]    = { key = "RS_STATUS_TRASH",    r = 0.25, g = 1.00, b = 0.25, hex = "40ff40" },
     [STATUS_MAYBE]    = { key = "RS_STATUS_MAYBE",    r = 1.00, g = 0.82, b = 0.00, hex = "ffd100" },
@@ -35,8 +35,8 @@ local DISPLAY = {
     [STATUS_SELLABLE] = { key = "RS_STATUS_SELLABLE", r = 0.40, g = 0.75, b = 1.00, hex = "66bfff" },
 }
 
--- Det som kan kastes herfra. Alt annet (behold, materiale, kan selges) blir
--- liggende.
+-- What can be thrown away from here. Everything else (keep, material, can be
+-- sold) stays.
 local function CanDiscard(status)
     return status == STATUS_TRASH or status == STATUS_MAYBE or status == STATUS_UNSURE
 end
@@ -46,21 +46,21 @@ local ITEM_BIND_QUEST = 4
 local QUALITY_UNCOMMON = 2
 local LAST_BAG = NUM_TOTAL_EQUIPPED_BAG_SLOTS or NUM_BAG_SLOTS or 4
 
--- Forever har ikke den gamle globale GetItemInfo, bare C_Item-utgaven.
+-- Forever does not have the old global GetItemInfo, only the C_Item version.
 local GetItemInfo = (C_Item and C_Item.GetItemInfo) or GetItemInfo
 
--- Egne merker, som huskes mellom økter. Settes i OnLoad nederst.
---   marks[itemID] = "kast" eller "behold"
--- (Verdiene er de samme uansett språk, så merkene overlever et språkbytte.)
+-- The player's own marks, remembered between sessions. Set in OnLoad at the bottom.
+--   marks[itemID] = "kast" or "behold"
+-- (The values are the same in every language, so the marks survive a language change.)
 local marks = {}
 
--- Modulens lagrede valg. Settes i OnLoad nederst.
---   settings.includeMaybe = true hvis den gule knappen også skal ta det som
---                           bare er "trolig trygt". Av som standard.
+-- The module's saved choices. Set in OnLoad at the bottom.
+--   settings.includeMaybe = true if the yellow button should also take what
+--                           is only "probably safe". Off by default.
 local settings = {}
 
--- Oversikt over aktive quester. Bygges første gang den trengs, og nullstilles
--- hver gang questloggen endrer seg.
+-- Overview of active quests. Built the first time it is needed, and reset
+-- every time the quest log changes.
 local questCache
 
 local Print = DW.Print
@@ -81,7 +81,7 @@ local function BuildQuestCache()
             local title = info.title or "?"
             local parts = {}
 
-            -- Målene i questen, f.eks. "Kobold Candle: 3/8".
+            -- The quest objectives, e.g. "Kobold Candle: 3/8".
             local objectives = C_QuestLog.GetQuestObjectives(info.questID)
             if objectives then
                 for _, objective in ipairs(objectives) do
@@ -89,15 +89,15 @@ local function BuildQuestCache()
                 end
             end
 
-            -- Selve questteksten. Den fanger opp ting du bare skal levere,
-            -- f.eks. "Take the Sealed Note to ...".
+            -- The quest text itself. It catches things you only have to deliver,
+            -- e.g. "Take the Sealed Note to ...".
             if GetQuestLogQuestText then
                 local description, summary = GetQuestLogQuestText(index)
                 AddText(parts, description)
                 AddText(parts, summary)
             end
 
-            -- Gjenstand som brukes i questen (knappen ved siden av questen).
+            -- Item used in the quest (the button next to the quest).
             if GetQuestLogSpecialItemInfo then
                 local link = GetQuestLogSpecialItemInfo(index)
                 if type(link) == "string" and not IsSecret(link) then
@@ -128,11 +128,11 @@ local function FindInBags(itemID)
     end
 end
 
--- Er gjenstanden bundet til deg? true, false, eller nil når spillet ikke sier
--- det. En gjenstand som ikke er bundet, kan selges på auksjon eller byttes.
+-- Is the item bound to you? true, false, or nil when the game does not say.
+-- An item that is not bound can be sold at the auction house or traded.
 local function IsBound(bag, slot, bindType)
     if bindType == ITEM_BIND_QUEST then
-        return true -- "Quest Item" er alltid bundet
+        return true -- "Quest Item" is always bound
     end
     local info = C_Container.GetContainerItemInfo and C_Container.GetContainerItemInfo(bag, slot)
     if type(info) == "table" and type(info.isBound) == "boolean" then
@@ -150,8 +150,8 @@ local function IsBound(bag, slot, bindType)
     return nil
 end
 
--- Returnerer status og begrunnelse, eller ingenting hvis addonen ikke har noe
--- å si om gjenstanden (f.eks. vanlig utstyr, eller noe du ikke har i baggen).
+-- Returns status and reason, or nothing if the addon has nothing to say
+-- about the item (e.g. regular gear, or something you do not have in the bag).
 local function Evaluate(itemID, bag, slot)
     local mark = marks[itemID]
     if mark == "kast" then
@@ -169,7 +169,7 @@ local function Evaluate(itemID, bag, slot)
 
     local name, _, quality = GetItemInfo(itemID)
     if type(name) ~= "string" then
-        return -- Ikke lastet ennå; prøv igjen ved neste hover.
+        return -- Not loaded yet; try again on the next hover.
     end
     local classID, _, bindType = select(12, GetItemInfo(itemID))
 
@@ -183,7 +183,7 @@ local function Evaluate(itemID, bag, slot)
         return
     end
 
-    -- Brukes den av en quest du holder på med?
+    -- Is it used by a quest you are working on?
     if not questCache then
         questCache = BuildQuestCache()
     end
@@ -201,7 +201,7 @@ local function Evaluate(itemID, bag, slot)
         return STATUS_KEEP, L.RS_REASON_USED_BY:format(usedBy)
     end
 
-    -- Håndverksmaterialer og ting som kan selges, kastes ikke.
+    -- Crafting materials and things that can be sold are not thrown away.
     if DW.CraftingInfo and DW.CraftingInfo(itemID) then
         return STATUS_MATERIAL
     end
@@ -209,7 +209,7 @@ local function Evaluate(itemID, bag, slot)
         return STATUS_SELLABLE, L.RS_REASON_SELLABLE
     end
 
-    -- Gjenstander som starter en quest.
+    -- Items that start a quest.
     if startsQuestID then
         if questInfo.isActive then
             return STATUS_KEEP, L.RS_REASON_ACTIVE_STARTER
@@ -225,8 +225,8 @@ local function Evaluate(itemID, bag, slot)
     return STATUS_MAYBE, L.RS_REASON_MAYBE
 end
 
--- Skulle noe gå galt (f.eks. at et API-kall mangler), skal ikke tooltipen
--- ødelegges. Feilen skrives én gang i chatten så den kan rapporteres.
+-- If something goes wrong (e.g. an API call is missing), the tooltip must not
+-- be broken. The error is printed once in chat so it can be reported.
 local reportedErrors = {}
 
 local function SafeEvaluate(itemID, bag, slot)
@@ -243,8 +243,8 @@ end
 
 -- Tooltip ---------------------------------------------------------------------
 
--- Klienten kan melde samme gjenstand to ganger for én tooltip. Her husker vi
--- hvilken gjenstand hver tooltip allerede har fått linjen for.
+-- The client can report the same item twice for one tooltip. Here we remember
+-- which item each tooltip has already got the line for.
 local shownItem = {}
 
 local function OnTooltipItem(tooltip, data)
@@ -264,7 +264,7 @@ local function OnTooltipItem(tooltip, data)
 
     local status, reason = SafeEvaluate(itemID)
     if not status or status == STATUS_MATERIAL then
-        return -- materialer får sin egen linje fra Materialer-modulen
+        return -- materials get their own line from the Materialer module
     end
     shownItem[tooltip] = itemID
 
@@ -287,7 +287,7 @@ end
 if TooltipDataProcessor and TooltipDataProcessor.AddTooltipPostCall and Enum.TooltipDataType then
     TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Item, OnTooltipItem)
 else
-    -- Eldre klienter uten TooltipDataProcessor.
+    -- Older clients without TooltipDataProcessor.
     GameTooltip:HookScript("OnTooltipSetItem", function(tooltip)
         local _, link = tooltip:GetItem()
         local itemID = link and tonumber(link:match("item:(%d+)"))
@@ -298,11 +298,11 @@ else
     end)
 end
 
--- Kandidater ------------------------------------------------------------------
+-- Candidates ------------------------------------------------------------------
 
--- Alt i baggene som addonen mener kan kastes, pluss det du selv har krysset av
--- for å beholde (slik at krysset kan fjernes igjen). Én oppføring per
--- gjenstand, sortert på navn så rekkefølgen ikke hopper når du krysser av.
+-- Everything in the bags that the addon thinks can be thrown away, plus what
+-- you have checked to keep (so the check can be removed again). One entry per
+-- item, sorted by name so the order does not jump when you check something.
 local function CollectEntries()
     local entries, seen = {}, {}
 
@@ -352,19 +352,19 @@ local function CollectEntries()
     return entries
 end
 
--- Kasting ---------------------------------------------------------------------
+-- Discarding ------------------------------------------------------------------
 
--- Sletter én stabel av gjenstanden, uten bekreftelsesvindu. Kan ikke angres.
+-- Deletes one stack of the item, without a confirmation window. Cannot be undone.
 --
--- Spillet tillater bare én sletting per museklikk eller tastetrykk, så denne
--- må kalles direkte fra et klikk, og bare én gang per klikk. Derfor finnes det
--- ingen "kast alt"-knapp: hvert klikk kaster én ting.
+-- The game only allows one deletion per mouse click or key press, so this
+-- must be called directly from a click, and only once per click. That is why
+-- there is no "discard all" button: each click discards one thing.
 --
--- Returnerer true hvis gjenstanden ble slettet.
+-- Returns true if the item was deleted.
 local function DeleteOneStack(itemID)
-    -- Finn gjenstanden på nytt akkurat nå. Baggene kan ha endret seg siden
-    -- listen ble tegnet, og vi må aldri slette det som tilfeldigvis ligger i
-    -- en gammel plass.
+    -- Find the item again right now. The bags may have changed since the list
+    -- was drawn, and we must never delete whatever happens to be in an old
+    -- slot.
     local bag, slot = FindInBags(itemID)
     if not bag then
         return false
@@ -374,33 +374,33 @@ local function DeleteOneStack(itemID)
         return false
     end
 
-    -- Tøm musepekeren først, og gi opp hvis noe annet fortsatt henger på den.
+    -- Clear the cursor first, and give up if something else is still on it.
     ClearCursor()
     if GetCursorInfo() ~= nil then
         return false
     end
 
-    -- Plukk opp, og kontroller at det som havnet på pekeren er riktig ting.
+    -- Pick it up, and check that what ended up on the cursor is the right thing.
     C_Container.PickupContainerItem(bag, slot)
     local kind, cursorItemID = GetCursorInfo()
     if IsSecret(kind) or kind ~= "item" or IsSecret(cursorItemID) or cursorItemID ~= itemID then
-        ClearCursor() -- ikke det vi ventet: legg det tilbake urørt
+        ClearCursor() -- not what we expected: put it back untouched
         return false
     end
 
     DeleteCursorItem()
     if GetCursorInfo() ~= nil then
-        ClearCursor() -- spillet nektet: legg gjenstanden tilbake i baggen
+        ClearCursor() -- the game refused: put the item back in the bag
         return false
     end
     return true
 end
 
--- Kaster gjenstanden i en oppføring fra listen, og skriver i chatten hva som
--- skjedde, så du har en logg over det som er kastet.
+-- Discards the item in an entry from the list, and prints in chat what
+-- happened, so you have a log of what was thrown away.
 local function Discard(entry)
-    -- Vurder på nytt i klikket. Har du nettopp tatt en quest som trenger den,
-    -- eller krysset av for behold, skal den ikke kastes.
+    -- Evaluate again at the click. If you have just taken a quest that needs it,
+    -- or checked it to keep, it must not be thrown away.
     local status = SafeEvaluate(entry.itemID)
     if not CanDiscard(status) then
         return false
@@ -411,22 +411,22 @@ local function Discard(entry)
     return ok
 end
 
--- Panelet i hovedvinduet --------------------------------------------------------
+-- The panel in the main window -------------------------------------------------
 
 local ROW_HEIGHT = 26
-local FALLBACK_ICON = 134400 -- spørsmålstegn
+local FALLBACK_ICON = 134400 -- question mark
 
-local panel -- lages første gang modulen velges i hovedvinduet
+local panel -- created the first time the module is selected in the main window
 local rows = {}
 local RefreshPanel
 
--- Gjenstanden som har fått første klikk på Kast og venter på "Sikker?".
--- Gjelder bare det addonen er usikker på.
+-- The item that has had the first click on Kast (Discard) and is waiting for
+-- "Sure?". Only applies to what the addon is unsure about.
 local armedItem
 
--- Hva den gule knappen nederst får lov til å kaste: alltid det som er sikkert,
--- og det som er "trolig trygt" hvis spilleren har krysset av for det. Det
--- addonen er usikker på tar den aldri.
+-- What the yellow button at the bottom is allowed to discard: always what is
+-- certain, and what is "probably safe" if the player has
+-- checked that option. It never takes what the addon is unsure about.
 local function ButtonTakes(status)
     return status == STATUS_TRASH or (status == STATUS_MAYBE and settings.includeMaybe == true)
 end
@@ -442,7 +442,7 @@ local function GetRow(index)
     row:SetPoint("TOPLEFT", 0, -(index - 1) * ROW_HEIGHT)
     row:EnableMouse(true)
 
-    -- Avkrysning: på = behold, av = la addonen vurdere selv.
+    -- Checkbox: on = keep, off = let the addon decide.
     row.check = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate")
     row.check:SetSize(24, 24)
     row.check:SetPoint("RIGHT", -8, 0)
@@ -460,7 +460,7 @@ local function GetRow(index)
     row.icon:SetPoint("LEFT", 2, 0)
     row.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
 
-    -- Kast-knapp: sletter gjenstanden med en gang, uten bekreftelsesvindu.
+    -- Kast (discard) button: deletes the item at once, without a confirmation window.
     row.discard = DW.CreateButton(row, 64, 20, "red")
     row.discard:SetPoint("RIGHT", row.check, "LEFT", -10, 0)
     row.discard:SetScript("OnClick", function()
@@ -468,8 +468,8 @@ local function GetRow(index)
         if not entry then
             return
         end
-        -- Det addonen er usikker på krever to klikk: første klikk spør
-        -- "Sikker?", andre klikk kaster.
+        -- What the addon is unsure about takes two clicks: the first click asks
+        -- "Sure?", the second click discards.
         if entry.status == STATUS_UNSURE and armedItem ~= entry.itemID then
             armedItem = entry.itemID
             RefreshPanel()
@@ -479,7 +479,7 @@ local function GetRow(index)
         Discard(entry)
         RefreshPanel()
     end)
-    -- Flytter du musa bort fra knappen, angres første klikk.
+    -- If you move the mouse away from the button, the first click is undone.
     row.discard:HookScript("OnLeave", function()
         if armedItem then
             armedItem = nil
@@ -498,7 +498,7 @@ local function GetRow(index)
     row.name:SetJustifyH("LEFT")
     row.name:SetWordWrap(false)
 
-    -- Hold over raden for å se gjenstandens tooltip, med begrunnelsen nederst.
+    -- Hover over the row to see the item's tooltip, with the reason at the bottom.
     row:SetScript("OnEnter", function(self)
         local entry = self.entry
         if not entry then
@@ -540,7 +540,7 @@ RefreshPanel = function()
         row.status:SetText(L[display.key])
         row.status:SetTextColor(display.r, display.g, display.b)
         row.check:SetChecked(kept)
-        -- Det du har krysset av for behold kan ikke kastes herfra.
+        -- What you have checked to keep cannot be discarded from here.
         row.discard:SetShown(not kept)
         row.discard.label:SetText(armedItem == entry.itemID and L.RS_CONFIRM or L.RS_DISCARD)
         row:Show()
@@ -558,7 +558,7 @@ RefreshPanel = function()
     panel.content:SetHeight(math.max(1, #entries * ROW_HEIGHT))
     panel.empty:SetShown(#entries == 0)
 
-    -- Bunnlinjen: valget, neste gjenstand, og knappen som kaster den.
+    -- The bottom row: the option, the next item, and the button that discards it.
     panel.includeLabel:SetText(L.RS_INCLUDE_MAYBE)
     panel.includeCheck:SetChecked(settings.includeMaybe == true)
     panel.nextButton.label:SetText(L.RS_NEXT_BUTTON:format(safeCount))
@@ -566,8 +566,8 @@ RefreshPanel = function()
     panel.nextLabel:SetText(nextSafe and L.RS_NEXT_LABEL:format(nextSafe.link) or L.RS_NEXT_NONE)
 end
 
--- Questloggen kan melde endringer mange ganger i sekundet. Samle dem opp og
--- oppdater panelet én gang.
+-- The quest log can report changes many times a second. Collect them and
+-- update the panel once.
 local refreshQueued = false
 
 local function QueueRefresh()
@@ -585,8 +585,8 @@ local function QueueRefresh()
     end)
 end
 
--- Kalles av hovedvinduet første gang modulen velges. parent er feltet til
--- høyre for chipene.
+-- Called by the main window the first time the module is selected. parent is
+-- the area to the right of the chips.
 local function CreatePanel(parent)
     local f = CreateFrame("Frame", nil, parent)
     f:SetAllPoints(parent)
@@ -602,7 +602,7 @@ local function CreatePanel(parent)
     f.headerItem = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     f.headerItem:SetPoint("TOPLEFT", 14, -76)
 
-    -- Midtstilt over avkrysningsboksene, uansett hvor langt ordet er.
+    -- Centered over the checkboxes, however long the word is.
     f.headerKeep = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     f.headerKeep:SetPoint("TOP", f, "TOPRIGHT", -50, -76)
 
@@ -610,7 +610,7 @@ local function CreatePanel(parent)
     scroll:SetPoint("TOPLEFT", 10, -92)
     scroll:SetPoint("BOTTOMRIGHT", -30, 78)
 
-    -- Valg: skal den gule knappen også ta det som bare er "trolig trygt"?
+    -- Option: should the yellow button also take what is only "probably safe"?
     f.includeCheck = CreateFrame("CheckButton", nil, f, "UICheckButtonTemplate")
     f.includeCheck:SetSize(24, 24)
     f.includeCheck:SetPoint("BOTTOMLEFT", 10, 46)
@@ -622,13 +622,13 @@ local function CreatePanel(parent)
     f.includeLabel = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     f.includeLabel:SetPoint("LEFT", f.includeCheck, "RIGHT", 2, 0)
 
-    -- Bunnlinjen. Knappen kaster én gjenstand per klikk; spillet tillater ikke
-    -- flere. Teksten til venstre viser hvilken som står for tur.
+    -- The bottom row. The button discards one item per click; the game does not
+    -- allow more. The text on the left shows which one is next.
     f.nextButton = DW.CreateButton(f, 250, 32, "gold")
     f.nextButton:SetPoint("BOTTOMRIGHT", -14, 12)
     f.nextButton:SetScript("OnClick", function()
         armedItem = nil
-        -- Regn ut listen på nytt i klikket, så vi aldri går ut fra en gammel.
+        -- Recompute the list at the click, so we never rely on an old one.
         for _, entry in ipairs(CollectEntries()) do
             if ButtonTakes(entry.status) then
                 Discard(entry)
@@ -663,12 +663,12 @@ local function CreatePanel(parent)
     return f
 end
 
--- Hendelser -------------------------------------------------------------------
+-- Events ----------------------------------------------------------------------
 
 local frame = CreateFrame("Frame")
 
 frame:SetScript("OnEvent", function(self, event)
-    -- Alt annet enn bag-endringer betyr at questloggen kan ha endret seg.
+    -- Anything other than bag changes means the quest log may have changed.
     if event ~= "BAG_UPDATE_DELAYED" then
         questCache = nil
     end
@@ -686,12 +686,12 @@ for _, event in ipairs({
     pcall(frame.RegisterEvent, frame, event)
 end
 
--- Bytter spilleren språk mens panelet er åpent, skrives det på nytt.
+-- If the player changes language while the panel is open, it is redrawn.
 DW.OnLanguageChanged(function()
     RefreshPanel()
 end)
 
--- Kommandoer ------------------------------------------------------------------
+-- Commands --------------------------------------------------------------------
 
 local function ListBags()
     local lines = {}
@@ -723,7 +723,7 @@ local function PrintHelp()
     print("  " .. L.RS_HELP_SHIFT)
 end
 
--- Kommandoordene virker på alle tre språk, uansett hvilket som er valgt.
+-- The command words work in all three languages, whichever is chosen.
 local COMMANDS = {
     list = "list", liste = "list", lijst = "list",
     mark = "mark", merk = "mark", markeer = "mark",
@@ -773,13 +773,13 @@ local function HandleSlash(message)
     RefreshPanel()
 end
 
--- Snarveier til "/dw ryddesekk", én per språk.
+-- Shortcuts to "/dw ryddesekk", one per language.
 SLASH_DRAGONWORLD_RYDDESEKK1 = "/kast"
 SLASH_DRAGONWORLD_RYDDESEKK2 = "/tidybag"
 SLASH_DRAGONWORLD_RYDDESEKK3 = "/opruimtas"
 SlashCmdList["DRAGONWORLD_RYDDESEKK"] = HandleSlash
 
--- Modul --------------------------------------------------------------------------
+-- Module -------------------------------------------------------------------------
 
 DW.RegisterModule({
     id = MODULE_ID,

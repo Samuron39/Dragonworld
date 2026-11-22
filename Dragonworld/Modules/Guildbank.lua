@@ -1,89 +1,93 @@
 -- Dragonworld - Guildbank
--- Viser hva som ligger i guildbanken, for alle i guilden som har addonen, også
--- når de står langt unna banken.
+-- Shows what is in the guild bank, for everyone in the guild who has the
+-- addon, even when they are far away from the bank.
 --
--- Hvor opplysningene kommer fra:
---   * Spillet lar bare den som står ved guildbanken se hva som ligger der.
---     Når et medlem med addonen åpner guildbanken, leser addonen alle fanene
---     medlemmet har lov til å se, og pengene, og sender det til resten av
---     guilden. Alle tar vare på det de får, og ser det i denne fanen.
---   * Hver fane har sin egen tid: når den sist ble sett, og av hvem. Den
---     nyeste utgaven av en fane vinner.
---   * Den som logger inn sier fra hvilke utgaver den har. Har noen andre
---     nyere, sender de dem. Har den som logget inn nyere, ber de andre om dem.
---   * Ingenting av dette skjer utenfor guilden Dragonworld.
+-- Where the information comes from:
+--   * The game only lets whoever is standing at the guild bank see what is in
+--     it. When a member with the addon opens the guild bank, the addon reads
+--     all the tabs the member is allowed to see, and the money, and sends it
+--     to the rest of the guild. Everyone keeps what they receive, and sees it
+--     in this tab.
+--   * Each tab has its own time: when it was last seen, and by whom. The
+--     newest version of a tab wins.
+--   * Whoever logs in says which versions they have. If someone else has
+--     newer ones, they send them. If the one who logged in has newer ones,
+--     the others ask for them.
+--   * None of this happens outside the guild Dragonworld.
 --
--- Hvem som får se hvilke faner (guild rank):
---   * En fane vises bare for ranker som får se den i spillet. Spillet sier bare
---     hver spiller hvilke faner deres egen rank får se, og bare ved banken.
---     Derfor sier den som er ved banken fra: "rank 4 ser fane 1, 2 og 4, men
---     ikke 3". Alle samler slike opplysninger.
---   * Rank 0 er guild master; jo høyere tall, jo lavere rank. Vi regner med at
---     en høyere rank ser minst det en lavere ser. Ser rank 6 en fane, ser
---     rank 4 den også. Ser ikke rank 2 en fane, gjør ikke rank 4 det heller.
---   * Spriker opplysningene, gjelder den nyeste. Vet vi ingenting som gjelder
---     din rank, er fanen skjult. Den dukker opp når noen med din rank eller
---     lavere har vært i guildbanken med addonen.
---   * Dette skjuler fanene i addonen. Innholdet sendes likevel på guild-kanalen,
---     så det er ikke hemmelig for noen som lager sitt eget addon for å lese det.
+-- Who gets to see which tabs (guild rank):
+--   * A tab is only shown to ranks that can see it in the game. The game only
+--     tells each player which tabs their own rank can see, and only at the
+--     bank. So whoever is at the bank announces: "rank 4 sees tabs 1, 2 and
+--     4, but not 3". Everyone collects such information.
+--   * Rank 0 is the guild master; the higher the number, the lower the rank.
+--     We assume a higher rank sees at least what a lower one sees. If rank 6
+--     sees a tab, rank 4 sees it too. If rank 2 does not see a tab, rank 4
+--     does not either.
+--   * If the information conflicts, the newest applies. If we know nothing
+--     that applies to your rank, the tab is hidden. It appears when someone
+--     with your rank or lower has been in the guild bank with the addon.
+--   * This hides the tabs in the addon. The content is still sent on the
+--     guild channel, so it is not secret from anyone who makes their own
+--     addon to read it.
 --
--- Fanene leses én om gangen: addonen ber spillet om innholdet og venter til
--- det kommer. En fane som ser helt tom ut regnes bare som tom hvis det er den
--- spilleren selv ser på, ellers kan den bare være ulastet. Da beholdes det vi
--- visste fra før.
+-- The tabs are read one at a time: the addon asks the game for the content
+-- and waits until it arrives. A tab that looks completely empty only counts
+-- as empty if it is the one the player is looking at; otherwise it may just
+-- be unloaded. Then what we knew from before is kept.
 --
--- Meldingene (navn DragonworldGB, felter skilt med tabulator):
---   T fane tid deler sjekksum hvem ikon navn   en fane begynner; så kommer
---   D fane tid nr innhold                      delene: "id:antall,id:antall"
---   C fane tid sjekksum hvem    fanen er uendret, men sett på nytt
---   M tid kobber hvem           pengene i banken
---   A rank fane:ser:tid,...     hvilke faner en rank ser (ser = 1) og ikke ser (0)
---   V fane:tid:sjekksum,...     hvilke utgaver jeg har (fane 0 = pengene,
---                               fane 17 = alt vi vet om hvem som ser hva)
---   W fane tid sjekksum         jeg vil ha denne fanen (sjekksummen er min)
+-- The messages (name DragonworldGB, fields separated by tab):
+--   T tab time parts checksum who icon name    a tab begins; then come
+--   D tab time no content                      the parts: "id:count,id:count"
+--   C tab time checksum who     the tab is unchanged, but seen again
+--   M time copper who           the money in the bank
+--   A rank tab:sees:time,...    which tabs a rank sees (sees = 1) and does not (0)
+--   V tab:time:checksum,...     which versions I have (tab 0 = the money,
+--                               tab 17 = all we know about who sees what)
+--   W tab time checksum         I want this tab (the checksum is mine)
 --
--- All tekst ligger i Locales.lua (navnene som begynner med GB_).
+-- All text is in Locales.lua (the names that start with GB_).
 
 local ADDON_NAME, DW = ...
 local L = DW.L
 
 local MODULE_ID = "guildbank"
-local PREFIX = "DragonworldGB" -- navnet på meldingene; maks 16 tegn
+local PREFIX = "DragonworldGB" -- the name of the messages; max 16 characters
 local SEP = "\t"
 
-local MAX_TABS = 16            -- flere faner enn dette godtas ikke i meldinger
+local MAX_TABS = 16            -- more tabs than this are not accepted in messages
 local SLOTS_PER_TAB = MAX_GUILDBANK_SLOTS_PER_TAB or 98
-local CHUNK_BYTES = 200        -- innhold per D-melding
+local CHUNK_BYTES = 200        -- content per D message
 local MAX_PARTS = 20
 local MAX_NAME_BYTES = 40
 local MAX_ICON_BYTES = 100
-local CONFIRM_AFTER = 600      -- så gammel en uendret fane må være før vi sier fra at den er sett på nytt
-local MONEY = 0                -- "fane" 0 i meldinger er pengene
-local ACCESS = MAX_TABS + 1    -- og denne er hvem som ser hvilke faner
-local MAX_RANK = 20            -- høyere ranknummer enn dette godtas ikke
+local CONFIRM_AFTER = 600      -- how old an unchanged tab must be before we announce it was seen again
+local MONEY = 0                -- "tab" 0 in messages is the money
+local ACCESS = MAX_TABS + 1    -- and this one is who sees which tabs
+local MAX_RANK = 20            -- higher rank numbers than this are not accepted
 
-local START_DELAY = 1.0        -- etter at banken åpnes, før vi ber om fanene
-local QUERY_GAP = 0.4          -- mellom hver fane
-local QUERY_TIMEOUT = 4        -- så lenge vi venter på en fane
-local SCAN_DELAY = 1.2         -- endringer kommer flere på rad; les når det har roet seg
-local HELLO_DELAY = 15         -- etter innlogging
+local START_DELAY = 1.0        -- after the bank opens, before we ask for the tabs
+local QUERY_GAP = 0.4          -- between each tab
+local QUERY_TIMEOUT = 4        -- how long we wait for a tab
+local SCAN_DELAY = 1.2         -- changes come several in a row; read when it has calmed down
+local HELLO_DELAY = 15         -- after login
 local REFRESH_DELAY = 0.2
 
 local GetItemInfo = (C_Item and C_Item.GetItemInfo) or GetItemInfo
-local PET_CAGE = 82800         -- kjæledyr i bur har ikke en vanlig gjenstands-ID
+local PET_CAGE = 82800         -- caged pets do not have a normal item ID
 
--- Lagrede data. Settes i OnLoad nederst.
+-- Saved data. Set in OnLoad at the bottom.
 --   db.tabs[nr] = { name, icon, items = { [itemID] = antall }, time, by, digest }
 --   db.money = { amount, time, by }
---   db.access[fane][rank] = { view = true/false, time }   om ranken ser fanen
---   db.items[itemID] = { name, quality }   navn vi har sett, så gjenstander kan
---                                          vises med navn før spillet har lastet dem
+--   db.access[fane][rank] = { view = true/false, time }   whether the rank sees the tab
+--   db.items[itemID] = { name, quality }   names we have seen, so items can be
+--                                          shown by name before the game has loaded them
 local db = { tabs = {}, items = {}, access = {} }
 
--- Småting -----------------------------------------------------------------------
+-- Small things ------------------------------------------------------------------
 
--- Tiden alle i guilden er enige om (serverens), så "nyest" betyr det samme
--- hos alle uansett hva klokken på maskinen deres står på.
+-- The time everyone in the guild agrees on (the server's), so "newest" means
+-- the same to everyone whatever their machine's clock is set to.
 local function Now()
     local now = GetServerTime and GetServerTime()
     if type(now) == "number" and not DW.IsSecret(now) then
@@ -99,8 +103,8 @@ local function Plain(value)
     return value
 end
 
--- Tekst uten tegn som brukes i meldingene, kuttet til maxBytes uten å dele
--- et tegn på midten (æ, ø, å og lignende er mer enn én byte).
+-- Text without characters used in the messages, cut to maxBytes without
+-- splitting a character in the middle (æ, ø, å and the like are more than one byte).
 local function Clean(text, maxBytes)
     if type(text) ~= "string" or DW.IsSecret(text) then
         return ""
@@ -123,8 +127,8 @@ local function MyName()
     return Clean(name or "?", MAX_NAME_BYTES)
 end
 
--- Innholdet i en fane som tekst: "id:antall,id:antall", sortert på ID, så den
--- blir lik hos alle som har det samme.
+-- The content of a tab as text: "id:antall,id:antall", sorted by ID, so it
+-- is the same for everyone who has the same thing.
 local function Serialize(items)
     local ids = {}
     for itemID in pairs(items) do
@@ -138,8 +142,8 @@ local function Serialize(items)
     return table.concat(parts, ","), #ids
 end
 
--- En kort sjekksum av innholdet. Lik sjekksum betyr (nesten helt sikkert) likt
--- innhold, så vi kan si "fortsatt likt" uten å sende alt på nytt.
+-- A short checksum of the content. An equal checksum means (almost certainly)
+-- equal content, so we can say "still the same" without sending it all again.
 local function HashText(text, count)
     local hash = 7
     for index = 1, #text do
@@ -156,9 +160,9 @@ local function MoneyDigest(amount)
     return ("%.0f"):format(amount)
 end
 
--- Hvem som ser hva -----------------------------------------------------------------
+-- Who sees what --------------------------------------------------------------------
 
--- Ranken til karakteren du spiller: 0 er guild master, høyere tall er lavere rank.
+-- The rank of the character you are playing: 0 is guild master, higher numbers are lower rank.
 local function MyRank()
     if GetGuildInfo then
         local _, _, rankIndex = GetGuildInfo("player")
@@ -167,7 +171,7 @@ local function MyRank()
             return rankIndex
         end
     end
-    -- Ellers: let opp oss selv i medlemslisten.
+    -- Otherwise: find ourselves in the roster.
     local guid = DW.MyGUID()
     if guid then
         for _, member in ipairs(DW.ReadGuildRoster()) do
@@ -179,8 +183,8 @@ local function MyRank()
     return nil
 end
 
--- Tar vare på at en rank ser (eller ikke ser) en fane, hvis det er nyere enn det
--- vi visste. Returnerer true hvis noe ble endret.
+-- Saves that a rank sees (or does not see) a tab, if it is newer than what
+-- we knew. Returns true if something changed.
 local function Observe(tab, rank, view, when)
     local byRank = db.access[tab]
     if type(byRank) ~= "table" then
@@ -195,9 +199,9 @@ local function Observe(tab, rank, view, when)
     return true
 end
 
--- Ser denne ranken fanen? Det som sier noe om ranken er: at den selv eller en
--- lavere rank ser fanen, eller at den selv eller en høyere rank ikke gjør det.
--- Det nyeste av dette gjelder. Uten noe å gå etter er svaret nei.
+-- Does this rank see the tab? What says something about the rank is: that it
+-- or a lower rank sees the tab, or that it or a higher rank does not.
+-- The newest of these applies. With nothing to go on, the answer is no.
 local function RankCanSee(tab, rank)
     local byRank = db.access[tab]
     if type(byRank) ~= "table" or type(rank) ~= "number" then
@@ -214,8 +218,8 @@ local function RankCanSee(tab, rank)
     return best ~= nil and best.view
 end
 
--- Alt vi vet om hvem som ser hva, som én "utgave": den nyeste tiden og en
--- sjekksum, så det kan sammenlignes med det andre har.
+-- All we know about who sees what, as one "version": the newest time and a
+-- checksum, so it can be compared with what the others have.
 local function AccessVersion()
     local newest
     local parts = {}
@@ -244,7 +248,7 @@ local function AccessVersion()
     return newest, HashText(table.concat(parts, ","), #parts)
 end
 
--- Utgaven vi har av en fane (eller pengene): tid og sjekksum.
+-- The version we have of a tab (or the money): time and checksum.
 local function VersionOf(tab)
     if tab == ACCESS then
         return AccessVersion()
@@ -272,10 +276,10 @@ local function TabName(tab)
     return L.GB_TAB_N:format(tab)
 end
 
--- Visning trenger å vite om noe er endret. Settes lenger ned.
+-- The view needs to know if something changed. Set further down.
 local QueueRefresh
 
--- Deling ------------------------------------------------------------------------
+-- Sharing -----------------------------------------------------------------------
 
 local Send = DW.CreateSender(PREFIX)
 
@@ -320,7 +324,7 @@ local function SendMoney()
     end
 end
 
--- Det vi vet om hva én rank ser: én melding, eller flere hvis det ikke får plass.
+-- What we know about what one rank sees: one message, or several if it does not fit.
 local function SendAccessRow(rank)
     local head = "A" .. SEP .. rank .. SEP
     local message = head
@@ -340,7 +344,7 @@ local function SendAccessRow(rank)
     end
 end
 
--- Alt vi vet om hvem som ser hva: én melding per rank.
+-- All we know about who sees what: one message per rank.
 local function SendAccess()
     local ranks = {}
     for _, byRank in pairs(db.access) do
@@ -355,7 +359,7 @@ local function SendAccess()
     end
 end
 
--- Sier fra hvilke utgaver vi har. Deles i flere meldinger hvis det trengs.
+-- Announces which versions we have. Split into several messages if needed.
 local function SendVersions()
     local entries = {}
     for tab = 0, ACCESS do
@@ -377,12 +381,12 @@ local function SendVersions()
     Send(message)
 end
 
--- Tilbud og ønsker venter en tilfeldig liten stund, så ikke hele guilden
--- svarer samtidig. Hører vi at noen andre har gjort det samme først, lar vi
--- være.
-local offers = {}       -- [fane] = { time, full }   noe vi skal sende
-local wants = {}        -- [fane] = { time }         noe vi skal be om
-local lastOffered = {}  -- [fane] = { time, at }     så vi ikke sender det samme to ganger på rad
+-- Offers and wants wait a random short while, so the whole guild does not
+-- answer at once. If we hear that someone else has done the same first, we
+-- do not.
+local offers = {}       -- [fane] = { time, full }   something we are going to send
+local wants = {}        -- [fane] = { time }         something we are going to ask for
+local lastOffered = {}  -- [fane] = { time, at }     so we do not send the same twice in a row
 
 local function RandomDelay()
     return 1 + math.random() * 5
@@ -442,8 +446,8 @@ local function Want(tab, when)
     end)
 end
 
--- Noen andre har sendt (eller er i gang med å sende) en utgave fra tidspunktet
--- when. Da trenger vi ikke sende eller be om noe som ikke er nyere.
+-- Someone else has sent (or is in the middle of sending) a version from the
+-- time when. Then we do not need to send or ask for anything that is not newer.
 local function HeardVersion(tab, when)
     if offers[tab] and offers[tab].time <= when then
         offers[tab] = nil
@@ -453,7 +457,7 @@ local function HeardVersion(tab, when)
     end
 end
 
--- Lagring av det vi leser eller får ----------------------------------------------
+-- Saving what we read or receive --------------------------------------------------
 
 local function StoreTab(tab, data)
     db.tabs[tab] = data
@@ -469,16 +473,16 @@ local function ParseItems(text, into)
     end
 end
 
--- Mottak ------------------------------------------------------------------------
+-- Receiving ---------------------------------------------------------------------
 
-local incoming = {} -- [avsender + fane + tid] = en fane som er på vei, del for del
+local incoming = {} -- [sender + tab + time] = a tab on its way, part by part
 
 local function ValidTab(tab)
     return tab and tab >= 1 and tab <= MAX_TABS
 end
 
--- Tider fra fremtiden (mer enn en dag) godtas ikke, så en feil klokke eller en
--- ødelagt melding ikke kan låse en fane for alltid.
+-- Times from the future (more than a day) are not accepted, so a wrong clock
+-- or a corrupted message cannot lock a tab forever.
 local function ValidTime(when)
     return when and when > 0 and when <= Now() + 86400
 end
@@ -490,7 +494,7 @@ local function Complete(key, entry)
         ParseItems(entry.got[index], items)
     end
     if Digest(items) ~= entry.digest then
-        return -- noe gikk tapt eller ble ødelagt underveis
+        return -- something was lost or corrupted along the way
     end
     local have = VersionOf(entry.tab)
     if have and have >= entry.time then
@@ -519,7 +523,7 @@ local function OnMessage(text, sender)
         if have and have >= when then
             return
         end
-        -- Rydd bort fanene som aldri ble ferdige.
+        -- Clean up the tabs that never finished.
         for key, entry in pairs(incoming) do
             if GetTime() - entry.at > 120 then
                 incoming[key] = nil
@@ -563,7 +567,7 @@ local function OnMessage(text, sender)
                 QueueRefresh()
             end
         elseif not (type(data) == "table" and data.time >= when) then
-            Want(tab, when) -- noen har sett noe annet enn det vi har
+            Want(tab, when) -- someone has seen something other than what we have
         end
 
     elseif kind == "M" then
@@ -579,7 +583,7 @@ local function OnMessage(text, sender)
         end
 
     elseif kind == "A" then
-        -- Hva en rank ser. Hver fane for seg; det nyeste vinner.
+        -- What a rank sees. Each tab on its own; the newest wins.
         local rank = tonumber(fields[2])
         if not (rank and rank >= 0 and rank <= MAX_RANK and rank == math.floor(rank)) then
             return
@@ -598,8 +602,9 @@ local function OnMessage(text, sender)
             if wants[ACCESS] and wants[ACCESS].time <= newest then
                 wants[ACCESS] = nil
             end
-            -- Noen andre sender det samme som vi skulle sende: da lar vi være.
-            -- Fikk vi noe nytt, vet de noe annet enn oss, og vi sender likevel.
+            -- Someone else is sending the same as we were going to send: then we
+            -- do not. If we got something new, they know something different
+            -- from us, and we send anyway.
             if not changed and offers[ACCESS] and offers[ACCESS].time <= newest then
                 offers[ACCESS] = nil
             end
@@ -609,8 +614,8 @@ local function OnMessage(text, sender)
         end
 
     elseif kind == "V" then
-        -- Et medlem sier hvilke utgaver det har. Send det vi har som er nyere,
-        -- og be om det de har som er nyere.
+        -- A member says which versions they have. Send what we have that is
+        -- newer, and ask for what they have that is newer.
         local theirs = {}
         for tab, when, digest in (fields[2] or ""):gmatch("(%d+):(%d+):([%d%.]+)") do
             tab, when = tonumber(tab), tonumber(when)
@@ -626,8 +631,8 @@ local function OnMessage(text, sender)
             elseif other and (not mine or other.time > mine) then
                 Want(tab, other.time)
             elseif tab == ACCESS and mine and other.digest ~= myDigest then
-                -- Like nye, men ulikt innhold: vi vet hver vår ting. Det vi
-                -- sender legges til hos dem, og omvendt.
+                -- Equally new, but different content: we each know our own thing.
+                -- What we send is added on their side, and vice versa.
                 Offer(tab, true)
             end
         end
@@ -637,7 +642,7 @@ local function OnMessage(text, sender)
         if not (tab and tab >= 0 and tab <= ACCESS and when) then
             return
         end
-        -- Andre som ville be om det samme, trenger ikke gjøre det.
+        -- Others who would ask for the same do not need to.
         if wants[tab] and wants[tab].time <= when then
             wants[tab] = nil
         end
@@ -650,11 +655,11 @@ end
 
 DW.OnGuildMessage(PREFIX, OnMessage)
 
--- Lesing av guildbanken -----------------------------------------------------------
+-- Reading the guild bank ----------------------------------------------------------
 
 local bankOpen = false
-local sawOpenEvent = false -- har spillet sagt fra at banken ble åpnet (i denne økten)?
-local visit -- det som hører til ett besøk i banken; nil når banken er lukket
+local sawOpenEvent = false -- has the game announced that the bank was opened (in this session)?
+local visit -- what belongs to one visit to the bank; nil when the bank is closed
 
 local function NumTabs()
     if GetNumGuildBankTabs then
@@ -671,7 +676,7 @@ local function CurrentTab()
     return type(tab) == "number" and tab or nil
 end
 
--- Om spillet sier at denne karakteren (ranken) får se fanen.
+-- Whether the game says this character (the rank) gets to see the tab.
 local function IsViewable(tab)
     if not GetGuildBankTabInfo then
         return false
@@ -681,7 +686,7 @@ local function IsViewable(tab)
     return isViewable == true or isViewable == 1
 end
 
--- Navn, ikon og om spilleren får se fanen.
+-- Name, icon and whether the player gets to see the tab.
 local function TabInfo(tab)
     if not GetGuildBankTabInfo then
         return nil
@@ -711,7 +716,7 @@ local function ItemIDFromLink(link)
     return nil
 end
 
-local waitingForName = {} -- [itemID] = true mens vi venter på at spillet laster navnet
+local waitingForName = {} -- [itemID] = true while we wait for the game to load the name
 
 local function RememberItem(itemID)
     if type(db.items[itemID]) == "table" then
@@ -729,7 +734,7 @@ local function RememberItem(itemID)
     end
 end
 
--- Leser én fane. Returnerer innholdet og om noe i det hele tatt lå der.
+-- Reads one tab. Returns the content and whether anything was there at all.
 local function ReadTab(tab)
     local items, any = {}, false
     for slot = 1, SLOTS_PER_TAB do
@@ -748,7 +753,7 @@ local function ReadTab(tab)
     return items, any
 end
 
--- Leser alle fanene vi stoler på, og pengene, og deler det som er nytt.
+-- Reads all the tabs we trust, and the money, and shares what is new.
 local function Scan()
     if not visit or not DW.IsMember() or not (GetGuildBankItemLink and GetGuildBankItemInfo) then
         return
@@ -760,23 +765,23 @@ local function Scan()
         local name, icon = TabInfo(tab)
         if name and visit.loaded[tab] then
             local items, any = ReadTab(tab)
-            -- En fane uten noe i kan også være en som ikke er lastet ennå. Den
-            -- regnes bare som tom hvis det er den spilleren ser på.
+            -- A tab with nothing in it can also be one that is not loaded yet.
+            -- It only counts as empty if it is the one the player is looking at.
             if any or tab == current then
                 visit.read[tab] = true
                 local digest = Digest(items)
                 local stored = db.tabs[tab]
                 if type(stored) == "table" and stored.digest == digest and stored.name == name and stored.icon == icon then
-                    -- Uendret. Er det en stund siden sist, sier vi fra at den
-                    -- er sett på nytt, uten å sende alt.
+                    -- Unchanged. If it has been a while since last time, we say
+                    -- it was seen again, without sending everything.
                     if now - (stored.time or 0) >= CONFIRM_AFTER then
                         stored.time, stored.by = now, me
                         SendConfirm(tab)
                         QueueRefresh()
                     end
                 else
-                    -- Alltid nyere enn utgaven vi hadde, også om den er fra
-                    -- samme sekund, ellers ville de andre beholdt den gamle.
+                    -- Always newer than the version we had, even if it is from
+                    -- the same second, otherwise the others would keep the old one.
                     local when = math.max(now, (type(stored) == "table" and stored.time or 0) + 1)
                     StoreTab(tab, { name = name, icon = icon, items = items, time = when, by = me, digest = digest })
                     SendTab(tab)
@@ -799,8 +804,8 @@ local function Scan()
         end
     end
 
-    -- Hvilke faner vår rank ser og ikke ser. Ser vi ingen i det hele tatt, er
-    -- fanene nok ikke lastet ennå, og da sier vi ingenting.
+    -- Which tabs our rank sees and does not see. If we see none at all, the
+    -- tabs are probably not loaded yet, and then we say nothing.
     local rank = MyRank()
     local tabs = NumTabs()
     if visit.anyEvent and rank and rank >= 0 and rank <= MAX_RANK and tabs > 0 then
@@ -826,8 +831,8 @@ local function Scan()
         end
     end
 
-    -- Når alle fanene er spurt etter, sier vi én gang i chatten hva som skjedde,
-    -- så spilleren ser at det virker.
+    -- When all the tabs have been asked for, we say once in chat what happened,
+    -- so the player sees that it works.
     if visit.done and not visit.reported and next(visit.read) then
         visit.reported = true
         local changed = 0
@@ -838,7 +843,7 @@ local function Scan()
     end
 end
 
--- Endringer kommer ofte flere på rad. Les når det har vært stille litt.
+-- Changes often come several in a row. Read when it has been quiet for a bit.
 local function QueueScan()
     if not visit or visit.scanQueued then
         return
@@ -853,8 +858,8 @@ local function QueueScan()
     end)
 end
 
--- Ber spillet om én fane om gangen, og venter til den har kommet (eller gir
--- opp etter en stund) før neste.
+-- Asks the game for one tab at a time, and waits until it has arrived (or
+-- gives up after a while) before the next.
 local QueryNext
 
 local function TabArrived(thisVisit)
@@ -881,7 +886,7 @@ QueryNext = function(thisVisit)
             thisVisit.token = token
             pcall(QueryGuildBankTab, tab)
             C_Timer.After(QUERY_TIMEOUT, function()
-                -- Kom den aldri, går vi videre uten å stole på den.
+                -- If it never came, we move on without trusting it.
                 if visit == thisVisit and thisVisit.token == token and thisVisit.waitingFor == tab then
                     thisVisit.waitingFor = nil
                     QueryNext(thisVisit)
@@ -906,14 +911,14 @@ local function OpenBank()
             QueryNext(thisVisit)
         end)
     else
-        -- Uten mulighet til å be om fanene leser vi bare dem spilleren klikker på.
+        -- Without a way to ask for the tabs, we only read the ones the player clicks.
         thisVisit.done = true
     end
 end
 
 local function CloseBank()
     if visit and visit.scanQueued then
-        Scan() -- les det siste før banken er borte
+        Scan() -- read the last before the bank is gone
     end
     bankOpen = false
     visit = nil
@@ -921,15 +926,16 @@ end
 
 local function SlotsChanged()
     if not visit then
-        -- Har spillet sagt fra når banken åpnes før, er den lukket nå. Ellers
-        -- sier ikke spillet fra, og vi vet først nå at banken er åpen.
+        -- If the game has announced when the bank opens before, it is closed
+        -- now. Otherwise the game does not announce it, and we only now know
+        -- that the bank is open.
         if sawOpenEvent then
             return
         end
         OpenBank()
     end
     visit.anyEvent = true
-    -- Fanen spilleren ser på er lastet av spillets eget vindu.
+    -- The tab the player is looking at is loaded by the game's own window.
     local current = CurrentTab()
     if current then
         visit.loaded[current] = true
@@ -938,16 +944,16 @@ local function SlotsChanged()
     QueueScan()
 end
 
--- Visning ---------------------------------------------------------------------
+-- View ------------------------------------------------------------------------
 
 local ROW_HEIGHT = 24
-local FALLBACK_ICON = 134400 -- spørsmålstegn
+local FALLBACK_ICON = 134400 -- question mark
 
 local panel
 local rows = {}
 local RefreshPanel
 
-local filterTab   -- fanenummeret, eller nil for alle
+local filterTab   -- the tab number, or nil for all
 local searchText = ""
 
 local function KnownTabs()
@@ -961,7 +967,7 @@ local function KnownTabs()
     return list
 end
 
--- Fanene ranken din får se. Resten vises ikke i det hele tatt.
+-- The tabs your rank gets to see. The rest are not shown at all.
 local function VisibleTabs()
     local rank = MyRank()
     local list = {}
@@ -977,7 +983,7 @@ local function WhenText(when)
     return date("%d.%m.%Y %H:%M", when)
 end
 
--- Penger som "12g 34s 56c" med spillets farger på bokstavene.
+-- Money as "12g 34s 56c" with the game's colors on the letters.
 local function MoneyText(copper)
     copper = math.floor(copper)
     local gold = math.floor(copper / 10000)
@@ -1039,7 +1045,7 @@ end
 local function OpenTabMenu(owner)
     local tabs = VisibleTabs()
     if not (MenuUtil and MenuUtil.CreateContextMenu) then
-        -- Uten meny: gå til neste fane for hvert klikk, og til slutt alle.
+        -- Without a menu: go to the next tab on each click, and finally all.
         local nextTab = tabs[1]
         for index, tab in ipairs(tabs) do
             if tab == filterTab then
@@ -1065,7 +1071,7 @@ local function OpenTabMenu(owner)
     end)
 end
 
--- Når hver fane sist ble sett, i tooltipen på fanevalget.
+-- When each tab was last seen, in the tooltip on the tab selector.
 local function ShowTabTooltip(owner)
     local tabs = VisibleTabs()
     if #tabs == 0 then
@@ -1107,7 +1113,7 @@ local function GetRow(index)
     row.name:SetJustifyH("LEFT")
     row.name:SetWordWrap(false)
 
-    -- Hold over raden for å se gjenstanden og hvilke faner den ligger i.
+    -- Hover over the row to see the item and which tabs it is in.
     row:SetScript("OnEnter", function(self)
         local entry = self.entry
         if not entry then
@@ -1141,7 +1147,7 @@ RefreshPanel = function()
         return
     end
 
-    -- Fanen som var valgt kan være borte, eller skjult (f.eks. etter ny rank).
+    -- The tab that was selected may be gone, or hidden (e.g. after a new rank).
     if filterTab and not (type(db.tabs[filterTab]) == "table" and RankCanSee(filterTab, MyRank())) then
         filterTab = nil
     end
@@ -1190,7 +1196,7 @@ RefreshPanel = function()
     end
     panel.empty:SetShown(#entries == 0)
 
-    -- Nederst: når det vi viser sist ble sett, og av hvem.
+    -- At the bottom: when what we show was last seen, and by whom.
     if filterTab then
         local data = db.tabs[filterTab]
         panel.footer:SetText(L.GB_SEEN:format(data.by or "?", WhenText(data.time)))
@@ -1226,7 +1232,7 @@ local function CreatePanel(parent)
     f.title = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     f.title:SetPoint("TOP", 0, -12)
 
-    -- Filter: hvilken fane.
+    -- Filter: which tab.
     f.tabChip = DW.CreateChip(f, 230, 26)
     f.tabChip:SetPoint("TOPLEFT", 14, -40)
     f.tabChip:SetScript("OnClick", function(self)
@@ -1240,7 +1246,7 @@ local function CreatePanel(parent)
         GameTooltip:Hide()
     end)
 
-    -- Pengene i banken.
+    -- The money in the bank.
     f.money = f:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
     f.money:SetPoint("TOPRIGHT", -18, -46)
     f.money:SetJustifyH("RIGHT")
@@ -1296,12 +1302,12 @@ local function CreatePanel(parent)
     return f
 end
 
--- Hendelser -------------------------------------------------------------------
+-- Events ----------------------------------------------------------------------
 
 local helloSent = false
 
--- Én gang per økt, litt etter innlogging: si fra hvilke utgaver vi har, så de
--- andre kan sende det som er nyere.
+-- Once per session, a little after login: announce which versions we have,
+-- so the others can send what is newer.
 local function PlanHello()
     if helloSent or not (C_Timer and C_Timer.After) then
         return
@@ -1348,7 +1354,7 @@ frame:SetScript("OnEvent", function(self, event, arg)
             QueueScan()
         end
     elseif event == "GET_ITEM_INFO_RECEIVED" then
-        -- Spillet har lastet en gjenstand vi ventet på navnet til.
+        -- The game has loaded an item whose name we were waiting for.
         if type(arg) == "number" and waitingForName[arg] then
             RememberItem(arg)
             QueueRefresh()
@@ -1356,7 +1362,7 @@ frame:SetScript("OnEvent", function(self, event, arg)
     elseif event == "PLAYER_ENTERING_WORLD" then
         PlanHello()
     elseif event == "PLAYER_GUILD_UPDATE" or event == "GUILD_ROSTER_UPDATE" then
-        QueueRefresh() -- ranken kan være endret, og med den hvilke faner som vises
+        QueueRefresh() -- the rank may have changed, and with it which tabs are shown
     end
 end)
 
@@ -1388,7 +1394,7 @@ DW.OnLanguageChanged(function()
     RefreshPanel()
 end)
 
--- Feilsøking: hva spillet oppgir om guildbanken, og hva vi har lagret.
+-- Debugging: what the game reports about the guild bank, and what we have saved.
 DW.AddDebug("guildbank", function(add)
     local text = DW.DebugText
     add("funksjoner: GetNumGuildBankTabs=" .. text(GetNumGuildBankTabs ~= nil) .. " QueryGuildBankTab=" .. text(QueryGuildBankTab ~= nil)
@@ -1405,7 +1411,7 @@ DW.AddDebug("guildbank", function(add)
         add(("fane %d '%s': %d slags, sett %s av %s, sjekksum %s | synlig for meg: %s"):format(tab, text(data.name), count,
             text(data.time), text(data.by), text(data.digest), text(RankCanSee(tab, rank))))
     end
-    -- Hva vi vet om hvem som ser hva: "fane 3: rank 1 ja, rank 4 nei".
+    -- What we know about who sees what: "fane 3: rank 1 ja, rank 4 nei".
     for tab = 1, MAX_TABS do
         local byRank = db.access[tab]
         if type(byRank) == "table" then
@@ -1423,7 +1429,7 @@ DW.AddDebug("guildbank", function(add)
     add("penger: " .. (type(money) == "table" and (text(money.amount) .. " sett " .. text(money.time) .. " av " .. text(money.by)) or "ukjent"))
 end)
 
--- Modul --------------------------------------------------------------------------
+-- Module -------------------------------------------------------------------------
 
 DW.RegisterModule({
     id = MODULE_ID,
@@ -1438,7 +1444,7 @@ DW.RegisterModule({
         if type(saved.items) ~= "table" then
             saved.items = {}
         end
-        -- Rydd bort noe som ikke ser riktig ut (f.eks. fra en ødelagt fil).
+        -- Clean up anything that does not look right (e.g. from a corrupted file).
         for tab, data in pairs(saved.tabs) do
             if type(tab) ~= "number" or type(data) ~= "table" or type(data.items) ~= "table" or type(data.time) ~= "number" then
                 saved.tabs[tab] = nil

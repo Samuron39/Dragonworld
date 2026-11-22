@@ -1,43 +1,44 @@
 -- Dragonworld - Forslag
--- Et sted der alle i guilden kan foreslå nye ting i addonen, eller
--- forbedringer av det som finnes, og si seg enige i forslagene til andre.
+-- A place where everyone in the guild can suggest new things for the addon, or
+-- improvements to what exists, and agree with other people's suggestions.
 --
--- Slik deles forslagene (samme måte som Guild-events):
---   * Små meldinger på guild-kanalen som bare andre addoner ser.
---   * Hvert forslag og hver "enig" har et tidsstempel fra serverens klokke.
---     Kommer det to versjoner av det samme, vinner den nyeste.
---   * Når du logger inn, sender addonen en kort liste over forslagene du har.
---     De som er pålogget sender det du mangler, og ber om det de mangler.
---   * Beskrivelsen kan være lengre enn én melding tillater, og sendes da i biter.
+-- This is how the suggestions are shared (same way as guild events):
+--   * Small messages on the guild channel that only other addons see.
+--   * Each suggestion and each "enig" (agree) has a timestamp from the
+--     server's clock. If two versions of the same thing arrive, the newest wins.
+--   * When you log in, the addon sends a short list of the suggestions you have.
+--     Those who are online send what you are missing, and ask for what they miss.
+--   * The description can be longer than one message allows, and is then sent in pieces.
 --
--- Bare den som skrev et forslag kan slette det: knappen vises bare for dem,
--- og en sletting tas bare imot når den kommer direkte fra den som skrev
--- forslaget (ikke videresendt av andre; den sprer seg når forfatteren er
--- pålogget). Et slettet forslag huskes en måned, og glemmes så.
+-- Only the one who wrote a suggestion can delete it: the button is only shown
+-- to them, and a deletion is only accepted when it comes directly from the
+-- one who wrote the suggestion (not forwarded by others; it spreads when the
+-- author is online). A deleted suggestion is remembered for a month, and then
+-- forgotten.
 --
--- Admin (Admin.lua, innlogging med kode) kan merke et forslag som utført eller
--- avvist. Da flyttes det til arkivet, med status, hvem og når; admin kan også
--- åpne det igjen. Statusen har sitt eget tidsstempel, og nyeste vinner. De
--- andre i guilden kan ikke sjekke at avsenderen virkelig er admin.
+-- Admin (Admin.lua, login with a code) can mark a suggestion as done or
+-- rejected. It is then moved to the archive, with status, who and when; admin
+-- can also reopen it. The status has its own timestamp, and the newest wins.
+-- The others in the guild cannot check that the sender really is admin.
 --
--- Det er ingen ekte tilgangskontroll: alle i guilden kan i prinsippet sende
--- hva som helst.
+-- There is no real access control: everyone in the guild can in principle send
+-- anything.
 --
--- Meldingene (navn DragonworldSug, felter skilt med tabulator):
---   F id endret slettet type modul deler overskrift   et forslag
---   N id endret nr tekst                              en bit av beskrivelsen
---   B id spiller,enig,tid ...                         hvem som er enige
---   S id status tid hvem                              status: D utført, R avvist, O åpen igjen
---   H id,endret,antall,nyeste ...   og så   Q         hva jeg har ("nyeste" tar med statusen)
---   G id ...                                          send meg disse
+-- The messages (name DragonworldSug, fields separated by tab):
+--   F id changed deleted type module parts title      a suggestion
+--   N id changed no text                              a piece of the description
+--   B id player,agree,time ...                        who agrees
+--   S id status time who                              status: D done, R rejected, O open again
+--   H id,changed,count,newest ...   and then   Q      what I have ("newest" includes the status)
+--   G id ...                                          send me these
 --
--- All tekst ligger i Locales.lua (navnene som begynner med SUG_).
+-- All text is in Locales.lua (the names that start with SUG_).
 
 local ADDON_NAME, DW = ...
 local L = DW.L
 
 local MODULE_ID = "forslag"
-local PREFIX = "DragonworldSug" -- navnet på meldingene; maks 16 tegn
+local PREFIX = "DragonworldSug" -- the name of the messages; max 16 characters
 local SEP = "\t"
 
 local DAY = 86400
@@ -48,29 +49,29 @@ local MAX_NOTE_LETTERS = 300
 local MAX_NOTE_BYTES = 600
 local NOTE_CHUNK_BYTES = 180
 local MAX_PARTS = 5
-local MAX_MESSAGE_BYTES = 250 -- spillets grense er 255
-local HELLO_DELAY = 12        -- etter innlogging
-local NOTE_WAIT = 20          -- så lenge vi venter på resten av en beskrivelse
+local MAX_MESSAGE_BYTES = 250 -- the game's limit is 255
+local HELLO_DELAY = 12        -- after login
+local NOTE_WAIT = 20          -- how long we wait for the rest of a description
 
-local NEW, IMPROVE = "N", "I" -- typene: ny ting, forbedring av noe som finnes
-local DONE, REJECTED, OPEN = "D", "R", "O" -- statusene admin kan sette
+local NEW, IMPROVE = "N", "I" -- the types: new thing, improvement of something that exists
+local DONE, REJECTED, OPEN = "D", "R", "O" -- the statuses admin can set
 
--- Lagrede data. Settes i OnLoad nederst.
+-- Saved data. Set in OnLoad at the bottom.
 --   db.items[id] = {
---       id, author ("Navn-Realm"), kind = "N" eller "I",
---       module = id-en til modulen forslaget gjelder, eller "" for hele addonen,
+--       id, author ("Name-Realm"), kind = "N" or "I",
+--       module = the id of the module the suggestion is about, or "" for the whole addon,
 --       title, note,
---       updated  = når det sist ble endret (nyeste versjon vinner),
---       deleted  = true hvis det er slettet,
---       votes    = { ["Navn-Realm"] = { v = 1 (enig) eller 0 (angret), updated } },
---       noteParts = bitene av beskrivelsen mens de er på vei,
---       status   = "D" (utført), "R" (avvist) eller "O"/nil (åpent),
---       statusAt = når statusen sist ble satt, statusBy = navnet på admin,
+--       updated  = when it was last changed (newest version wins),
+--       deleted  = true if it is deleted,
+--       votes    = { ["Name-Realm"] = { v = 1 (agree) or 0 (withdrawn), updated } },
+--       noteParts = the pieces of the description while they are on their way,
+--       status   = "D" (done), "R" (rejected) or "O"/nil (open),
+--       statusAt = when the status was last set, statusBy = the name of the admin,
 --   }
---   db.seq = teller som gjør hver id unik
+--   db.seq = counter that makes each id unique
 local db = { items = {} }
 
--- Småting -----------------------------------------------------------------------
+-- Small things ------------------------------------------------------------------
 
 local function Now()
     local now = GetServerTime and GetServerTime()
@@ -92,7 +93,7 @@ local function ShortName(key)
     return (type(key) == "string" and key:match("^([^-]+)")) or tostring(key)
 end
 
--- Kutter en tekst til et antall byte uten å dele et tegn på midten.
+-- Cuts a text to a number of bytes without splitting a character in the middle.
 local function Truncate(text, maxBytes)
     local out = ""
     for char in text:gmatch("[%z\1-\127\194-\244][\128-\191]*") do
@@ -104,8 +105,8 @@ local function Truncate(text, maxBytes)
     return out
 end
 
--- Rydder tekst: fjerner linjeskift, tabulator og tegnet | (som spillet bruker
--- til farger og lenker), og kutter lengden.
+-- Cleans text: removes line breaks, tabs and the character | (which the game
+-- uses for colors and links), and cuts the length.
 local function Clean(text, maxBytes)
     text = tostring(text or "")
     text = text:gsub("[%c|]", " ")
@@ -114,7 +115,7 @@ local function Clean(text, maxBytes)
     return Truncate(text, maxBytes)
 end
 
--- Deler en tekst i biter på høyst maxBytes, uten å dele et tegn.
+-- Splits a text into pieces of at most maxBytes, without splitting a character.
 local function Chunks(text, maxBytes)
     local list, current = {}, ""
     for char in text:gmatch("[%z\1-\127\194-\244][\128-\191]*") do
@@ -147,8 +148,8 @@ local function SortedKeys(tbl)
     return keys
 end
 
--- En id ser slik ut: "Navn-Realm:tidspunkt:teller". Den som skrev forslaget
--- står først, og tidspunktet er når det ble skrevet.
+-- An id looks like this: "Name-Realm:time:counter". The one who wrote the
+-- suggestion comes first, and the time is when it was written.
 local function AuthorOf(id)
     return id:match("^(.+):%d+:%d+$")
 end
@@ -157,15 +158,16 @@ local function CreatedOf(id)
     return tonumber(id:match(":(%d+):%d+$")) or 0
 end
 
--- Skal forslaget fortsatt huskes og deles?
+-- Should the suggestion still be remembered and shared?
 local function Syncable(item)
     return not item.stub and (not item.deleted or item.updated > Now() - KEEP_DELETED)
 end
 
--- Antall "enig"-oppføringer og tidsstempelet på den nyeste av dem og
--- statusen. Brukes til å oppdage at to medlemmer har ulike svar eller ulik
--- status på samme forslag. (Statusen er tatt med i "nyeste", så eldre
--- versjoner av addonen, som ikke kjenner den, forstår listen likt.)
+-- The number of "enig" (agree) entries and the timestamp of the newest of
+-- them and of the status. Used to detect that two members have different
+-- votes or a different status on the same suggestion. (The status is included
+-- in "newest", so older versions of the addon, which do not know it,
+-- read the list the same way.)
 local function Digest(item)
     local count, newest = 0, tonumber(item.statusAt) or 0
     for _, vote in pairs(item.votes) do
@@ -177,12 +179,12 @@ local function Digest(item)
     return count, newest
 end
 
--- Er forslaget ferdigbehandlet (i arkivet)?
+-- Is the suggestion fully handled (in the archive)?
 local function IsArchived(item)
     return item.status == DONE or item.status == REJECTED
 end
 
--- Hvor mange som er enige, og hvem (sortert).
+-- How many agree, and who (sorted).
 local function Agreeing(item)
     local names = {}
     for player, vote in pairs(item.votes) do
@@ -202,7 +204,7 @@ local function PurgeExpired()
     end
 end
 
--- Navnet på modulen et forslag gjelder, på valgt språk.
+-- The name of the module a suggestion is about, in the chosen language.
 local function ModuleName(id)
     if id == nil or id == "" then
         return L.SUG_WHOLE_ADDON
@@ -222,8 +224,8 @@ end
 
 local Send = DW.CreateSender(PREFIX)
 
--- Versjoner vi har sett sendt (av oss eller andre) siden noen sist ba om dem.
--- Brukes til å la være å sende det en annen allerede har sendt.
+-- Versions we have seen sent (by us or others) since someone last asked for them.
+-- Used to avoid sending what someone else has already sent.
 local seen = { items = {}, votes = {}, status = {} }
 
 local function MarkSeenItem(id, updated)
@@ -268,8 +270,8 @@ local function SendItem(item)
     MarkSeenItem(item.id, item.updated)
 end
 
--- Sender hvem som er enige, flere per melding så langt det er plass.
--- players er hvilke som skal med ({ [nøkkel] = true }), eller nil for alle.
+-- Sends who agrees, several per message as far as there is room.
+-- players is which ones to include ({ [key] = true }), or nil for all.
 local function SendVotes(item, players)
     local parts, size = { "B", item.id }, 2 + #item.id
     local function Flush()
@@ -293,7 +295,7 @@ local function SendVotes(item, players)
     Flush()
 end
 
--- Sender statusen (utført, avvist, åpen igjen), hvis forslaget har fått en.
+-- Sends the status (done, rejected, open again), if the suggestion has got one.
 local function SendStatus(item)
     if not item.statusAt then
         return
@@ -302,7 +304,7 @@ local function SendStatus(item)
     MarkSeenStatus(item.id, item.statusAt)
 end
 
--- Sender en liste med tekstbiter fordelt på så få meldinger som mulig.
+-- Sends a list of text pieces spread over as few messages as possible.
 local function SendList(kind, entries)
     local parts, size = { kind }, #kind
     for _, entry in ipairs(entries) do
@@ -318,13 +320,13 @@ local function SendList(kind, entries)
     end
 end
 
--- Utveksling -------------------------------------------------------------------
+-- Exchange ---------------------------------------------------------------------
 
 local QueueRefresh
 
-local hello = {}  -- [avsender] = { [id] = true } mens vi mottar listen deres
-local offers = {} -- [id] = { item = true/false, votes = true/false }: det vi skal sende
-local wanted = {} -- [id] = true: det vi skal be om
+local hello = {}  -- [sender] = { [id] = true } while we receive their list
+local offers = {} -- [id] = { item = true/false, votes = true/false }: what we will send
+local wanted = {} -- [id] = true: what we will ask for
 local exchangeScheduled = false
 
 local function Offer(id, withItem, withVotes)
@@ -332,7 +334,7 @@ local function Offer(id, withItem, withVotes)
     if not offer then
         offer = {}
         offers[id] = offer
-        -- Fra nå av teller vi hva andre rekker å sende før oss.
+        -- From now on we count what others manage to send before us.
         seen.items[id] = nil
         seen.votes[id] = nil
         seen.status[id] = nil
@@ -384,12 +386,12 @@ local function ScheduleExchange()
         return
     end
     exchangeScheduled = true
-    -- Tilfeldig ventetid, så ikke alle som er pålogget svarer samtidig.
+    -- Random wait, so not everyone who is online answers at the same time.
     C_Timer.After(1 + math.random() * 3, RunExchange)
 end
 
--- Forteller de andre hva vi har, så de kan sende det vi mangler. Ber også om
--- forslag der vi bare fikk med oss deler av beskrivelsen.
+-- Tells the others what we have, so they can send what we are missing. Also
+-- asks for suggestions where we only received parts of the description.
 local function SayHello()
     PurgeExpired()
     local entries, broken = {}, {}
@@ -407,9 +409,9 @@ local function SayHello()
     SendList("G", broken)
 end
 
--- Mottak ----------------------------------------------------------------------
+-- Receiving -------------------------------------------------------------------
 
--- Tar imot et forslag. Returnerer true hvis noe ble endret.
+-- Receives a suggestion. Returns true if something changed.
 local function ApplyItem(id, updated, deleted, kind, module, parts, title)
     local author = AuthorOf(id)
     if not author or #id > 80 or updated > Now() + DAY or (kind ~= NEW and kind ~= IMPROVE) then
@@ -423,7 +425,7 @@ local function ApplyItem(id, updated, deleted, kind, module, parts, title)
     end
 
     local item = db.items[id]
-    -- Samme versjon tas imot på nytt bare hvis vi manglet deler av beskrivelsen.
+    -- The same version is accepted again only if we were missing parts of the description.
     if item and not item.stub and (updated < item.updated or (updated == item.updated and not item.noteParts)) then
         return false
     end
@@ -443,14 +445,14 @@ local function ApplyItem(id, updated, deleted, kind, module, parts, title)
     return true
 end
 
--- Tar imot en bit av beskrivelsen. Returnerer true når hele er kommet.
+-- Receives a piece of the description. Returns true when all of it has arrived.
 local function ApplyNote(id, updated, index, text)
     local item = db.items[id]
     local noteParts = item and item.noteParts
     if not noteParts or item.updated ~= updated or index < 1 or index > noteParts.count or noteParts[index] then
         return false
     end
-    -- Ingen trimming her: et mellomrom i skjøten mellom to biter skal bli stående.
+    -- No trimming here: a space at the joint between two pieces must stay.
     noteParts[index] = Truncate((text:gsub("[%c|]", " ")), NOTE_CHUNK_BYTES + 20)
     for part = 1, noteParts.count do
         if not noteParts[part] then
@@ -462,14 +464,14 @@ local function ApplyNote(id, updated, index, text)
     return true
 end
 
--- Tar imot en "enig" (v = 1) eller en som er trukket tilbake (v = 0).
+-- Receives an "enig" (agree, v = 1) or one that has been withdrawn (v = 0).
 local function ApplyVote(id, player, v, updated)
     if (v ~= 0 and v ~= 1) or updated > Now() + DAY or #player > 80 then
         return false
     end
     local item = db.items[id]
     if not item then
-        -- Svar på et forslag vi ikke kjenner. Ta vare på det, og be om forslaget.
+        -- A vote on a suggestion we do not know. Keep it, and ask for the suggestion.
         item = { id = id, stub = true, updated = 0, votes = {} }
         db.items[id] = item
         wanted[id] = true
@@ -482,14 +484,14 @@ local function ApplyVote(id, player, v, updated)
     return true
 end
 
--- Tar imot en status fra admin. Returnerer true hvis noe ble endret.
+-- Receives a status from admin. Returns true if something changed.
 local function ApplyStatus(id, status, statusAt, by)
     if (status ~= DONE and status ~= REJECTED and status ~= OPEN) or statusAt > Now() + DAY or #by > 40 or #id > 80 then
         return false
     end
     local item = db.items[id]
     if not item then
-        -- Status på et forslag vi ikke kjenner. Ta vare på den, og be om forslaget.
+        -- A status on a suggestion we do not know. Keep it, and ask for the suggestion.
         item = { id = id, stub = true, updated = 0, votes = {} }
         db.items[id] = item
         wanted[id] = true
@@ -503,7 +505,7 @@ local function ApplyStatus(id, status, statusAt, by)
     return true
 end
 
--- Kommer meldingen fra den som skrev forslaget?
+-- Does the message come from the one who wrote the suggestion?
 local function FromAuthor(id, sender)
     local author = AuthorOf(id)
     return author ~= nil and DW.NameKey(author) == DW.NameKey(sender)
@@ -518,13 +520,13 @@ local function OnMessage(text, sender)
         local id, updated, parts = fields[2], tonumber(fields[3]), tonumber(fields[7])
         local deleted = fields[4] == "1"
         if id ~= "" and updated and parts then
-            -- Sendt av noen, så vi trenger ikke sende den samme versjonen.
+            -- Sent by someone, so we do not need to send the same version.
             MarkSeenItem(id, updated)
         end
-        -- En sletting tas bare imot fra den som skrev forslaget.
+        -- A deletion is only accepted from the one who wrote the suggestion.
         if id ~= "" and updated and parts and (not deleted or FromAuthor(id, sender)) then
             changed = ApplyItem(id, updated, deleted, fields[5], fields[6], parts, fields[8])
-            -- Kommer ikke resten av beskrivelsen, ber vi om forslaget på nytt.
+            -- If the rest of the description does not arrive, we ask for the suggestion again.
             local item = db.items[id]
             if changed and item.noteParts then
                 C_Timer.After(NOTE_WAIT, function()
@@ -565,7 +567,7 @@ local function OnMessage(text, sender)
         end
 
     elseif kind == "H" then
-        -- Listen over hva avsenderen har. Sammenlign med vårt eget.
+        -- The list of what the sender has. Compare with our own.
         local listed = hello[sender]
         if not listed then
             listed = {}
@@ -597,7 +599,7 @@ local function OnMessage(text, sender)
         end
 
     elseif kind == "Q" then
-        -- Listen er ferdig. Alt vi har som ikke sto på den, mangler avsenderen.
+        -- The list is complete. Everything we have that was not on it, the sender is missing.
         local listed = hello[sender] or {}
         hello[sender] = nil
         for id, item in pairs(db.items) do
@@ -607,7 +609,7 @@ local function OnMessage(text, sender)
         end
 
     elseif kind == "G" then
-        -- Noen ber om bestemte forslag.
+        -- Someone asks for specific suggestions.
         for index = 2, #fields do
             local item = db.items[fields[index]]
             if item and Syncable(item) then
@@ -626,16 +628,16 @@ end
 
 DW.OnGuildMessage(PREFIX, OnMessage)
 
--- Handlinger ------------------------------------------------------------------
+-- Actions ---------------------------------------------------------------------
 
-local selectedID -- forslaget som vises til høyre
+local selectedID -- the suggestion shown on the right
 local formOpen = false
 local formKind = NEW
 local formModule = ""
-local filterKind -- nil for alle, ellers NEW eller IMPROVE
-local view = "active" -- "active" (åpne forslag) eller "archive" (utført og avvist)
+local filterKind -- nil for all, otherwise NEW or IMPROVE
+local view = "active" -- "active" (open suggestions) or "archive" (done and rejected)
 
--- Lager et nytt forslag, sier seg enig i det selv, og sender det til guilden.
+-- Creates a new suggestion, agrees with it itself, and sends it to the guild.
 local function CreateSuggestion(kind, module, title, note)
     local me = MyKey()
     if not me then
@@ -669,8 +671,8 @@ local function DeleteSuggestion(item)
     SendItem(item)
 end
 
--- Admin: merker forslaget som utført (DONE), avvist (REJECTED) eller åpent
--- igjen (OPEN), og sender det til guilden.
+-- Admin: marks the suggestion as done (DONE), rejected (REJECTED) or open
+-- again (OPEN), and sends it to the guild.
 local function SetStatus(item, status)
     if not DW.IsAdmin() then
         return
@@ -682,7 +684,7 @@ local function SetStatus(item, status)
     SendStatus(item)
 end
 
--- Sier seg enig, eller trekker det tilbake.
+-- Agrees, or withdraws the agreement.
 local function ToggleVote(item)
     local me = MyKey()
     if not me then
@@ -695,8 +697,8 @@ local function ToggleVote(item)
     SendVotes(item, { [me] = true })
 end
 
--- Forslagene som vises. Åpne: de flest er enige i øverst, deretter de nyeste.
--- Arkivet: sist behandlet øverst.
+-- The suggestions that are shown. Open: the ones most people agree with on top, then the newest.
+-- Archive: last handled on top.
 local function VisibleItems(whichView)
     local archive = (whichView or view) == "archive"
     local list = {}
@@ -726,7 +728,7 @@ local function VisibleItems(whichView)
     return list
 end
 
--- Visning ---------------------------------------------------------------------
+-- Display ---------------------------------------------------------------------
 
 local LIST_WIDTH = 250
 local ROW_HEIGHT = 42
@@ -787,7 +789,7 @@ local function RefreshDetail(item)
     d.votes:SetText(count > 0 and L.SUG_AGREE_NAMES:format(count, table.concat(names, ", ")) or L.SUG_AGREE_NONE)
     d.note:SetText(item.noteParts and L.SUG_NOTE_COMING or (item.note ~= "" and item.note or L.SUG_NO_NOTE))
 
-    -- Status (i arkivet): utført i grønt, avvist i rødt, med hvem og når.
+    -- Status (in the archive): done in green, rejected in red, with who and when.
     local archived = IsArchived(item)
     if archived then
         d.status:SetText(L.SUG_STATUS_LINE:format(item.status == DONE and L.SUG_STATUS_DONE or L.SUG_STATUS_REJECTED,
@@ -809,7 +811,7 @@ local function RefreshDetail(item)
     d.delete.item = item
     d.delete:SetShown(item.author == me)
 
-    -- Admin: merk som utført eller avvis; i arkivet: åpne igjen.
+    -- Admin: mark as done or reject; in the archive: reopen.
     local admin = DW.IsAdmin()
     d.done.item, d.reject.item, d.reopen.item = item, item, item
     d.done.label:SetText(L.SUG_MARK_DONE)
@@ -848,7 +850,7 @@ RefreshPanel = function()
         local count = Agreeing(item)
         local kindText = item.kind == IMPROVE and ModuleName(item.module) or L.SUG_KIND_NEW
         if IsArchived(item) then
-            -- I arkivet: statusen først, i farge.
+            -- In the archive: the status first, in color.
             local status = item.status == DONE and ("|cff66e666" .. L.SUG_STATUS_DONE .. "|r") or ("|cffff6659" .. L.SUG_STATUS_REJECTED .. "|r")
             kindText = status .. "  -  " .. kindText
         end
@@ -864,7 +866,7 @@ RefreshPanel = function()
     end
     panel.content:SetHeight(math.max(1, #items * ROW_HEIGHT))
 
-    -- Til høyre: skjemaet, det valgte forslaget, eller en forklaring.
+    -- On the right: the form, the selected suggestion, or an explanation.
     panel.form:SetShown(formOpen)
     panel.detail:SetShown(not formOpen and selected ~= nil)
     panel.empty:SetShown(not formOpen and selected == nil)
@@ -914,7 +916,7 @@ local function OpenModuleMenu(owner)
         RefreshPanel()
     end
     if not (MenuUtil and MenuUtil.CreateContextMenu) then
-        -- Uten meny: gå til neste for hvert klikk.
+        -- Without a menu: go to the next one on each click.
         local nextID = ids[1]
         for index, id in ipairs(ids) do
             if id == formModule then
@@ -978,7 +980,7 @@ local function CreatePanel(parent)
     f.title = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     f.title:SetPoint("TOP", 0, -12)
 
-    -- Filter: alle, nye ting, forbedringer.
+    -- Filter: all, new things, improvements.
     f.filters = {}
     for index, name in ipairs({ "all", "new", "improve" }) do
         local chip = DW.CreateChip(f, 120, 26)
@@ -991,7 +993,7 @@ local function CreatePanel(parent)
         f.filters[name] = chip
     end
 
-    -- Åpne forslag, eller arkivet med de utførte og avviste.
+    -- Open suggestions, or the archive with the done and rejected ones.
     f.views = {}
     for index, name in ipairs({ "active", "archive" }) do
         local chip = DW.CreateChip(f, 100, 26)
@@ -1005,7 +1007,7 @@ local function CreatePanel(parent)
         f.views[name] = chip
     end
 
-    -- Admin: logg inn med koden (Admin.lua), eller ut igjen.
+    -- Admin: log in with the code (Admin.lua), or out again.
     f.admin = DW.CreateChip(f, 110, 22)
     f.admin:SetPoint("TOPRIGHT", -10, -10)
     f.admin.label:SetJustifyH("CENTER")
@@ -1017,7 +1019,7 @@ local function CreatePanel(parent)
         end
     end)
 
-    -- Listen til venstre.
+    -- The list on the left.
     local scroll = CreateFrame("ScrollFrame", "DragonworldForslagScroll", f, "ScrollFrameTemplate")
     scroll:SetPoint("TOPLEFT", 10, -76)
     scroll:SetSize(LIST_WIDTH, bodyHeight - 50)
@@ -1041,7 +1043,7 @@ local function CreatePanel(parent)
     f.empty:SetWidth(rightWidth)
     f.empty:SetJustifyH("LEFT")
 
-    -- Det valgte forslaget.
+    -- The selected suggestion.
     local d = CreateFrame("Frame", nil, f)
     d:SetPoint("TOPLEFT", rightX, -76)
     d:SetSize(rightWidth, bodyHeight - 16)
@@ -1076,8 +1078,8 @@ local function CreatePanel(parent)
         end
     end)
 
-    -- Slett: bare for den som skrev forslaget. Ingen spørsmål først, som
-    -- ellers i addonen.
+    -- Delete: only for the one who wrote the suggestion. No question first, as
+    -- elsewhere in the addon.
     d.delete = DW.CreateButton(d, 100, 28, "red")
     d.delete:SetPoint("BOTTOMRIGHT", 0, 0)
     d.delete:SetScript("OnClick", function(self)
@@ -1088,13 +1090,13 @@ local function CreatePanel(parent)
         end
     end)
 
-    -- Statusen i arkivet: "Utført av X, dato".
+    -- The status in the archive: "Done by X, date".
     d.status = d:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     d.status:SetPoint("BOTTOMLEFT", 0, 70)
     d.status:SetWidth(rightWidth)
     d.status:SetJustifyH("LEFT")
 
-    -- Admin: utført eller avvist (flyttes til arkivet), eller åpne igjen.
+    -- Admin: done or rejected (moved to the archive), or reopen.
     local function StatusButton(button, status)
         button:SetScript("OnClick", function(self)
             if self.item then
@@ -1111,7 +1113,7 @@ local function CreatePanel(parent)
     d.reopen = StatusButton(DW.CreateButton(d, 170, 26, "gold"), OPEN)
     d.reopen:SetPoint("BOTTOMLEFT", 0, 34)
 
-    -- Skjemaet for et nytt forslag.
+    -- The form for a new suggestion.
     local form = CreateFrame("Frame", nil, f)
     form:SetPoint("TOPLEFT", rightX, -76)
     form:SetSize(rightWidth, bodyHeight - 16)
@@ -1155,7 +1157,7 @@ local function CreatePanel(parent)
     form.noteLabel = form:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     form.noteLabel:SetPoint("TOPLEFT", 0, -176)
 
-    -- Beskrivelsen går over flere linjer, i en egen ramme.
+    -- The description spans several lines, in a frame of its own.
     local holder = CreateFrame("Frame", nil, form, "BackdropTemplate")
     holder:SetPoint("TOPLEFT", 0, -192)
     holder:SetSize(rightWidth, 84)
@@ -1201,11 +1203,11 @@ local function CreatePanel(parent)
     return f
 end
 
--- Hendelser -------------------------------------------------------------------
+-- Events ----------------------------------------------------------------------
 
 local helloSent = false
 
--- Én gang per økt, litt etter innlogging: si fra hva vi har.
+-- Once per session, a little after login: tell what we have.
 local function PlanHello()
     if helloSent or not (C_Timer and C_Timer.After) then
         return
@@ -1236,12 +1238,12 @@ DW.OnLanguageChanged(function()
     RefreshPanel()
 end)
 
--- Logget inn eller ut som admin: vis eller skjul knappene.
+-- Logged in or out as admin: show or hide the buttons.
 DW.OnAdminChanged(function()
     RefreshPanel()
 end)
 
--- Modul --------------------------------------------------------------------------
+-- Module -------------------------------------------------------------------------
 
 DW.RegisterModule({
     id = MODULE_ID,
@@ -1253,7 +1255,7 @@ DW.RegisterModule({
         if type(saved.items) ~= "table" then
             saved.items = {}
         end
-        -- Rydd bort noe som ikke ser riktig ut (f.eks. fra en ødelagt fil).
+        -- Clean out anything that does not look right (e.g. from a corrupted file).
         for id, item in pairs(saved.items) do
             if type(id) ~= "string" or type(item) ~= "table" or type(item.votes) ~= "table" or type(item.updated) ~= "number" then
                 saved.items[id] = nil

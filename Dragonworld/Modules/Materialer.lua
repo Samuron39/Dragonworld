@@ -1,29 +1,29 @@
 -- Dragonworld - Materialer
--- Holder oversikt over håndverksmaterialer på alle karakterene dine, både i
--- baggene og i banken, og viser dem samlet i hovedvinduet. Du kan filtrere på
--- hvor de ligger (alle, i bagger, i bank) og på karakter.
+-- Keeps track of crafting materials on all your characters, both in the
+-- bags and in the bank, and shows them together in the main window. You can
+-- filter on where they are (all, in bags, in bank) and by character.
 --
--- Slik samles tallene inn:
---   * Baggene leses når du logger inn og hver gang innholdet endrer seg.
---   * Banken kan bare leses mens den er åpen. Den leses da, og tallene huskes
---     til neste gang du åpner den.
---   * Alt lagres per karakter, felles for hele kontoen, så du ser de andre
---     karakterene dine også. En karakter kommer først med etter at du har vært
---     logget inn på den med addonen (og åpnet banken der).
+-- How the numbers are collected:
+--   * The bags are read when you log in and every time their contents change.
+--   * The bank can only be read while it is open. It is read then, and the
+--     numbers are remembered until the next time you open it.
+--   * Everything is saved per character, shared across the account, so you
+--     see your other characters too. A character only shows up after you have
+--     logged in on it with the addon (and opened the bank there).
 --
--- Som "materiale" regnes gjenstander spillet selv kaller Trade Goods, ting det
--- har merket som håndverksmateriale, og ting en oppskrift bruker (se under).
+-- Items count as "materials" if the game itself calls them Trade Goods, if it
+-- has marked them as crafting materials, or if a recipe uses them (see below).
 --
--- Tooltipen på et materiale sier at det er et håndverksmateriale, og hvilke
--- professions som bruker det:
---   * Hver gang et håndverksvindu er åpent (ditt eget, eller en annens
---     profession du har åpnet fra Medlemmer), leser addonen oppskriftene i det
---     og husker hvilke materialer de bruker. Det huskes for hele kontoen.
---   * For materialer ingen åpnet profession har brukt ennå, gjetter vi ut fra
---     typen spillet gir dem (Cloth, Herb, Metal & Stone ...), og skriver
---     "som regel" foran.
+-- The tooltip on a material says that it is a crafting material, and which
+-- professions use it:
+--   * Every time a crafting window is open (your own, or someone else's
+--     profession you opened from the Roster tab), the addon reads the recipes in it
+--     and remembers which materials they use. This is remembered account-wide.
+--   * For materials no opened profession has used yet, we guess from the
+--     type the game gives them (Cloth, Herb, Metal & Stone ...), and put
+--     "usually" in front.
 --
--- All tekst ligger i Locales.lua (navnene som begynner med MAT_).
+-- All text is in Locales.lua (the names starting with MAT_).
 
 local ADDON_NAME, DW = ...
 local L = DW.L
@@ -34,31 +34,31 @@ local ITEM_CLASS_TRADEGOODS = (Enum and Enum.ItemClass and Enum.ItemClass.Tradeg
 local LAST_BAG = NUM_TOTAL_EQUIPPED_BAG_SLOTS or NUM_BAG_SLOTS or 4
 local GetItemInfo = (C_Item and C_Item.GetItemInfo) or GetItemInfo
 
--- Lagrede data. Settes i OnLoad nederst.
---   db.characters["Navn-Realm"] = {
+-- Saved data. Set in OnLoad at the bottom.
+--   db.characters["Name-Realm"] = {
 --       name, realm, class,
---       bags = { [itemID] = antall }, bagsTime = tidspunkt,
---       bank = { [itemID] = antall }, bankTime = tidspunkt eller nil,
+--       bags = { [itemID] = count }, bagsTime = time,
+--       bank = { [itemID] = count }, bankTime = time or nil,
 --   }
---   db.items[itemID] = { name, quality }   navn vi har sett, så gjenstander på
---                                          andre karakterer kan vises med navn
---   db.reagents[itemID] = { [profession] = true }   hvilke professions som
---                                          bruker materialet, lest fra oppskrifter
+--   db.items[itemID] = { name, quality }   names we have seen, so items on
+--                                          other characters can be shown by name
+--   db.reagents[itemID] = { [profession] = true }   which professions
+--                                          use the material, read from recipes
 local db = { characters = {}, items = {}, reagents = {} }
 
--- Hva materialene brukes til ------------------------------------------------------
+-- What the materials are used for -------------------------------------------------
 
--- Spillets nummer på hver profession, og det engelske navnet hvis spillet ikke
--- kan gi oss navnet selv.
+-- The game's number for each profession, and the English name if the game
+-- can't give us the name itself.
 local PROFESSION_NAMES = {
     [129] = "First Aid", [164] = "Blacksmithing", [165] = "Leatherworking", [171] = "Alchemy",
     [185] = "Cooking", [186] = "Mining", [197] = "Tailoring", [202] = "Engineering",
     [333] = "Enchanting", [755] = "Jewelcrafting", [773] = "Inscription",
 }
 
--- Gjetningen ut fra typen (undertypen av Trade Goods): hvilke professions som
--- som regel bruker slike materialer. Typer som brukes av nesten alle
--- (Elemental, Other) er ikke med.
+-- The guess from the type (the subtype of Trade Goods): which professions
+-- usually use such materials. Types used by almost everyone
+-- (Elemental, Other) are not included.
 local USUAL_PROFESSIONS = {
     [1] = { 202 },           -- Parts
     [4] = { 755 },           -- Jewelcrafting
@@ -81,14 +81,14 @@ local function ProfessionName(line)
     return PROFESSION_NAMES[line]
 end
 
--- Innsamling ------------------------------------------------------------------
+-- Collecting ------------------------------------------------------------------
 
 local BAG_CONTAINERS = {}
 for bag = 0, LAST_BAG do
     BAG_CONTAINERS[#BAG_CONTAINERS + 1] = bag
 end
 
--- Bankens plasser. I Forever er det 6-14: selve banken og bagene i den.
+-- The bank's slots. In Forever it is 6-14: the bank itself and the bags in it.
 local function BankContainers()
     local list = {}
     if Enum and Enum.BagIndex then
@@ -107,11 +107,11 @@ local function BankContainers()
     return list
 end
 
-local materialCache = {} -- [itemID] = true/false, bare når vi vet sikkert
+local materialCache = {} -- [itemID] = true/false, only when we know for sure
 
 local function IsMaterial(itemID)
     if type(db.reagents[itemID]) == "table" and next(db.reagents[itemID]) then
-        return true -- en oppskrift bruker den
+        return true -- a recipe uses it
     end
     local known = materialCache[itemID]
     if known ~= nil then
@@ -124,8 +124,8 @@ local function IsMaterial(itemID)
         return true
     end
 
-    -- Resten krever at spillet har lastet gjenstanden. Har det ikke det ennå,
-    -- sier vi nei nå uten å huske svaret, og prøver igjen ved neste lesing.
+    -- The rest requires the game to have loaded the item. If it hasn't yet,
+    -- we say no for now without remembering the answer, and try again at the next read.
     local name = GetItemInfo(itemID)
     if type(name) ~= "string" then
         return false
@@ -135,10 +135,10 @@ local function IsMaterial(itemID)
     return materialCache[itemID]
 end
 
--- Er gjenstanden et håndverksmateriale, og hvilke professions bruker det?
--- Returnerer nil hvis den ikke er et materiale, ellers:
---   professions = { "Blacksmithing", ... }, sortert (kan være tom)
---   usually     = true når listen er gjettet ut fra typen
+-- Is the item a crafting material, and which professions use it?
+-- Returns nil if it is not a material, otherwise:
+--   professions = { "Blacksmithing", ... }, sorted (may be empty)
+--   usually     = true when the list is guessed from the type
 function DW.CraftingInfo(itemID)
     if type(itemID) ~= "number" or DW.IsSecret(itemID) or not IsMaterial(itemID) then
         return nil
@@ -164,9 +164,9 @@ function DW.CraftingInfo(itemID)
     return { professions = names, usually = usually }
 end
 
--- Leser oppskriftene i håndverksvinduet som er åpent, og husker hvilke
--- materialer professionen bruker. Returnerer true hvis vi lærte noe nytt.
-local readThisSession = {} -- [profession] = antall oppskrifter vi har lest
+-- Reads the recipes in the crafting window that is open, and remembers which
+-- materials the profession uses. Returns true if we learned something new.
+local readThisSession = {} -- [profession] = number of recipes we have read
 
 local function LearnReagents()
     local ui = C_TradeSkillUI
@@ -187,8 +187,8 @@ local function LearnReagents()
     if not fine or type(recipes) ~= "table" or #recipes == 0 then
         return false
     end
-    -- Vinduet melder seg ofte (f.eks. for hver ting du lager). Les bare på
-    -- nytt hvis det er kommet til oppskrifter.
+    -- The window fires often (e.g. for every item you craft). Only read
+    -- again if recipes have been added.
     if readThisSession[profession] == #recipes then
         return false
     end
@@ -217,7 +217,7 @@ local function LearnReagents()
     return learnedSomething
 end
 
-local waitingForName = {} -- [itemID] = true mens vi venter på at spillet laster navnet
+local waitingForName = {} -- [itemID] = true while we wait for the game to load the name
 
 local function RememberItem(itemID)
     local name, _, quality = GetItemInfo(itemID)
@@ -232,8 +232,8 @@ local function RememberItem(itemID)
     end
 end
 
--- Teller materialene i de oppgitte plassene. Returnerer også hvor mange
--- plasser som fantes, så vi kan se forskjell på "tomt" og "ikke tilgjengelig".
+-- Counts the materials in the given slots. Also returns how many
+-- slots existed, so we can tell "empty" from "not available".
 local function CountMaterials(containers)
     local counts, slots = {}, 0
     for _, bag in ipairs(containers) do
@@ -252,7 +252,7 @@ local function CountMaterials(containers)
     return counts, slots
 end
 
--- Oppføringen for karakteren du er logget inn på. Lages hvis den mangler.
+-- The entry for the character you are logged in on. Created if missing.
 local function CurrentCharacter()
     local key, name, realm = DW.CharacterKey()
     if not key then
@@ -287,8 +287,8 @@ local function Scan()
 
     if bankOpen then
         local counts, slots = CountMaterials(BankContainers())
-        -- Fant vi ingen bankplasser, er banken ikke lesbar akkurat nå. Da
-        -- beholder vi det vi husket, i stedet for å tro at den er tom.
+        -- If we found no bank slots, the bank is not readable right now. Then
+        -- we keep what we remembered, instead of assuming it is empty.
         if slots > 0 then
             character.bank = counts
             character.bankTime = time()
@@ -298,8 +298,8 @@ end
 
 -- Tooltip ---------------------------------------------------------------------
 
--- Klienten kan melde samme gjenstand to ganger for én tooltip. Her husker vi
--- hvilken gjenstand hver tooltip allerede har fått linjene for.
+-- The client can report the same item twice for one tooltip. Here we remember
+-- which item each tooltip has already received the lines for.
 local shownItem = {}
 
 local function OnTooltipItem(tooltip, data)
@@ -341,18 +341,18 @@ if TooltipDataProcessor and TooltipDataProcessor.AddTooltipPostCall and Enum and
     TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Item, OnTooltipItem)
 end
 
--- Visning ---------------------------------------------------------------------
+-- Display ---------------------------------------------------------------------
 
 local ROW_HEIGHT = 24
-local FALLBACK_ICON = 134400 -- spørsmålstegn
+local FALLBACK_ICON = 134400 -- question mark
 
-local panel -- lages første gang modulen velges i hovedvinduet
+local panel -- created the first time the module is selected in the main window
 local rows = {}
 local RefreshPanel
 
-local filterSource = "all" -- "all", "bags" eller "bank"
-local filterCharacter      -- nøkkelen til én karakter, eller nil for alle
-local searchText = ""      -- det som står i søkefeltet
+local filterSource = "all" -- "all", "bags" or "bank"
+local filterCharacter      -- the key of one character, or nil for all
+local searchText = ""      -- what is in the search box
 
 local function SortedCharacterKeys()
     local keys = {}
@@ -365,7 +365,7 @@ local function SortedCharacterKeys()
     return keys
 end
 
--- Bare navnet, med realm bak hvis to karakterer heter det samme.
+-- Just the name, with the realm after it if two characters share the name.
 local function DisplayName(key)
     local character = db.characters[key]
     local name = character and character.name
@@ -380,8 +380,8 @@ local function DisplayName(key)
     return name
 end
 
--- Summerer materialene etter gjeldende filter. Én oppføring per gjenstand,
--- sortert på navn.
+-- Sums the materials by the current filter. One entry per item,
+-- sorted by name.
 local function Collect()
     local totals = {}
     local function Add(counts)
@@ -405,8 +405,8 @@ local function Collect()
         end
     end
 
-    -- Søket ser bort fra store/små bokstaver og mellomrom foran og bak, og
-    -- leter etter teksten hvor som helst i navnet.
+    -- The search ignores upper/lower case and spaces before and after, and
+    -- looks for the text anywhere in the name.
     local needle = searchText:lower()
     needle = needle:gsub("^%s+", "")
     needle = needle:gsub("%s+$", "")
@@ -422,7 +422,7 @@ local function Collect()
                 db.items[itemID] = { name = name, quality = quality }
             else
                 name = "item:" .. itemID
-                RememberItem(itemID) -- ber spillet laste navnet
+                RememberItem(itemID) -- asks the game to load the name
             end
         end
         if needle == "" or name:lower():find(needle, 1, true) then
@@ -450,12 +450,12 @@ local function SetCharacter(key)
     RefreshPanel()
 end
 
--- Menyen for valg av karakter. data er nøkkelen, eller false for "alle".
+-- The menu for choosing a character. data is the key, or false for "all".
 local function OpenCharacterMenu(owner)
     local keys = SortedCharacterKeys()
 
     if not (MenuUtil and MenuUtil.CreateContextMenu) then
-        -- Uten meny: gå til neste karakter for hvert klikk, og til slutt alle.
+        -- Without a menu: go to the next character on each click, and finally all.
         local nextKey = keys[1]
         for index, key in ipairs(keys) do
             if key == filterCharacter then
@@ -509,7 +509,7 @@ local function GetRow(index)
     row.name:SetJustifyH("LEFT")
     row.name:SetWordWrap(false)
 
-    -- Hold over raden for å se gjenstanden og hvor den ligger, per karakter.
+    -- Hover over the row to see the item and where it is, per character.
     row:SetScript("OnEnter", function(self)
         local entry = self.entry
         if not entry then
@@ -545,7 +545,7 @@ RefreshPanel = function()
         return
     end
 
-    -- Karakteren som var valgt kan være borte fra lagringen.
+    -- The character that was selected may be gone from the saved data.
     if filterCharacter and type(db.characters[filterCharacter]) ~= "table" then
         filterCharacter = nil
     end
@@ -588,7 +588,7 @@ RefreshPanel = function()
     panel.content:SetHeight(math.max(1, #entries * ROW_HEIGHT))
     panel.empty:SetShown(#entries == 0)
 
-    -- Nederst: når banken til denne karakteren sist ble lest.
+    -- At the bottom: when this character's bank was last read.
     local character = CurrentCharacter()
     if character and character.bankTime then
         panel.footer:SetText(L.MAT_BANK_SEEN:format(date("%d.%m.%Y %H:%M", character.bankTime)))
@@ -597,7 +597,7 @@ RefreshPanel = function()
     end
 end
 
--- Kalles av hovedvinduet første gang modulen velges.
+-- Called by the main window the first time the module is selected.
 local function CreatePanel(parent)
     local f = CreateFrame("Frame", nil, parent)
     f:SetAllPoints(parent)
@@ -605,7 +605,7 @@ local function CreatePanel(parent)
     f.title = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     f.title:SetPoint("TOP", 0, -12)
 
-    -- Filter: hvor materialene ligger.
+    -- Filter: where the materials are.
     f.sourceChips = {}
     for index, source in ipairs({ "all", "bags", "bank" }) do
         local chip = DW.CreateChip(f, 100, 26)
@@ -617,14 +617,14 @@ local function CreatePanel(parent)
         f.sourceChips[source] = chip
     end
 
-    -- Filter: hvilken karakter.
+    -- Filter: which character.
     f.characterChip = DW.CreateChip(f, 230, 26)
     f.characterChip:SetPoint("TOPRIGHT", -14, -40)
     f.characterChip:SetScript("OnClick", function(self)
         OpenCharacterMenu(self)
     end)
 
-    -- Søkefelt: listen snevres inn mens du skriver.
+    -- Search box: the list narrows as you type.
     f.searchLabel = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     f.searchLabel:SetPoint("TOPLEFT", 14, -80)
 
@@ -669,7 +669,7 @@ local function CreatePanel(parent)
     f.footer:SetWordWrap(false)
 
     f:SetScript("OnShow", function()
-        -- Les baggene på nytt hver gang panelet åpnes, så tallene er ferske.
+        -- Read the bags again every time the panel opens, so the numbers are fresh.
         if DW.IsMember() then
             Scan()
         end
@@ -680,9 +680,9 @@ local function CreatePanel(parent)
     return f
 end
 
--- Hendelser -------------------------------------------------------------------
+-- Events ----------------------------------------------------------------------
 
--- Bag-endringer kommer ofte flere på rad. Samle dem opp og les én gang.
+-- Bag changes often come several in a row. Collect them and read once.
 local scanQueued = false
 
 local function QueueScan()
@@ -717,14 +717,14 @@ frame:SetScript("OnEvent", function(self, event, itemID)
     elseif event == "BANKFRAME_CLOSED" then
         bankOpen = false
     elseif event == "GET_ITEM_INFO_RECEIVED" then
-        -- Spillet har lastet en gjenstand vi ventet på navnet til.
+        -- The game has loaded an item we were waiting for the name of.
         if type(itemID) == "number" and waitingForName[itemID] then
             RememberItem(itemID)
             QueueScan()
         end
     elseif event:find("^TRADE_SKILL_") then
-        -- Et håndverksvindu er åpent: lær hvilke materialer oppskriftene bruker.
-        -- Lærte vi noe nytt, kan flere ting i baggene nå regnes som materialer.
+        -- A crafting window is open: learn which materials the recipes use.
+        -- If we learned something new, more items in the bags may now count as materials.
         if LearnReagents() then
             QueueScan()
         end
@@ -747,7 +747,7 @@ for _, event in ipairs({
     pcall(frame.RegisterEvent, frame, event)
 end
 
--- Blir karakteren medlem etter innlogging (guild-navnet lastes sent), les da.
+-- If the character becomes a member after login (the guild name loads late), read then.
 DW.OnMembershipChanged(function(member)
     if member then
         QueueScan()
@@ -758,7 +758,7 @@ DW.OnLanguageChanged(function()
     RefreshPanel()
 end)
 
--- Feilsøking: om spillet lar oss lese oppskrifter, og hva vi har lært.
+-- Debugging: whether the game lets us read recipes, and what we have learned.
 DW.AddDebug("materialer", function(add)
     local text = DW.DebugText
     local ui = C_TradeSkillUI
@@ -781,7 +781,7 @@ DW.AddDebug("materialer", function(add)
     add(("materialer lært fra oppskrifter: %d (%s)"):format(items, #parts > 0 and table.concat(parts, ", ") or "ingen"))
 end)
 
--- Modul --------------------------------------------------------------------------
+-- Module -------------------------------------------------------------------------
 
 DW.RegisterModule({
     id = MODULE_ID,

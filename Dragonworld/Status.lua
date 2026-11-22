@@ -1,43 +1,44 @@
 -- Dragonworld - status
--- Hver spiller kan vise hva de holder på med: quester, er åpen for dungeons,
--- eller crafter og vil ikke forstyrres. Det velges med knappene øverst til
--- høyre i hovedvinduet, og vises:
---   * som et lite ikon ved navnet i Medlemmer,
---   * i fanen Dungeons, for dem som er åpne for dungeons, med hvilke dungeons
---     de vil ta, hvorfor (quest, loot, xp) og hvilken rolle (tank, healer,
---     dps; høyst to).
+-- Each player can show what they are up to: questing, open for dungeons,
+-- or crafting and not wanting to be disturbed. It is chosen with the buttons
+-- at the top right of the main window, and shown:
+--   * as a small icon by the name in the Roster tab,
+--   * in the Dungeons tab, for those who are open for dungeons, with which
+--     dungeons they want to run, why (quest, loot, xp) and which role (tank,
+--     healer, dps; at most two).
 --
--- Slik deles det:
---   * Addonen sender statusen din til guilden når du endrer den, og når du
---     logger inn. Da ber den også de andre om deres.
---   * Statusen til andre vises bare mens de er pålogget.
---   * Din egen huskes over /reload, men glemmes om du har vært borte i mer
---     enn 4 timer, så du ikke står som "åpen for dungeons" neste dag.
+-- How it is shared:
+--   * The addon sends your status to the guild when you change it, and when
+--     you log in. It then also asks the others for theirs.
+--   * Other players' status is only shown while they are online.
+--   * Your own is remembered across /reload, but forgotten if you have been
+--     away for more than 4 hours, so you don't show as "open for dungeons"
+--     the next day.
 --
--- Dungeon-listen er hentet fra addonen DungeonJournal (Data\Dungeons.lua,
--- versjon 2.1.2), med nivåene den oppgir. Hver dungeon har et fast nummer som
--- brukes i meldingene; nye får nye numre, gamle numre skal aldri endres.
+-- The dungeon list comes from the DungeonJournal addon (Data\Dungeons.lua,
+-- version 2.1.2), with the levels it gives. Each dungeon has a fixed number
+-- used in the messages; new ones get new numbers, old numbers must never change.
 --
--- Meldinger (navn DragonworldSt, felter skilt med tabulator):
---   S nøkkel status tid dungeons formål roller
---                                          min status ("-" = ingen),
---                                          dungeons som "1,4,12", formål som "QLX",
---                                          roller som "TH" (høyst to av T, H, D).
---                                          Rollefeltet sendes bare når det har
---                                          noe; eldre versjoner leser det ikke.
---   R                                     send meg statusen deres
+-- Messages (name DragonworldSt, fields separated by tab):
+--   S key status time dungeons purposes roles
+--                                          my status ("-" = none),
+--                                          dungeons as "1,4,12", purposes as "QLX",
+--                                          roles as "TH" (at most two of T, H, D).
+--                                          The roles field is only sent when it
+--                                          has something; older versions ignore it.
+--   R                                     send me your status
 --
--- All tekst ligger i Locales.lua (navnene som begynner med ST_).
+-- All text is in Locales.lua (the names starting with ST_).
 
 local ADDON_NAME, DW = ...
 local L = DW.L
 
-local PREFIX = "DragonworldSt" -- navnet på meldingene; maks 16 tegn
+local PREFIX = "DragonworldSt" -- name of the messages; max 16 characters
 local SEP = "\t"
-local FORGET_AFTER = 4 * 3600   -- egen status glemmes etter så lang tid borte
-local HELLO_DELAY = 9           -- etter innlogging
+local FORGET_AFTER = 4 * 3600   -- own status is forgotten after this long away
+local HELLO_DELAY = 9           -- after login
 
--- Statusene, i den rekkefølgen knappene står.
+-- The statuses, in the order the buttons appear.
 DW.STATUSES = {
     { code = "Q", key = "ST_QUEST", tip = "ST_QUEST_TIP", icon = "Interface\\GossipFrame\\AvailableQuestIcon" },
     { code = "D", key = "ST_DUNGEON", tip = "ST_DUNGEON_TIP", icon = "Interface\\Icons\\Ability_DualWield" },
@@ -49,16 +50,16 @@ for _, status in ipairs(DW.STATUSES) do
 end
 DW.STATUS_BY_CODE = STATUS_BY_CODE
 
--- Hvorfor man vil ta en dungeon. Man kan velge flere.
+-- Why you want to run a dungeon. You can pick several.
 DW.PURPOSES = {
     { code = "Q", key = "ST_PURPOSE_QUEST" },
     { code = "L", key = "ST_PURPOSE_LOOT" },
     { code = "X", key = "ST_PURPOSE_XP" },
 }
 
--- Hvilken rolle man kan ta i en dungeon. Man velger én, eller to (f.eks. tank
--- og dps). coords er hvor ikonet ligger i spillets rolle-bilde (64x64), samme
--- utsnitt som spillet selv bruker for de små runde rolleikonene.
+-- Which role you can take in a dungeon. You pick one, or two (e.g. tank
+-- and dps). coords is where the icon sits in the game's role image (64x64),
+-- the same crop the game itself uses for the small round role icons.
 DW.ROLES = {
     { code = "T", key = "ST_ROLE_TANK", coords = "0:19:22:41" },
     { code = "H", key = "ST_ROLE_HEALER", coords = "20:39:1:20" },
@@ -67,15 +68,15 @@ DW.ROLES = {
 DW.MAX_ROLES = 2
 local ROLE_TEXTURE = "Interface\\LFGFrame\\UI-LFG-ICON-PORTRAITROLES"
 
--- Ikonet for en rolle som tekst, så det kan stå i en linje eller et verktøytips.
+-- The icon for a role as text, so it can go in a line or a tooltip.
 function DW.RoleIcon(role, size)
     size = size or 14
     return ("|T%s:%d:%d:0:0:64:64:%s|t"):format(ROLE_TEXTURE, size, size, role.coords)
 end
 
--- Dungeons og raids. Nivåene er dem DungeonJournal oppgir (spillets
--- "Looking For Group"-nivåer der den har dem). Raidene er ikke i
--- DungeonJournal ennå; de to her er dem spillets quester viser til.
+-- Dungeons and raids. The levels are the ones DungeonJournal gives (the game's
+-- "Looking For Group" levels where it has them). The raids are not in
+-- DungeonJournal yet; the two here are the ones the game's quests refer to.
 DW.DUNGEONS = {
     { id = 1, name = "Hall of Thanes", min = 13, max = 20 },
     { id = 2, name = "Ragefire Chasm", min = 13, max = 18 },
@@ -121,7 +122,7 @@ for _, dungeon in ipairs(DW.DUNGEONS) do
 end
 DW.DUNGEON_BY_ID = DUNGEON_BY_ID
 
--- Småting -----------------------------------------------------------------------
+-- Small things ------------------------------------------------------------------
 
 local function Now()
     local now = GetServerTime and GetServerTime()
@@ -131,7 +132,7 @@ local function Now()
     return time()
 end
 
--- Nøkkelen en spiller kjennes igjen på: den faste ID-en, ellers navnet.
+-- The key a player is recognized by: the fixed ID, otherwise the name.
 local function KeyOf(guid, name)
     if type(guid) == "string" and guid:find("^Player%-") then
         return guid
@@ -147,7 +148,7 @@ local function MyStatusKey()
     return KeyOf(DW.MyGUID(), name)
 end
 
--- Listene som tekst i meldinger, og tilbake.
+-- The lists as text in messages, and back.
 local function DungeonsText(set)
     local ids = {}
     for id in pairs(set or {}) do
@@ -190,7 +191,7 @@ local function ParsePurposes(text)
     return set
 end
 
--- Roller som tekst ("TH") og tilbake. Brukes også av Profile.lua.
+-- Roles as text ("TH") and back. Also used by Profile.lua.
 local function RolesText(set)
     local out = ""
     for _, role in ipairs(DW.ROLES) do
@@ -202,7 +203,7 @@ local function RolesText(set)
 end
 DW.RolesToText = RolesText
 
--- Høyst to roller, også om en melding skulle ha flere.
+-- At most two roles, even if a message has more.
 local function ParseRoles(text)
     local set, count = {}, 0
     for _, role in ipairs(DW.ROLES) do
@@ -215,7 +216,7 @@ local function ParseRoles(text)
 end
 DW.RolesFromText = ParseRoles
 
--- Rollene med ikon og navn: "[ikon] Tank, [ikon] Healer". Tomt uten roller.
+-- The roles with icon and name: "[icon] Tank, [icon] Healer". Empty with no roles.
 function DW.RoleNames(set, size)
     local parts = {}
     for _, role in ipairs(DW.ROLES) do
@@ -226,7 +227,7 @@ function DW.RoleNames(set, size)
     return table.concat(parts, ", ")
 end
 
--- Bare ikonene: "[ikon] [ikon]". Tomt uten roller.
+-- Only the icons: "[icon] [icon]". Empty with no roles.
 function DW.RoleIcons(set, size)
     local parts = {}
     for _, role in ipairs(DW.ROLES) do
@@ -237,11 +238,11 @@ function DW.RoleIcons(set, size)
     return table.concat(parts, " ")
 end
 
--- Lytting ---------------------------------------------------------------------
+-- Listening -------------------------------------------------------------------
 
 local listeners = {}
 
--- Registrerer en funksjon som kalles når en status (din eller andres) endres.
+-- Registers a function that is called when a status (yours or someone else's) changes.
 function DW.OnStatusChanged(callback)
     listeners[#listeners + 1] = callback
 end
@@ -255,12 +256,12 @@ local function Changed()
     end
 end
 
--- Din egen status -----------------------------------------------------------------
+-- Your own status ----------------------------------------------------------------
 
--- Lagret per karakter: DragonworldDB.status["Navn-Realm"] =
---   { code, time, dungeons = { [id] = true }, purposes = { [kode] = true },
---     roles = { [kode] = true } }
--- Rollene huskes også når statusen er av, så de er valgt neste gang.
+-- Saved per character: DragonworldDB.status["Name-Realm"] =
+--   { code, time, dungeons = { [id] = true }, purposes = { [code] = true },
+--     roles = { [code] = true } }
+-- The roles are also remembered when the status is off, so they are already chosen next time.
 local function MyEntry()
     if type(DragonworldDB) ~= "table" then
         return nil
@@ -292,7 +293,7 @@ local function MyEntry()
     return entry
 end
 
--- Statusen din nå: koden ("Q", "D", "C") eller nil, og hele oppføringen.
+-- Your status now: the code ("Q", "D", "C") or nil, and the whole entry.
 function DW.GetMyStatus()
     local entry = MyEntry()
     return entry and entry.code, entry
@@ -318,9 +319,9 @@ local function SendMine()
     Send(table.concat(fields, SEP))
 end
 
--- Setter statusen din (code = nil slår den av). For "D" kan wish gi hvilke
--- dungeons, formål og roller:
---   { dungeons = { [id] = true }, purposes = { [kode] = true }, roles = { [kode] = true } }.
+-- Sets your status (code = nil turns it off). For "D", wish can give which
+-- dungeons, purposes and roles:
+--   { dungeons = { [id] = true }, purposes = { [code] = true }, roles = { [code] = true } }.
 function DW.SetMyStatus(code, wish)
     local entry = MyEntry()
     if not entry then
@@ -342,12 +343,12 @@ function DW.SetMyStatus(code, wish)
     Changed()
 end
 
--- Andres status ------------------------------------------------------------------
+-- Others' status -----------------------------------------------------------------
 
-local others = {} -- [nøkkel] = { code, time, dungeons, purposes, roles }; bare i minnet
+local others = {} -- [key] = { code, time, dungeons, purposes, roles }; in memory only
 
--- Statusen til et medlem fra DW.ReadGuildRoster(): koden og oppføringen, eller
--- nil. For deg selv er det din egen.
+-- The status of a member from DW.ReadGuildRoster(): the code and the entry, or
+-- nil. For yourself it is your own.
 function DW.StatusOf(member)
     if type(member) ~= "table" then
         return nil
@@ -365,8 +366,8 @@ function DW.StatusOf(member)
     return nil
 end
 
--- Medlemmene som er pålogget og har en bestemt status (deg selv også), med
--- oppføringen: { { member = ..., entry = ... }, ... }.
+-- The members who are online and have a given status (you too), with
+-- the entry: { { member = ..., entry = ... }, ... }.
 function DW.MembersWithStatus(code)
     local list = {}
     for _, member in ipairs(DW.ReadGuildRoster()) do
@@ -380,7 +381,7 @@ function DW.MembersWithStatus(code)
     return list
 end
 
--- Mottak ------------------------------------------------------------------------
+-- Receiving ---------------------------------------------------------------------
 
 local replyScheduled = false
 
@@ -410,8 +411,8 @@ DW.OnGuildMessage(PREFIX, function(text)
         }
         Changed()
     elseif fields[1] == "R" then
-        -- Noen ber om statusen vår. Svar etter en liten, tilfeldig stund, så
-        -- ikke alle svarer samtidig, og bare hvis vi har en.
+        -- Someone asks for our status. Reply after a short, random delay so
+        -- not everyone replies at once, and only if we have one.
         if replyScheduled or not DW.GetMyStatus() then
             return
         end
@@ -425,12 +426,12 @@ DW.OnGuildMessage(PREFIX, function(text)
     end
 end)
 
--- Innlogging --------------------------------------------------------------------
+-- Login -------------------------------------------------------------------------
 
 local helloSent = false
 
--- Litt etter innlogging: glem en gammel status, si fra om vår egen, og be om
--- de andres.
+-- A little after login: forget an old status, announce our own, and ask for
+-- the others'.
 local function PlanHello()
     if helloSent or not (C_Timer and C_Timer.After) then
         return
@@ -465,7 +466,7 @@ DW.OnMembershipChanged(function(member)
     end
 end)
 
--- Feilsøking.
+-- Debugging.
 DW.AddDebug("status", function(add)
     local code, entry = DW.GetMyStatus()
     add("min status: " .. DW.DebugText(code) .. " | nøkkel: " .. DW.DebugText(MyStatusKey())

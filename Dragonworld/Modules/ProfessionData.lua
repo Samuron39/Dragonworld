@@ -1,20 +1,20 @@
--- Dragonworld - data for Professions-fanen
--- Laget 2026-11-21 av tools\make_profession_data.js fra Wowhead sine guider for WoW Forever
--- (https://www.wowhead.com/forever/profession-leveling-guides/), ruten "Tried & Tested in Forever".
--- IKKE rediger for hånd: kjør skriptet på nytt når Wowhead oppdaterer guidene.
+-- Dragonworld - data for the Professions tab
+-- Made 2026-11-21 by tools\make_profession_data.js from Wowhead's guides for WoW Forever
+-- (https://www.wowhead.com/forever/profession-leveling-guides/), the route "Tried & Tested in Forever".
+-- DO NOT edit by hand: run the script again when Wowhead updates the guides.
 --
 -- professions[skillLine] = { name, icon, secondary, guide, version, updated,
---     gates = { { lær før skill, krever skill, krever level, "trainer"/"book"/"quest" }, ... },
---     steps = { { fra skill, til skill, oppskrift (spell-ID, 0 = tekst), note = Locales-nøkkel }, ... },
---     makes = { [itemID] = oppskriften professionen lager mellomproduktet med } }
--- recipes[spellID] = { name, lært ved skill, { oransje, gul, grønn, grå }, { { itemID, antall }, ... },
---     creates = itemID, makes = antall per craft (1 hvis ikke oppgitt), up = skillpoeng per craft,
---     starter/trainer/drop/quest = true, cost = trainerpris i kobber,
---     vendors = { { npcID, pris i kobber, currencyID, antall currency, begrenset lager } },
---     recipeItem = itemID, rep = { fraksjon, nivå }, spec, tools = { verktøy-nøkler }, focus = stasjon }
--- items[itemID] = { name, quality, kind, vendorpris i kobber, laget med (professions) }
---     kind: "vendor" (kjøpes), "craft" (lages av professionen), "prof" (lages av en annen
---     profession), "gather" (samles, f.eks. skinning), "other" (dropper, farmes eller AH)
+--     gates = { { learn before skill, needs skill, needs level, "trainer"/"book"/"quest" }, ... },
+--     steps = { { from skill, to skill, recipe (spell ID, 0 = text), note = Locales key }, ... },
+--     makes = { [itemID] = the recipe the profession makes the intermediate product with } }
+-- recipes[spellID] = { name, learned at skill, { orange, yellow, green, gray }, { { itemID, count }, ... },
+--     creates = itemID, makes = count per craft (1 if not given), up = skill points per craft,
+--     starter/trainer/drop/quest = true, cost = trainer price in copper,
+--     vendors = { { npcID, price in copper, currencyID, currency amount, limited stock } },
+--     recipeItem = itemID, rep = { faction, level }, spec, tools = { tool keys }, focus = station }
+-- items[itemID] = { name, quality, kind, vendor price in copper, made with (professions) }
+--     kind: "vendor" (bought), "craft" (made by the profession), "prof" (made by another
+--     profession), "gather" (gathered, e.g. skinning), "other" (drops, farmed or AH)
 
 local ADDON_NAME, DW = ...
 

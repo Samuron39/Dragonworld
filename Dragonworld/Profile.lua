@@ -1,61 +1,64 @@
--- Dragonworld - profil
--- Det addonen deler om hver karakter, så det kan vises på medlemskortet
--- (MemberCard.lua) og i Medlemmer:
---   * legacy-poeng
---   * utstyret karakteren har på seg
---   * talentene
---   * "om meg": en kort tekst spilleren skriver om seg selv, som andre ser
---   * rollen karakteren spiller: tank, healer, dps, eller to av dem. Den
---     velges første gang (MainWindow.lua) og kan endres på ditt eget kort,
---     og vises med ikon i Medlemmer.
--- Hver addon sender bare sitt eget, og bare når noe er endret. Ved innlogging
--- ber den de andre om det som er endret siden sist den var pålogget (se
--- "Hva vi har fått med oss" i Comm.lua). Alle tar vare på det de får (det
--- lagres), så et medlem som er avlogget vises slik det var sist dere var
--- pålogget samtidig.
+-- Dragonworld - profile
+-- What the addon shares about each character, so it can be shown on the
+-- member card (MemberCard.lua) and in the Roster tab:
+--   * legacy points
+--   * the gear the character is wearing
+--   * the talents
+--   * "about me": a short text the player writes about themselves, which
+--     others see
+--   * the role the character plays: tank, healer, dps, or two of them. It is
+--     chosen the first time (MainWindow.lua) and can be changed on your own
+--     card, and is shown with an icon in the Roster tab.
+-- Each addon only sends its own, and only when something has changed. On
+-- login it asks the others for what has changed since it was last online (see
+-- "What we have received" in Comm.lua). Everyone
+-- keeps what they receive (it is saved), so a member who is offline is shown
+-- as they were the last time you were online at the same time.
 --
--- Legacy-poeng: spillet har ingen dokumentert funksjon for dem, men to
--- addons andre har laget (AltStable sin Legacy-plugin og LegacyNavigator,
--- lest 21.11.2026) leser dem likt: poengene er "renown"-nivået til
--- faction 2802 (Legacy Track), og maksimum (65) er
--- C_Traits.GetMaxAvailableTraitCurrency(4225, false). Det er det vi bruker.
--- Achievement-poengene (GetTotalAchievementPoints) var feil spor: de var 0
--- hos en som hadde 2 legacy-poeng. Mangler renown-funksjonen, leter addonen
--- etter en valuta eller en C_...Legacy...-funksjon (se FindLegacy... under).
--- "/dw debug" viser hvor tallet kom fra.
+-- Legacy points: the game has no documented function for them, but two addons
+-- made by others (AltStable's Legacy plugin and LegacyNavigator, read
+-- 21.11.2026) read them the same way: the points are the "renown" level of
+-- faction 2802 (Legacy Track), and the maximum (65) is
+-- C_Traits.GetMaxAvailableTraitCurrency(4225, false). That is what we use.
+-- The achievement points (GetTotalAchievementPoints) were the wrong track:
+-- they were 0 for someone who had 2 legacy points. If the renown function is
+-- missing, the addon looks for a currency or a C_...Legacy... function (see
+-- FindLegacy... below).
+-- "/dw debug" shows where the number came from.
 --
--- Versjon 0.12.0 og 0.13.0 sendte et feil tall som melding "L". Den
--- meldingen og det som ble lagret fra den, brukes ikke lenger; legacy-poeng
--- sendes nå som "P".
+-- Versions 0.12.0 and 0.13.0 sent a wrong number as message "L". That
+-- message and what was saved from it are no longer used; legacy points are
+-- now sent as "P".
 --
--- Talenter: Forever har ikke de gamle talentfunksjonene (GetTalentInfo osv.).
--- Talentvinduet er spillets talenttre (C_Traits): ett tre per klasse, med de
--- tre talenttrærne som grupper. DungeonJournal leser dem på samme måte.
+-- Talents: Forever does not have the old talent functions (GetTalentInfo
+-- etc.). The talent window is the game's talent tree (C_Traits): one tree per
+-- class, with the three talent trees as groups. DungeonJournal reads them the
+-- same way.
 --
--- Meldinger (navn DragonworldPf, felter skilt med tabulator):
---   P nøkkel tid poeng maks           legacy-poeng ("2", "65"; maks kan mangle)
---   E nøkkel tid nr/antall tekst      utstyr: "1=12345:0:0,5=..." (plass=gjenstand)
---   T nøkkel tid nr/antall tekst      talenter: "Navn~poeng~spell-rang,...;..."
---   A nøkkel tid nr/antall tekst      "om meg"-teksten (tom tekst = slettet)
---   O nøkkel tid roller               rollen: "TH" (høyst to av T, H, D; tom = ingen)
---   R tid                             send meg det dere har endret etter tid (servertid)
---   R                                 send meg alt (første gang, og én gang i uka)
--- Tiden i P/E/T/A/O er når den delen sist ble endret. Eldre versjoner
--- kjenner ikke O og overser den.
--- Lange tekster deles i biter og settes sammen igjen hos mottakeren.
+-- Messages (name DragonworldPf, fields separated by tab):
+--   P key time points max             legacy points ("2", "65"; max may be missing)
+--   E key time no/count text          gear: "1=12345:0:0,5=..." (slot=item)
+--   T key time no/count text          talents: "Navn~poeng~spell-rang,...;..."
+--   A key time no/count text          the "about me" text (empty text = deleted)
+--   O key time roles                  the role: "TH" (at most two of T, H, D; empty = none)
+--   R time                            send me what you have changed after time (server time)
+--   R                                 send me everything (the first time, and once a week)
+-- The time in P/E/T/A/O is when that part was last changed. Older versions
+-- do not know O and ignore it.
+-- Long texts are split into pieces and put together again at the receiver.
 
 local ADDON_NAME, DW = ...
 local L = DW.L
 
-local PREFIX = "DragonworldPf" -- navnet på meldingene; maks 16 tegn
+local PREFIX = "DragonworldPf" -- the name of the messages; max 16 characters
 local SEP = "\t"
 local CHUNK_BYTES = 200
 local MAX_PARTS = 8
-local HELLO_DELAY = 11         -- etter innlogging
-local CHANGE_DELAY = 20        -- samle opp endringer før vi sender
+local HELLO_DELAY = 11         -- after login
+local CHANGE_DELAY = 20        -- collect changes before we send
 local GEAR_SLOTS = 19
 
--- Småting -----------------------------------------------------------------------
+-- Small things ------------------------------------------------------------------
 
 local function Now()
     local now = GetServerTime and GetServerTime()
@@ -91,15 +94,16 @@ local function MemberKey(member)
     return KeyOf(member.guid, member.key)
 end
 
--- Lagret: DragonworldDB.profiles[nøkkel] = {
+-- Saved: DragonworldDB.profiles[key] = {
 --   legacy  = { points, time },
---   gear    = { time, items = { [plass] = "12345:0:0..." } },
+--   gear    = { time, items = { [slot] = "12345:0:0..." } },
 --   talents = { time, trees = { { name, points, talents = { { spell, rank }, ... } }, ... } },
 --   roles   = { time, text = "TH" },
 -- }
--- Din egen har i tillegg gear.raw og talents.raw (teksten som sendes),
--- sent = { [P/E/T/A/O] = tiden på det som sist ble sendt } og rolesAsked
--- (true når du er spurt om rollen første gang, også om du svarte "senere").
+-- Your own also has gear.raw and talents.raw (the text that is sent),
+-- sent = { [P/E/T/A/O] = the time of what was last sent } and rolesAsked
+-- (true once you have been asked about the role the first time, even if you
+-- answered "later").
 local function Profiles()
     if type(DragonworldDB) ~= "table" then
         return {}
@@ -107,7 +111,7 @@ local function Profiles()
     if type(DragonworldDB.profiles) ~= "table" then
         DragonworldDB.profiles = {}
     end
-    -- Legacy-poeng lagret av 0.12.0/0.13.0 var feil tall (se øverst). Fjernes.
+    -- Legacy points saved by 0.12.0/0.13.0 were a wrong number (see the top). Removed.
     if not DragonworldDB.profilesCleaned then
         DragonworldDB.profilesCleaned = 1
         for _, profile in pairs(DragonworldDB.profiles) do
@@ -131,7 +135,7 @@ end
 
 local listeners = {}
 
--- Registrerer en funksjon som kalles når noe nytt om et medlem er kommet.
+-- Registers a function that is called when something new about a member has arrived.
 function DW.OnProfileChanged(callback)
     listeners[#listeners + 1] = callback
 end
@@ -145,10 +149,11 @@ local function Changed()
     end
 end
 
--- Lesing av egen karakter ---------------------------------------------------------
+-- Reading your own character ------------------------------------------------------
 
--- Legacy-poeng. Se forklaringen øverst. legacySource sier hvor tallet kom fra
--- (for /dw debug); legacyReader er funksjonen vi fant, så vi bare leter én gang.
+-- Legacy points. See the explanation at the top. legacySource says where the
+-- number came from (for /dw debug); legacyReader is the function we found, so
+-- we only search once.
 local legacySource, legacyReader, legacySearched
 
 local function PlausiblePoints(value)
@@ -182,7 +187,7 @@ local function FindLegacyCurrency()
     return nil
 end
 
--- Hvor godt et funksjonsnavn ser ut som "alle poengene du har tjent".
+-- How well a function name looks like "all the points you have earned".
 local function Score(field)
     if not field:find("^Get") or not field:find("Point") then
         return 0
@@ -223,8 +228,8 @@ local function FindLegacyFunction()
     return nil
 end
 
-local LEGACY_FACTION = 2802        -- Legacy Track; renown-nivået er poengene
-local LEGACY_TRAIT_CURRENCY = 4225 -- poengene som talent-valuta, for maksimum
+local LEGACY_FACTION = 2802        -- Legacy Track; the renown level is the points
+local LEGACY_TRAIT_CURRENCY = 4225 -- the points as a talent currency, for the maximum
 
 local function ReadRenown()
     local M = C_MajorFactions
@@ -235,7 +240,7 @@ local function ReadRenown()
     return ok and PlausiblePoints(level) or nil
 end
 
--- Hvor mange legacy-poeng som finnes i alt (65 da Forever kom ut), eller nil.
+-- How many legacy points exist in total (65 when Forever came out), or nil.
 local function ReadLegacyMax()
     if C_Traits and type(C_Traits.GetMaxAvailableTraitCurrency) == "function" then
         local ok, max = pcall(C_Traits.GetMaxAvailableTraitCurrency, LEGACY_TRAIT_CURRENCY, false)
@@ -253,8 +258,8 @@ local function ReadLegacy()
         legacySource = "C_MajorFactions.GetCurrentRenownLevel(" .. LEGACY_FACTION .. ")"
         return renown
     end
-    -- Uten den: let selv. Fant vi ingenting, prøver vi igjen etter et minutt,
-    -- for spillet kan ha lastet det sent etter innlogging.
+    -- Without it: search ourselves. If we found nothing, we try again after a
+    -- minute, because the game may have loaded it late after login.
     if not legacyReader and (not legacySearched or GetTime() - legacySearched > 60) then
         legacySearched = GetTime()
         legacyReader, legacySource = FindLegacyCurrency()
@@ -265,8 +270,8 @@ local function ReadLegacy()
     return legacyReader and legacyReader() or nil
 end
 
--- Utstyret som tekst: "1=12345:0:0,5=6789". Gjenstanden er spillets
--- gjenstandskode (det som står etter "item:" i en lenke), uten tomme felt bakerst.
+-- The gear as text: "1=12345:0:0,5=6789". The item is the game's item
+-- code (what comes after "item:" in a link), without empty fields at the end.
 local function ReadGear()
     if type(GetInventoryItemLink) ~= "function" then
         return nil
@@ -298,8 +303,9 @@ local function ParseGear(text)
     return items
 end
 
--- Talentene fra talenttreet: én gruppe per talenttre, med navn, poeng og
--- talentene som har poeng (spell og rang), sortert ovenfra og ned.
+-- The talents from the talent tree: one group per talent tree, with name,
+-- points and the talents that have points (spell and rank), sorted from top
+-- to bottom.
 local function ReadTalentTrees()
     local T = C_Traits
     if type(T) ~= "table" or type(T.GetConfigInfo) ~= "function" or type(T.GetTreeNodes) ~= "function"
@@ -445,8 +451,8 @@ end
 
 local MAX_ABOUT_BYTES = 600
 
--- "Om meg"-teksten: uten tabulator og tegnet | (linjeskift blir mellomrom),
--- kuttet uten å dele et tegn.
+-- The "about me" text: without tab and the character | (line breaks become
+-- spaces), cut without splitting a character.
 local function CleanAbout(text)
     text = tostring(text or ""):gsub("[%c|]", " ")
     text = text:gsub("^%s+", "")
@@ -461,12 +467,12 @@ local function CleanAbout(text)
     return out
 end
 
--- Deling ------------------------------------------------------------------------
+-- Sharing -----------------------------------------------------------------------
 
 local Send = DW.CreateSender(PREFIX)
-local rolesQueued = false -- rollen er nettopp endret og sendes om litt (DW.SetMyRoles)
+local rolesQueued = false -- the role was just changed and is sent shortly (DW.SetMyRoles)
 
--- Sender en tekst, delt i biter som får plass i en melding.
+-- Sends a text, split into pieces that fit in a message.
 local function SendText(kind, key, when, text)
     local chunks = {}
     for start = 1, math.max(1, #text), CHUNK_BYTES do
@@ -480,11 +486,12 @@ local function SendText(kind, key, when, text)
     end
 end
 
--- Leser egen karakter og tar vare på det. Tiden på hver del er når den sist
--- ble endret, ikke når den sist ble sendt, så den samme profilen har samme
--- tid hos alle. Sender det som er endret og ikke sendt ennå, og med since
--- også alt som er endret etter den tiden (0 = alt), til en som har bedt om
--- det. Det som er sendt, huskes i profile.sent, også etter utlogging.
+-- Reads your own character and keeps it. The time on each part is when it
+-- was last changed, not when it was last sent, so the same profile has the
+-- same time for everyone. Sends what has changed and not been sent yet, and
+-- with since also everything changed after that time (0 = everything), to
+-- someone who has asked for it. What has been sent is remembered in
+-- profile.sent, also after logout.
 local function Publish(since)
     local key = MyKey()
     if not key then
@@ -493,8 +500,8 @@ local function Publish(since)
     local profile = ProfileFor(key, true)
     local changed = false
 
-    -- Alltid nyere enn forrige gang, selv om klokka står stille i ett sekund:
-    -- ellers ville en endring rett etter en sending se ut som allerede sendt.
+    -- Always newer than last time, even if the clock stands still for a second:
+    -- otherwise a change right after a send would look like already sent.
     local function Stamp(old)
         local before = old and tonumber(old.time)
         return math.max(Now(), before and (before + 1) or 0)
@@ -528,8 +535,8 @@ local function Publish(since)
         end
     end
 
-    -- Send hver del som ikke er sendt med denne tiden, eller som er nyere enn
-    -- det den som spør har.
+    -- Send each part that has not been sent with this time, or that is newer
+    -- than what the one asking has.
     local sent = type(profile.sent) == "table" and profile.sent or {}
     profile.sent = sent
     local function Due(kind, part)
@@ -552,17 +559,18 @@ local function Publish(since)
         sent.T = profile.talents.time
         SendText("T", key, profile.talents.time, profile.talents.raw)
     end
-    -- "Om meg": skrevet av spilleren selv (DW.SetMyAbout). Tidspunktet er når
-    -- det ble skrevet, så den nyeste teksten vinner hos alle. En tom tekst
-    -- (slettet) sendes ikke til en som ber om alt; den har ingenting å slette.
+    -- "About me": written by the player themselves (DW.SetMyAbout). The time is
+    -- when it was written, so the newest text wins for everyone. An empty text
+    -- (deleted) is not sent to someone who asks for everything; they have
+    -- nothing to delete.
     local about = profile.about
     if Due("A", about) and type(about.text) == "string" and not (since == 0 and about.text == "" and sent.A == about.time) then
         sent.A = about.time
         SendText("A", key, about.time, about.text)
     end
-    -- Rollen: valgt av spilleren selv (DW.SetMyRoles), sendt som for "om meg".
-    -- Mens spilleren klikker (rolesQueued), venter den til klikkene er ferdige,
-    -- med mindre noen har bedt om den.
+    -- The role: chosen by the player themselves (DW.SetMyRoles), sent as for
+    -- "about me". While the player is clicking (rolesQueued), it waits until
+    -- the clicks are done, unless someone has asked for it.
     local roles = profile.roles
     if Due("O", roles) and type(roles.text) == "string" and not (since == 0 and roles.text == "" and sent.O == roles.time)
         and not (rolesQueued and since == nil) then
@@ -575,11 +583,11 @@ local function Publish(since)
     end
 end
 
--- Mottak ------------------------------------------------------------------------
+-- Receiving ---------------------------------------------------------------------
 
-local incoming = {} -- [avsender + type] = en tekst som er på vei, bit for bit
+local incoming = {} -- [sender + type] = a text on its way, piece by piece
 local replyScheduled = false
-local replySince     -- den tidligste tiden noen har bedt om endringer fra
+local replySince     -- the earliest time anyone has asked for changes from
 
 local function Store(kind, key, when, text)
     local profile = ProfileFor(key, true)
@@ -610,8 +618,8 @@ DW.OnGuildMessage(PREFIX, function(text, sender)
     local kind, key, when = fields[1], fields[2], tonumber(fields[3])
 
     if kind == "R" then
-        -- Noen ber om det som er endret etter en tid (eller alt). Flere som
-        -- ber samtidig, får ett svar, fra den tidligste tiden.
+        -- Someone asks for what has changed after a time (or everything).
+        -- Several asking at the same time get one reply, from the earliest time.
         local since = DW.SyncRequestSince(text)
         replySince = math.min(replySince or since, since)
         if replyScheduled then
@@ -674,7 +682,7 @@ DW.OnGuildMessage(PREFIX, function(text, sender)
     end
 end)
 
--- For andre filer -----------------------------------------------------------------
+-- For other files -----------------------------------------------------------------
 
 local function IsMe(member)
     local guid = DW.MyGUID()
@@ -685,8 +693,8 @@ local function IsMe(member)
     return name ~= nil and DW.NameKey(member.key) == DW.NameKey(name)
 end
 
--- Alt vi vet om et medlem fra DW.ReadGuildRoster(): { legacy, gear, talents },
--- eller nil. For deg selv leses det på nytt først.
+-- All we know about a member from DW.ReadGuildRoster(): { legacy, gear, talents },
+-- or nil. For yourself it is read again first.
 function DW.ProfileOf(member)
     if type(member) ~= "table" then
         return nil
@@ -699,9 +707,9 @@ function DW.ProfileOf(member)
     return ProfileFor(MemberKey(member))
 end
 
--- Legacy-poengene til et medlem, og hvor mange som finnes i alt (kan være
--- nil): for deg selv rett fra spillet, ellers det medlemmets addon har sagt.
--- nil hvis vi ikke vet.
+-- A member's legacy points, and how many exist in total (can be nil): for
+-- yourself straight from the game, otherwise what the member's addon has said.
+-- nil if we do not know.
 function DW.LegacyPointsOf(member)
     if type(member) ~= "table" then
         return nil
@@ -719,15 +727,15 @@ function DW.LegacyPointsOf(member)
     return nil
 end
 
--- "Om meg": det du har skrevet om deg selv, som andre ser på kortet ditt.
+-- "About me": what you have written about yourself, which others see on your card.
 function DW.GetMyAbout()
     local key = MyKey()
     local profile = key and ProfileFor(key)
     return profile and type(profile.about) == "table" and profile.about.text or ""
 end
 
--- Lagrer "om meg"-teksten. Den sendes til guilden med DW.PublishProfile()
--- (når du er ferdig å skrive), og ellers når du logger inn.
+-- Saves the "about me" text. It is sent to the guild with DW.PublishProfile()
+-- (when you are done writing), and otherwise when you log in.
 function DW.SetMyAbout(text)
     local key = MyKey()
     if not key then
@@ -745,14 +753,14 @@ function DW.SetMyAbout(text)
     profile.about = { text = text, time = math.max(Now(), old and ((old.time or 0) + 1) or 0) }
 end
 
--- Sender det som er endret i din egen profil nå.
+-- Sends what has changed in your own profile now.
 function DW.PublishProfile()
     if DW.IsMember() then
         Publish()
     end
 end
 
--- Rollen ----------------------------------------------------------------------
+-- The role --------------------------------------------------------------------
 
 local function RolesIn(profile)
     if profile and type(profile.roles) == "table" and type(profile.roles.text) == "string" then
@@ -761,14 +769,14 @@ local function RolesIn(profile)
     return nil
 end
 
--- Rollen du har valgt for denne karakteren: { T = true, ... } (tom om ingen).
+-- The role you have chosen for this character: { T = true, ... } (empty if none).
 function DW.GetMyRoles()
     local key = MyKey()
     return RolesIn(key and ProfileFor(key)) or {}
 end
 
--- Rollen til et medlem fra DW.ReadGuildRoster(), eller nil hvis vi ikke vet
--- (ingen addon, eller ikke valgt). For deg selv er det din egen.
+-- A member's role from DW.ReadGuildRoster(), or nil if we do not know
+-- (no addon, or not chosen). For yourself it is your own.
 function DW.RolesOf(member)
     if type(member) ~= "table" then
         return nil
@@ -781,8 +789,8 @@ function DW.RolesOf(member)
     return nil
 end
 
--- Lagrer rollen din (høyst to) og sender den til guilden litt etterpå, så
--- flere klikk rett etter hverandre blir én melding.
+-- Saves your role (at most two) and sends it to the guild a little later, so
+-- several clicks right after each other become one message.
 function DW.SetMyRoles(set)
     local key = MyKey()
     if not key then
@@ -796,8 +804,9 @@ function DW.SetMyRoles(set)
         return
     end
     profile.roles = { text = text, time = math.max(Now(), old and ((old.time or 0) + 1) or 0) }
-    -- Planlegg sendingen før visningene oppdateres: kortet leser profilen på
-    -- nytt (DW.ProfileOf), og det skal ikke sende rollen midt i klikkingen.
+    -- Schedule the send before the views are updated: the card reads the
+    -- profile again (DW.ProfileOf), and it must not send the role in the
+    -- middle of the clicking.
     if not rolesQueued and C_Timer and C_Timer.After then
         rolesQueued = true
         C_Timer.After(2, function()
@@ -810,8 +819,8 @@ function DW.SetMyRoles(set)
     Changed()
 end
 
--- Skal vi spørre om rollen? Første gang på hver karakter, til den er valgt
--- eller spilleren har svart "senere".
+-- Should we ask about the role? The first time on each character, until it
+-- is chosen or the player has answered "later".
 function DW.NeedsRoleChoice()
     local key = MyKey()
     if not key or not DW.IsMember() then
@@ -824,7 +833,7 @@ function DW.NeedsRoleChoice()
     return true
 end
 
--- "Senere": ikke spør igjen. Rollen kan velges på kortet ditt.
+-- "Later": do not ask again. The role can be chosen on your card.
 function DW.SkipRoleChoice()
     local key = MyKey()
     if key then
@@ -832,7 +841,7 @@ function DW.SkipRoleChoice()
     end
 end
 
--- Navnet på en talent (en spell), hvis spillet har det.
+-- The name of a talent (a spell), if the game has it.
 function DW.SpellName(spell)
     if C_Spell and type(C_Spell.GetSpellName) == "function" then
         local ok, name = pcall(C_Spell.GetSpellName, spell)
@@ -849,7 +858,7 @@ function DW.SpellName(spell)
     return "#" .. tostring(spell)
 end
 
--- Hendelser -------------------------------------------------------------------
+-- Events ----------------------------------------------------------------------
 
 local helloSent = false
 local changeQueued = false
@@ -862,18 +871,18 @@ local function PlanHello()
     C_Timer.After(HELLO_DELAY, function()
         if not helloSent and DW.IsMember() then
             helloSent = true
-            -- Bare det som er endret siden sist. De som var avlogget da, får
-            -- det når de logger inn og spør.
+            -- Only what has changed since last time. Those who were offline
+            -- then get it when they log in and ask.
             Publish()
             Send(DW.SyncRequest())
-            -- Se etter igjen litt senere: spillet kan ha lastet legacy-poengene
-            -- (og talentene) etter at vi leste første gang.
+            -- Check again a little later: the game may have loaded the legacy
+            -- points (and the talents) after we first read.
             PlanChange()
         end
     end)
 end
 
--- Utstyr, talenter eller poeng er endret. Send det, men ikke for ofte.
+-- Gear, talents or points have changed. Send it, but not too often.
 PlanChange = function()
     if changeQueued or not helloSent then
         return
@@ -905,7 +914,7 @@ for _, event in ipairs({
     "ACTIVE_TALENT_GROUP_CHANGED",
     "PLAYER_TALENT_UPDATE",
     "ACHIEVEMENT_EARNED",
-    "MAJOR_FACTION_RENOWN_LEVEL_CHANGED", -- legacy-poengene er renown (se øverst)
+    "MAJOR_FACTION_RENOWN_LEVEL_CHANGED", -- the legacy points are renown (see the top)
 }) do
     pcall(frame.RegisterEvent, frame, event)
 end
@@ -916,7 +925,7 @@ DW.OnMembershipChanged(function(member)
     end
 end)
 
--- Feilsøking: hva spillet oppgir, særlig om legacy-poeng, som ikke er sjekket.
+-- Debugging: what the game reports, especially about legacy points, which is not checked.
 DW.AddDebug("profil", function(add)
     local text = DW.DebugText
     local legacy = ReadLegacy()
@@ -933,7 +942,7 @@ DW.AddDebug("profil", function(add)
             add("poeng i medlemslisten (12. verdi): " .. text(member.points))
         end
     end
-    -- Alt spillet har med "Legacy" i navnet, så vi kan finne riktig funksjon.
+    -- Everything the game has with "Legacy" in the name, so we can find the right function.
     local found = {}
     for name, value in pairs(_G) do
         if type(name) == "string" and name:find("Legacy") and #found < 25 then
@@ -961,7 +970,7 @@ DW.AddDebug("profil", function(add)
     add("talenter: " .. (trees and table.concat(summary, ", ") or "kunne ikke leses"))
     local gear = ReadGear()
     add("utstyr: " .. (gear and select(2, gear:gsub("=", "")) or 0) .. " plasser")
-    -- Valutaene spillet har, så vi ser om legacy-poengene er en av dem.
+    -- The currencies the game has, so we can see if the legacy points are one of them.
     local C = C_CurrencyInfo
     if type(C) == "table" and type(C.GetCurrencyListSize) == "function" and type(C.GetCurrencyListInfo) == "function" then
         local names = {}

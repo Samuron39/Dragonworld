@@ -1,17 +1,17 @@
 -- Dragonworld - admin
 --
--- Guildlederen kan logge inn som admin med en kode, og får da flere
--- rettigheter: i Forslag kan admin merke forslag som utført eller avvist, så
--- de flyttes til arkivet (Modules\Forslag.lua). Innloggingen huskes på kontoen
--- (DragonworldDB.admin) til man logger ut.
+-- The guild leader can log in as admin with a code, and then gets more
+-- rights: in Forslag (suggestions) admin can mark suggestions as done or rejected, so
+-- they are moved to the archive (Modules\Forslag.lua). The login is remembered on the account
+-- (DragonworldDB.admin) until you log out.
 --
--- Koden står ikke i addonen, bare et fingeravtrykk av den (SHA-256 med salt,
--- 100 runder). Addonen ligger åpent på GitHub, så koden selv skal ikke stå her.
--- Dette er en enkel sperre, ikke ekte sikkerhet: den som vil, kan endre filene
--- i sin egen addon, og de andre i guilden kan ikke sjekke hvem som er admin.
+-- The code is not in the addon, only a fingerprint of it (SHA-256 with salt,
+-- 100 rounds). The addon is public on GitHub, so the code itself must not be here.
+-- This is a simple lock, not real security: anyone who wants to can change the files
+-- in their own addon, and the others in the guild can't check who is admin.
 --
--- Ny kode: regn ut fingeravtrykket med DW.AdminHash("ny kode") (f.eks. med
--- /run print(DragonworldAdminHash("ny kode")) i spillet) og bytt ADMIN_HASH.
+-- New code: compute the fingerprint with DW.AdminHash("ny kode") (e.g. with
+-- /run print(DragonworldAdminHash("ny kode")) in the game) and change ADMIN_HASH.
 
 local ADDON_NAME, DW = ...
 local L = DW.L
@@ -21,8 +21,8 @@ local SALT = "Dragonworld-admin:"
 local ROUNDS = 100
 
 -- SHA-256 -----------------------------------------------------------------------
--- Skrevet for spillets Lua 5.1 med bit-biblioteket. Alle tall holdes som
--- 32-bits tall uten fortegn (0 til 2^32 - 1).
+-- Written for the game's Lua 5.1 with the bit library. All numbers are kept as
+-- unsigned 32-bit numbers (0 to 2^32 - 1).
 
 local MOD = 2 ^ 32
 local function U(x)
@@ -55,7 +55,7 @@ local function rrotate(a, n)
     return U(bit.bor(bit.rshift(a, n), bit.lshift(a, 32 - n)))
 end
 
--- Fingeravtrykket av en tekst, som 64 heksadesimale tegn.
+-- The fingerprint of a text, as 64 hexadecimal characters.
 local function Sha256(message)
     local length = #message
     local bits = length * 8
@@ -103,7 +103,7 @@ local function Sha256(message)
 end
 DW.Sha256 = Sha256
 
--- Fingeravtrykket av en admin-kode, slik det står i ADMIN_HASH.
+-- The fingerprint of an admin code, as it appears in ADMIN_HASH.
 function DW.AdminHash(code)
     local hash = Sha256(SALT .. tostring(code))
     for _ = 2, ROUNDS do
@@ -111,9 +111,9 @@ function DW.AdminHash(code)
     end
     return hash
 end
-DragonworldAdminHash = DW.AdminHash -- så det kan brukes med /run i spillet
+DragonworldAdminHash = DW.AdminHash -- so it can be used with /run in the game
 
--- Innlogging ----------------------------------------------------------------------
+-- Login ---------------------------------------------------------------------------
 
 local listeners = {}
 
@@ -134,7 +134,7 @@ function DW.IsAdmin()
     return type(DragonworldDB) == "table" and type(DragonworldDB.admin) == "table" and DragonworldDB.admin.on == true
 end
 
--- Prøver en kode. Returnerer true hvis den er riktig.
+-- Tries a code. Returns true if it is correct.
 function DW.AdminLogin(code)
     if type(code) ~= "string" or code == "" or type(DragonworldDB) ~= "table" then
         return false
@@ -156,7 +156,7 @@ function DW.AdminLogout()
     Changed()
 end
 
--- Vinduet -------------------------------------------------------------------------
+-- The window ----------------------------------------------------------------------
 
 local box
 
@@ -186,7 +186,7 @@ local function CreateBox()
     f:SetBackdropBorderColor(0.90, 0.72, 0.30, 1)
     f:EnableMouse(true)
     f:Hide()
-    table.insert(UISpecialFrames, "DragonworldAdminLogin") -- Escape lukker
+    table.insert(UISpecialFrames, "DragonworldAdminLogin") -- Escape closes
 
     f.title = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     f.title:SetPoint("TOP", 0, -16)
@@ -196,7 +196,7 @@ local function CreateBox()
     f.text:SetPoint("RIGHT", -20, 0)
     f.text:SetJustifyH("LEFT")
 
-    -- Koden vises som prikker.
+    -- The code is shown as dots.
     f.code = CreateFrame("EditBox", nil, f, "InputBoxTemplate")
     f.code:SetSize(290, 22)
     f.code:SetPoint("TOPLEFT", 26, -78)
@@ -245,7 +245,7 @@ local function RefreshBox()
     box.cancel.label:SetText(L.SUG_CANCEL)
 end
 
--- Viser innloggingen.
+-- Shows the login.
 function DW.ShowAdminLogin()
     if not box then
         box = CreateBox()

@@ -1,24 +1,24 @@
--- Dragonworld - knappene som åpner addonen: ved minimapet og i guildvinduet
+-- Dragonworld - the buttons that open the addon: at the minimap and in the guild window
 --
--- Knappen legger seg selv på kanten av minimapet. Klikk åpner hovedvinduet.
--- Den blinker mildt når noe er nytt (Alerts.lua).
--- Den kan dras rundt kanten, og plasseringen huskes. Den kan skjules under
--- Innstillinger eller med "/dw knapp".
+-- The button places itself on the edge of the minimap. A click opens the main window.
+-- It blinks softly when something is new (Alerts.lua).
+-- It can be dragged around the edge, and the position is remembered. It can be hidden under
+-- Settings or with "/dw button".
 --
--- I spillets guildvindu kommer en Dragonworld-fane under de andre fanene på
--- høyre side (se "Fanen i guildvinduet"), i Professions-vinduet snarveier til
--- Dragonworld-fanene Professions og Materialer, og i Looking For Group en
--- snarvei til Dungeons (se "Snarveier under spillets sidefaner").
+-- In the game's guild window a Dragonworld tab appears below the other tabs on
+-- the right side (see "The tab in the guild window"), in the Professions window shortcuts to
+-- the Dragonworld tabs Professions and Materialer, and in Looking For Group a
+-- shortcut to Dungeons (see "Shortcuts under the game's side tabs").
 
 local ADDON_NAME, DW = ...
 local L = DW.L
 
 local BUTTON_NAME = "DragonworldMinimapButton"
-local DEFAULT_ANGLE = 215 -- grader: 0 = rett til høyre, 90 = rett opp
-local EDGE_OFFSET = 5     -- hvor langt utenfor minimap-kanten knappen ligger
+local DEFAULT_ANGLE = 215 -- degrees: 0 = straight right, 90 = straight up
+local EDGE_OFFSET = 5     -- how far outside the minimap edge the button sits
 
 local button
-local settings = {} -- lagres: settings.angle (tall) og settings.hide (true/nil)
+local settings = {} -- saved: settings.angle (number) and settings.hide (true/nil)
 
 local function Place()
     if not button then
@@ -34,7 +34,7 @@ local function Place()
     if shape == "ROUND" then
         x, y = x * w, y * h
     else
-        -- Firkantet minimap (fra andre addons): følg kanten av firkanten.
+        -- Square minimap (from other addons): follow the edge of the square.
         local diagonalW = math.sqrt(2 * w ^ 2) - 10
         local diagonalH = math.sqrt(2 * h ^ 2) - 10
         x = math.max(-w, math.min(x * diagonalW, w))
@@ -45,7 +45,7 @@ local function Place()
     button:SetPoint("CENTER", Minimap, "CENTER", x, y)
 end
 
--- Mens knappen dras: la den følge musepekeren rundt kanten.
+-- While the button is dragged: let it follow the cursor around the edge.
 local function FollowCursor()
     local centerX, centerY = Minimap:GetCenter()
     local cursorX, cursorY = GetCursorPosition()
@@ -79,10 +79,10 @@ local function CreateButton()
     border:SetPoint("TOPLEFT", 0, 0)
     b.border = border
 
-    -- Når noe er nytt (Alerts.lua) blinker den runde ringen rundt knappen i en
-    -- farge (en lysende kopi av ringen, oppå den), med en myk glorie rundt.
-    -- Gløden ligger rundt ikonet, ikke oppå det, så fargen ikke forsvinner i
-    -- det mørke ikonet.
+    -- When something is new (Alerts.lua) the round ring around the button blinks
+    -- in a colour (a glowing copy of the ring, on top of it), with a soft halo around.
+    -- The glow sits around the icon, not on top of it, so the colour doesn't
+    -- vanish in the dark icon.
     b.glow = DW.PrepareGlow(b:CreateTexture(nil, "OVERLAY", nil, 7), nil, "Interface\\Minimap\\MiniMap-TrackingBorder")
     b.glow:SetSize(50, 50)
     b.glow:SetPoint("TOPLEFT", 0, 0)
@@ -92,7 +92,7 @@ local function CreateButton()
     b.halo:SetPoint("CENTER", 0, 0)
     DW.AddGlowTarget({ glows = { b.glow, b.halo } })
 
-    -- Blinker knappen, åpnes fanen med det nye.
+    -- If the button is blinking, the tab with the new thing opens.
     b:SetScript("OnClick", function()
         DW.ClickOpen()
     end)
@@ -110,7 +110,7 @@ local function CreateButton()
         GameTooltip:AddLine("Dragonworld")
         GameTooltip:AddLine(L.MINIMAP_CLICK, 1, 1, 1)
         GameTooltip:AddLine(L.MINIMAP_DRAG, 0.75, 0.75, 0.75)
-        DW.AlertsHovered(GameTooltip) -- listen over det nye; nå er det sett
+        DW.AlertsHovered(GameTooltip) -- the list of what is new; now it is seen
         GameTooltip:Show()
     end)
     b:SetScript("OnLeave", function()
@@ -120,15 +120,15 @@ local function CreateButton()
     return b
 end
 
--- Knappen vises bare for medlemmer av guilden, og bare hvis den ikke er skjult
--- under Innstillinger.
+-- The button is only shown for members of the guild, and only if it is not hidden
+-- under Settings.
 local function UpdateVisibility()
     if button then
         button:SetShown(DW.IsMember() and not settings.hide)
     end
 end
 
--- Kalles fra kjernen når lagrede data er lest inn.
+-- Called from the core when saved data has been read in.
 function DW.InitMinimapButton(saved)
     settings = saved
     if not button then
@@ -144,34 +144,34 @@ function DW.IsMinimapButtonShown()
     return not settings.hide
 end
 
--- Viser eller skjuler knappen, og husker valget.
+-- Shows or hides the button, and remembers the choice.
 function DW.SetMinimapButtonShown(show)
     settings.hide = (not show) or nil
     UpdateVisibility()
 end
 
--- Skjuler knappen hvis den vises, og omvendt. Returnerer true hvis den vises.
+-- Hides the button if it is shown, and the other way round. Returns true if it is shown.
 function DW.ToggleMinimapButton()
     DW.SetMinimapButtonShown(settings.hide and true or false)
     return not settings.hide
 end
 
--- Fanen i guildvinduet ------------------------------------------------------------
+-- The tab in the guild window -----------------------------------------------------
 --
--- Spillets vindu "Guild & Communities" (CommunitiesFrame i Blizzard_Communities)
--- har faner på høyre side: chat, medlemmer, guild-info og så videre. Under den
--- nederste av dem legger vi en fane for Dragonworld, laget likt spillets egne
--- (RightSideTabTemplate i Blizzards kode for Forever): 32x32, rammen fra
--- SpellBook-SkillLineTab, ikonet og lys når musen er over, 20 punkter under
--- fanen over. Klikk gjør det samme som minimap-knappen: åpner Dragonworld,
--- eller fanen med det som er nytt. Den blinker også som de andre knappene.
--- Den vises bare når guilden (ikke en annen community) er valgt i vinduet.
+-- The game's window "Guild & Communities" (CommunitiesFrame in Blizzard_Communities)
+-- has tabs on the right side: chat, members, guild info and so on. Below the
+-- lowest of them we add a tab for Dragonworld, made like the game's own
+-- (RightSideTabTemplate in Blizzard's code for Forever): 32x32, the frame from
+-- SpellBook-SkillLineTab, the icon and highlight when the mouse is over, 20 points below
+-- the tab above. A click does the same as the minimap button: opens Dragonworld,
+-- or the tab with what is new. It also blinks like the other buttons.
+-- It is only shown when the guild (not another community) is chosen in the window.
 --
--- Vinduet lastes først når det åpnes første gang, så fanen lages da. Vi
--- henger oss bare på spillets kode (hooksecurefunc), og endrer ikke den.
+-- The window is only loaded when it is first opened, so the tab is made then. We
+-- only hook into the game's code (hooksecurefunc), and don't change it.
 
 local GUILD_WINDOW_ADDON = "Blizzard_Communities"
--- Fanene i vinduet, nederste først.
+-- The tabs in the window, lowest first.
 local WINDOW_TABS = { "GuildPreferredPlaySettingsTab", "GuildInfoTab", "GuildBenefitsTab", "RosterTab", "ChatTab" }
 
 local guildTab
@@ -186,8 +186,8 @@ local function LowestTab(window)
     return nil
 end
 
--- Plasserer fanen under den nederste av spillets faner, og viser den når
--- spillet viser sine (og guilden er valgt).
+-- Places the tab below the lowest of the game's tabs, and shows it when
+-- the game shows its own (and the guild is chosen).
 local function UpdateGuildTab()
     if not guildTab then
         return
@@ -226,7 +226,7 @@ local function CreateGuildTab(window)
 
     tab:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square")
 
-    -- Blinker som knappen på action bar (samme glød rundt firkanten).
+    -- Blinks like the action bar button (the same glow around the square).
     local square = DW.SQUARE_GLOW
     if square and DW.PrepareGlow and DW.AddGlowTarget then
         tab.glow = DW.PrepareGlow(tab:CreateTexture(nil, "OVERLAY", nil, 7), nil, square.texture)
@@ -256,7 +256,7 @@ local function CreateGuildTab(window)
     return tab
 end
 
--- Lager fanen når guildvinduet finnes (det er lastet).
+-- Creates the tab when the guild window exists (it is loaded).
 local function SetUpGuildTab()
     local window = _G.CommunitiesFrame
     if guildTab or type(window) ~= "table" or type(window.RosterTab) ~= "table" then
@@ -272,22 +272,22 @@ end
 
 DW.OnMembershipChanged(UpdateGuildTab)
 
--- Snarveier under spillets sidefaner ---------------------------------------------
+-- Shortcuts under the game's side tabs --------------------------------------------
 --
--- Noen av spillets vinduer i Forever har store faner på høyre side, laget med
--- malen LargeSideTabButtonTemplate, 2 punkter fra hverandre:
---   * Professions (ProfessionsFrame i Blizzard_Professions): oversikten øverst
---     (ProfessionsOverviewTab), så én per profession (rightProfessionTabs),
---     vist og skjult av RefreshRightTabs.
---   * Looking For Group (LFGParentFrame i Blizzard_GroupFinder_VanillaStyle):
---     ListingTab, BrowsingTab og WhoListingTab, satt av UpdateTabs.
--- Under den nederste legger vi snarveier til Dragonworld-faner: Professions og
--- Materialer i Professions-vinduet, Dungeons i Looking For Group. De lages
--- med spillets egen mal, så de ser helt like ut, med et lite guild-skjold nede
--- i hjørnet så man ser at de er Dragonworld sine. Klikk åpner Dragonworld på
--- den fanen. Dungeons-snarveien blinker når noen i guilden er åpne for
--- dungeons på ditt level. Vinduene lastes først når de åpnes, så snarveiene
--- lages da.
+-- Some of the game's windows in Forever have large tabs on the right side, made with
+-- the template LargeSideTabButtonTemplate, 2 points apart:
+--   * Professions (ProfessionsFrame in Blizzard_Professions): the overview on top
+--     (ProfessionsOverviewTab), then one per profession (rightProfessionTabs),
+--     shown and hidden by RefreshRightTabs.
+--   * Looking For Group (LFGParentFrame in Blizzard_GroupFinder_VanillaStyle):
+--     ListingTab, BrowsingTab and WhoListingTab, set by UpdateTabs.
+-- Below the lowest one we add shortcuts to Dragonworld tabs: Professions and
+-- Materialer in the Professions window, Dungeons in Looking For Group. They are made
+-- with the game's own template, so they look exactly the same, with a small guild shield
+-- in the corner so you can see they are Dragonworld's. A click opens Dragonworld on
+-- that tab. The Dungeons shortcut blinks when someone in the guild is open to
+-- dungeons at your level. The windows are only loaded when they are opened, so the
+-- shortcuts are made then.
 
 local SIDE_WINDOWS = {
     {
@@ -299,8 +299,8 @@ local SIDE_WINDOWS = {
             end
             return list
         end,
-        -- Materialer-fanen har ambolten som ikon, som også er ikonet til
-        -- Blacksmithing i spillets faner. Her får den malm, så de ikke forveksles.
+        -- The Materialer tab has the anvil as icon, which is also the icon of
+        -- Blacksmithing in the game's tabs. Here it gets ore, so they aren't confused.
         shortcuts = {
             { module = "professions", icon = "Interface\\Icons\\INV_Misc_Book_09" },
             { module = "materialer", icon = "Interface\\Icons\\INV_Ore_Copper_01" },
@@ -312,15 +312,15 @@ local SIDE_WINDOWS = {
             return { window.ListingTab, window.BrowsingTab, window.WhoListingTab }
         end,
         shortcuts = {
-            -- Blinker når noen i guilden er åpne for dungeons på ditt level
-            -- (varselet "dungeon" i Dungeons.lua, det samme som minimap-knappen).
+            -- Blinks when someone in the guild is open to dungeons at your level
+            -- (the alert "dungeon" in Dungeons.lua, the same as the minimap button).
             { module = "dungeons", icon = "Interface\\Icons\\Ability_DualWield", alert = "dungeon" },
         },
     },
 }
 
--- En snarvei som hører til et varsel, lyser med spillets egen glød for
--- sidefaner (TabGlow, som pulserer), farget som varselet, så lenge det er nytt.
+-- A shortcut that belongs to an alert glows with the game's own glow for
+-- side tabs (TabGlow, which pulses), coloured like the alert, as long as it is new.
 local function UpdateSideTabGlow(tab)
     if not tab.alert or not tab.SetTabGlowAnimationPlaying then
         return
@@ -332,7 +332,7 @@ local function UpdateSideTabGlow(tab)
     end
 end
 
--- Den nederste av spillets faner som vises (de står ovenfra og ned i listen).
+-- The lowest of the game's tabs that is shown (they are in the list from top to bottom).
 local function LowestShown(tabs)
     local lowest
     for _, tab in ipairs(tabs) do
@@ -376,7 +376,7 @@ local function CreateSideTab(window, first, shortcut)
         tab:SetFrameLevel(level)
     end
     tab.Icon:SetTexture(shortcut.icon)
-    -- Ikonet fyller fanen, som spillets egne (fillToInterior).
+    -- The icon fills the tab, like the game's own (fillToInterior).
     tab.fillToInterior = true
     if tab.SetChecked then
         tab:SetChecked(false)
@@ -387,7 +387,7 @@ local function CreateSideTab(window, first, shortcut)
     tab.badge:SetPoint("BOTTOMLEFT", tab.Icon, "BOTTOMLEFT", -3, -3)
     tab.badge:SetTexture(DW.ICON)
 
-    -- Gløden får varselets farge (gjort grå først, så fargen blir ren).
+    -- The glow gets the alert's colour (made grey first, so the colour comes out clean).
     if tab.alert and type(tab.TabGlow) == "table" then
         for _, alert in ipairs(DW.ALERTS or {}) do
             if alert.kind == tab.alert and alert.color then
@@ -397,8 +397,8 @@ local function CreateSideTab(window, first, shortcut)
         end
     end
 
-    -- Tooltipen: "Dragonworld: Professions" og hva fanen gjør, på valgt språk,
-    -- og for Dungeons hvem som er åpne nå (hvis det er nytt).
+    -- The tooltip: "Dragonworld: Professions" and what the tab does, in the chosen language,
+    -- and for Dungeons who is open now (if it is new).
     tab.GetTooltipTextSetupFunction = function(self)
         return function(tooltip)
             local module = DW.modules[self.module]
@@ -426,7 +426,7 @@ local function CreateSideTab(window, first, shortcut)
     return tab
 end
 
--- Lager snarveiene i et vindu når det finnes (er lastet), én gang.
+-- Creates the shortcuts in a window when it exists (is loaded), once.
 local function SetUpSideTabs(side)
     local window = _G[side.frame]
     if side.created or type(window) ~= "table" then
@@ -464,9 +464,9 @@ DW.OnAlertsChanged(function()
     end
 end)
 
--- Andre addons kan gjøre minimapet firkantet. De er først ferdig lastet ved
--- innlogging, så knappen plasseres på nytt da. Guildvinduet og vinduene med
--- sidefaner lastes når de åpnes første gang (eller er alt lastet av en annen addon).
+-- Other addons can make the minimap square. They are only fully loaded at
+-- login, so the button is placed again then. The guild window and the windows with
+-- side tabs are loaded when they are first opened (or are already loaded by another addon).
 local frame = CreateFrame("Frame")
 frame:RegisterEvent("PLAYER_LOGIN")
 frame:RegisterEvent("ADDON_LOADED")

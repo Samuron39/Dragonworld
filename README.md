@@ -1,6 +1,6 @@
 # Dragonworld
 
-Guild addon for the guild **Dragonworld** in World of Warcraft Forever. English, Norsk, Nederlands.
+Guild addon for the guild **Dragonworld** in World of Warcraft Forever. English, Norsk, Nederlands, Deutsch, Dansk, Svenska, Français.
 
 Only characters in the guild Dragonworld can use it.
 
@@ -13,6 +13,14 @@ Only characters in the guild Dragonworld can use it.
 3. Start the game.
 
 Windows may warn that the file comes from the internet: choose *More info* and *Run anyway*. By hand also works: unzip `Dragonworld.zip` into `World of Warcraft\_forever_\Interface\AddOns`, so that you get `AddOns\Dragonworld\Dragonworld.toc`.
+
+**Does Windows say Smart App Control blocked the file?** Smart App Control (on by default on many new PCs) blocks every script file downloaded with a browser. Install this way instead: press **Windows key + R**, paste this line and press **Enter**:
+
+```
+powershell -ep bypass -c "iwr https://github.com/Samuron39/Dragonworld/releases/latest/download/update.ps1 -OutFile $env:TEMP\dragonworld-update.ps1 -UseBasicParsing; & $env:TEMP\dragonworld-update.ps1"
+```
+
+It downloads the same updater and runs it, and everything works as above, automatic updates included. On such PCs the desktop shortcut gets Windows' standard icon.
 
 **Update**
 
@@ -32,6 +40,14 @@ The updater only downloads the newest `Dragonworld.zip` from this page and repla
 
 Windows kan advare om at filen kommer fra internett: velg *Mer informasjon* og *Kjør likevel*.
 
+**Sier Windows at Smart App Control har blokkert filen?** Smart App Control (som er på fra start på mange nye PC-er) stopper alle skriptfiler som er lastet ned med nettleseren. Installer slik i stedet: trykk **Windows-tasten + R**, lim inn denne linjen og trykk **Enter**:
+
+```
+powershell -ep bypass -c "iwr https://github.com/Samuron39/Dragonworld/releases/latest/download/update.ps1 -OutFile $env:TEMP\dragonworld-update.ps1 -UseBasicParsing; & $env:TEMP\dragonworld-update.ps1"
+```
+
+Den laster ned det samme oppdateringsprogrammet og kjører det, og alt virker som over, også automatisk oppdatering. På slike PC-er får snarveien på skrivebordet Windows' vanlige ikon.
+
 **Oppdatere**
 
 Med automatisk oppdatering lastes nyeste versjon ned i bakgrunnen (sjekkes hvert 10. minutt, uten vindu). Spillet sier da "Ny versjon er klar!": skriv `/reload`, eller start spillet på nytt hvis det står det.
@@ -48,6 +64,14 @@ Uten sier addonen "Oppdater Dragonworld!" i spillet. Lukk spillet, dobbeltklikk 
 
 Windows kan waarschuwen dat het bestand van internet komt: kies *Meer info* en *Toch uitvoeren*.
 
+**Zegt Windows dat Smart App Control het bestand heeft geblokkeerd?** Smart App Control (standaard aan op veel nieuwe pc's) blokkeert elk scriptbestand dat met een browser is gedownload. Installeer dan zo: druk op **Windows-toets + R**, plak deze regel en druk op **Enter**:
+
+```
+powershell -ep bypass -c "iwr https://github.com/Samuron39/Dragonworld/releases/latest/download/update.ps1 -OutFile $env:TEMP\dragonworld-update.ps1 -UseBasicParsing; & $env:TEMP\dragonworld-update.ps1"
+```
+
+Hij downloadt hetzelfde updateprogramma en voert het uit, en alles werkt zoals hierboven, ook automatische updates. Op zulke pc's krijgt de snelkoppeling op het bureaublad het standaardpictogram van Windows.
+
 **Bijwerken**
 
 Met automatische updates wordt de nieuwste versie op de achtergrond gedownload (elke 10 minuten gecontroleerd, zonder venster). Het spel zegt dan "Nieuwe versie klaar!": typ `/reload`, of start het spel opnieuw als dat er staat.
@@ -57,6 +81,7 @@ Zonder zegt de addon "Werk Dragonworld bij!" in het spel. Sluit het spel, dubbel
 ## For developers
 
 - `Dragonworld/` is the addon. `tests/` runs it against a fake WoW API: `node tests/run.js Dragonworld` (run `npm install` in `tests` first).
-- `tools/release.ps1` publishes a new version: tests, `Version.lua`, commit, tag, push, GitHub release with `Dragonworld.zip` and `Installer-Dragonworld.cmd`.
+- `tools/release.ps1 -News @{ en = '...'; nb = '...'; ... }` publishes a new version: tests, `Version.lua` (with the short news shown in the game's update window), commit, tag, push, GitHub release with `Dragonworld.zip` and `Installer-Dragonworld.cmd`. See `CLAUDE.md`.
 - `Installer-Dragonworld.cmd` downloads `Dragonworld/Updater/update.ps1` from this repository and runs it; the updater finds the game, installs the newest release and offers the desktop shortcut.
+- `update.ps1` must also work in PowerShell's Constrained Language Mode, which Smart App Control turns on for scripts that aren't signed: only PowerShell's own commands, and .NET or COM only with a fallback (`tar.exe` for the zip, `schtasks.exe` for the task). To test, run it from a session after `$ExecutionContext.SessionState.LanguageMode = 'ConstrainedLanguage'`.
 - The addons in the guild tell each other their version over addon messages, since an addon cannot read the internet; the one with an older version gets the update window.

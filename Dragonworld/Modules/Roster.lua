@@ -1,81 +1,84 @@
--- Dragonworld - Medlemmer
--- Viser alle i guilden, også de som er avlogget, med level, rank, professions
--- og når de sist var pålogget. Listen kan filtreres på status (alle, pålogget,
--- aktive, inaktive) og på profession, og det er et søkefelt.
+-- Dragonworld - Roster
+-- Shows everyone in the guild, also those who are offline, with level, rank,
+-- professions and when they were last online. The list can be filtered by
+-- status (all, online, active, inactive) and by profession, and there is a
+-- search field.
 --
--- Hvor opplysningene kommer fra:
---   * Navn, level, klasse, rank, sone, notat og sist pålogget kommer fra
---     spillets egen medlemsliste, og finnes for alle.
---   * Professions oppgir ikke spillet for andre spillere. Derfor forteller
---     hver addon resten av guilden hvilke professions karakteren har, og alle
---     tar vare på det de får høre. Professions vises altså bare for medlemmer
---     som bruker addonen, og først etter at dere har vært pålogget samtidig.
---   * Har klienten spillets gamle guild-oversikt over professions, brukes den
---     i tillegg for dem addonen ikke har hørt fra.
+-- Where the information comes from:
+--   * Name, level, class, rank, zone, note and last online come from the game's
+--     own member list, and exist for everyone.
+--   * The game does not give out professions for other players. So each addon
+--     tells the rest of the guild which professions the character has, and
+--     everyone keeps what they hear. Professions are therefore only shown for
+--     members who use the addon, and only after you have been online at the
+--     same time.
+--   * If the client has the game's old guild overview of professions, it is
+--     also used for those the addon has not heard from.
 --
--- Se hva et medlem kan lage: når du åpner en av dine egne professions, leser
--- addonen hvilke oppskrifter du kan, og sender listen til guilden (C-meldinger).
--- I listen er slike professions gule, og et klikk viser oppskriftene i
--- addonens eget vindu (RecipeWindow.lua), også når medlemmet er avlogget.
--- Spillets lenke til professionen (den samme som når man deler en profession
--- i chatten) sendes fortsatt. Mellom to spillere åpner den ingenting i
--- Forever, så den brukes bare for dine egne (en knapp i oppskriftsvinduet).
+-- See what a member can craft: when you open one of your own professions, the
+-- addon reads which recipes you know, and sends the list to the guild
+-- (C messages). In the list such professions are yellow, and a click shows the
+-- recipes in the addon's own window (RecipeWindow.lua), also when the member is
+-- offline. The game's link to the profession (the same as when you share a
+-- profession in chat) is still sent. Between two players it opens nothing in
+-- Forever, so it is only used for your own (a button in the recipe window).
 --
--- Samleyrker (Fishing, Skinning, Herbalism) har ingen oppskrifter, og regnes
--- ikke som "ikke åpnet".
+-- Gathering professions (Fishing, Skinning, Herbalism) have no recipes, and
+-- do not count as "not opened".
 --
--- Egne professions leses på tre måter, fordi spillet ikke alltid oppgir dem
--- likt: karakterens profession-liste, håndverkssystemets liste, og det som
--- sto i håndverksvinduet sist det var åpent.
+-- Your own professions are read in three ways, because the game does not
+-- always report them the same way: the character's profession list, the
+-- tradeskill system's list, and what was in the tradeskill window the last
+-- time it was open.
 --
--- Medlemmer kjennes igjen på spillerens faste ID, ikke på navnet. I Forever
--- kan navn ha mellomrom, og spillet skriver dem ikke likt overalt.
+-- Members are recognized by the player's permanent ID, not by name. In Forever
+-- names can have spaces, and the game does not write them the same everywhere.
 --
--- "Aktiv" betyr pålogget i løpet av de siste 30 dagene.
+-- "Active" means online within the last 30 days.
 --
--- All tekst ligger i Locales.lua (navnene som begynner med RO_).
+-- All text is in Locales.lua (the names that start with RO_).
 
 local ADDON_NAME, DW = ...
 local L = DW.L
 
 local MODULE_ID = "roster"
-local PREFIX = "DragonworldPr" -- navnet på meldingene; maks 16 tegn
+local PREFIX = "DragonworldPr" -- the name of the messages; max 16 characters
 local SEP = "\t"
 local ACTIVE_DAYS = 30
 local MAX_PROFESSIONS = 8
 local MAX_LINK_BYTES = 40
-local MAX_RECIPES = 600   -- flere oppskrifter enn dette i én profession godtas ikke
-local MAX_PARTS = 20      -- en oppskriftsliste sendes i høyst så mange meldinger
+local MAX_RECIPES = 600   -- more recipes than this in one profession are not accepted
+local MAX_PARTS = 20      -- a recipe list is sent in at most this many messages
 
--- Samleyrker: de har ingen oppskrifter, så det er ingenting å dele eller vise.
--- Kjennes igjen på spillets nummer for professionen, eller på det engelske
--- navnet når vi bare har navnet (fra andres meldinger).
+-- Gathering professions: they have no recipes, so there is nothing to share or
+-- show. Recognized by the game's number for the profession, or by the English
+-- name when we only have the name (from other people's messages).
 local GATHERING_LINES = { [182] = true, [356] = true, [393] = true } -- Herbalism, Fishing, Skinning
 local GATHERING_NAMES = { Herbalism = true, Fishing = true, Skinning = true }
 
--- Lagrede data. Settes i OnLoad nederst.
---   db.professions[nøkkel] = {
+-- Saved data. Set in OnLoad at the bottom.
+--   db.professions[key] = {
 --       list = { { name = "Mining", level = 225, max = 300 }, ... },
---       links = { Blacksmithing = "2018:164" },   -- se under
---       updated = når vi sist fikk høre det,
+--       links = { Blacksmithing = "2018:164" },   -- see below
+--       updated = when we last heard it,
 --   }
---   Nøkkelen er spillerens faste ID. For meldinger fra eldre versjoner uten
---   ID er den "name:" fulgt av navnet uten mellomrom og realm.
---   db.seen[nøkkel][navn] = { level, max, link }: det vi har sett i ditt eget
---   håndverksvindu.
---   db.crafts[spillerens ID][navn] = { t = servertid, ids = "1zk,2b0,..." }:
---   oppskriftene medlemmet kan lage i den professionen (spellID-er i 36-tall,
---   sortert). Våre egne leses fra håndverksvinduet; de andres kommer i
---   C-meldinger. t er når listen sist ble endret; nyeste vinner.
+--   The key is the player's permanent ID. For messages from older versions
+--   without an ID it is "name:" followed by the name without spaces and realm.
+--   db.seen[key][name] = { level, max, link }: what we have seen in your own
+--   tradeskill window.
+--   db.crafts[player's ID][name] = { t = server time, ids = "1zk,2b0,..." }:
+--   the recipes the member can craft in that profession (spellIDs in base 36,
+--   sorted). Our own are read from the tradeskill window; the others' come in
+--   C messages. t is when the list was last changed; newest wins.
 --
--- Spillets lenke til en profession ser slik ut: "trade:<spillerens ID>:2018:164".
--- Vi lagrer og sender bare det som står etter ID-en, og setter lenken sammen
--- igjen når noen klikker. Lenken åpner spillets eget vindu, men bare når
--- spillet går med på det (det gjorde det ikke mellom to spillere i Forever),
--- så oppskriftslisten er det som vises; lenken er en ekstra knapp for dine egne.
+-- The game's link to a profession looks like this: "trade:<player's ID>:2018:164".
+-- We only store and send what comes after the ID, and put the link together
+-- again when someone clicks. The link opens the game's own window, but only
+-- when the game agrees to it (it did not between two players in Forever), so
+-- the recipe list is what is shown; the link is an extra button for your own.
 local db = { professions = {}, seen = {}, crafts = {} }
 
--- Småting -----------------------------------------------------------------------
+-- Small things -------------------------------------------------------------------
 
 local function Number(value)
     if type(value) == "number" and not DW.IsSecret(value) then
@@ -91,7 +94,7 @@ local function Text(value)
     return ""
 end
 
--- Navn på en profession, uten tegn som brukes som skilletegn i meldingene.
+-- The name of a profession, without characters used as separators in the messages.
 local function CleanName(text)
     text = tostring(text):gsub("[%c|:;]", " ")
     text = text:gsub("^%s+", "")
@@ -103,7 +106,7 @@ local function NameStoreKey(name)
     return "name:" .. DW.NameKey(name)
 end
 
--- Nøkkelen vi lagrer denne karakterens egne professions under.
+-- The key we store this character's own professions under.
 local function MyStoreKey()
     local guid = DW.MyGUID()
     if guid then
@@ -113,13 +116,13 @@ local function MyStoreKey()
     return name and NameStoreKey(name) or nil
 end
 
--- Er dette slutten av en profession-lenke slik vi godtar den? Bare bokstaver,
--- tall, kolon og bindestrek, så ingen kan smugle inn noe annet.
+-- Is this the end of a profession link in the form we accept? Only letters,
+-- digits, colons and hyphens, so nobody can smuggle in anything else.
 local function ValidLinkRest(rest)
     return type(rest) == "string" and #rest > 0 and #rest <= MAX_LINK_BYTES and rest:find("^[%w:%-]+$") ~= nil
 end
 
--- Navnene klienten din bruker på samleyrkene, i tillegg til de engelske.
+-- The names your client uses for the gathering professions, in addition to the English ones.
 local localGatheringNames
 
 local function IsGathering(profession)
@@ -136,12 +139,12 @@ local function IsGathering(profession)
     if GATHERING_NAMES[name] then
         return true
     end
-    -- Slås opp én gang per økt.
+    -- Looked up once per session.
     if not localGatheringNames and C_TradeSkillUI and C_TradeSkillUI.GetProfessionInfoBySkillLineID then
         local names = {}
         for line in pairs(GATHERING_LINES) do
             local ok, info = pcall(C_TradeSkillUI.GetProfessionInfoBySkillLineID, line)
-            -- Bare når spillet bekrefter at svaret gjelder akkurat den linjen.
+            -- Only when the game confirms that the answer is for exactly that line.
             if ok and type(info) == "table" and Text(info.professionName) ~= "" and info.professionID == line then
                 names[CleanName(info.professionName)] = true
             end
@@ -151,10 +154,10 @@ local function IsGathering(profession)
     return localGatheringNames ~= nil and localGatheringNames[name] == true
 end
 
--- Oppskriftslister ----------------------------------------------------------------
+-- Recipe lists --------------------------------------------------------------------
 --
--- En oppskrift er spellID-en spillet bruker for den. I meldingene skrives de i
--- 36-tall ("2660" blir "21w"), så flere får plass i hver melding.
+-- A recipe is the spellID the game uses for it. In the messages they are written
+-- in base 36 ("2660" becomes "21w"), so more fit in each message.
 
 local DIGITS = "0123456789abcdefghijklmnopqrstuvwxyz"
 
@@ -168,7 +171,7 @@ local function ToBase36(number)
     return text
 end
 
--- Gjør en liste med spellID-er om til lagret tekst: sortert, uten doble.
+-- Turns a list of spellIDs into stored text: sorted, without duplicates.
 local function EncodeRecipes(ids)
     local seen, sorted = {}, {}
     for _, id in ipairs(ids) do
@@ -199,7 +202,7 @@ local function DecodeRecipes(text)
     return ids
 end
 
--- Oppskriftslistene for én spiller (nøkkel = spillerens faste ID).
+-- The recipe lists for one player (key = the player's permanent ID).
 local function CraftsOf(key, create)
     if type(db.crafts) ~= "table" then
         db.crafts = {}
@@ -224,7 +227,7 @@ local function CraftsEntry(key, name)
     return nil
 end
 
--- Hvem som vil vite når en oppskriftsliste er kommet (oppskriftsvinduet).
+-- Who wants to know when a recipe list has arrived (the recipe window).
 local recipeListeners = {}
 
 local function RecipesChanged()
@@ -236,10 +239,10 @@ local function RecipesChanged()
     end
 end
 
--- Egne professions --------------------------------------------------------------
+-- Own professions ---------------------------------------------------------------
 
--- Viser håndverksvinduet noe som ikke er ditt eget: en annens profession (åpnet
--- fra en lenke), guildens, eller en NPC sin?
+-- Does the tradeskill window show something that is not your own: someone
+-- else's profession (opened from a link), the guild's, or an NPC's?
 local function ShowsSomeoneElse()
     local function Yes(fn)
         if type(fn) ~= "function" then
@@ -254,8 +257,8 @@ local function ShowsSomeoneElse()
     return Yes(IsTradeSkillLinked)
 end
 
--- Spillets lenke til professionen som står i håndverksvinduet. Returnerer
--- spillerens ID og det som står etter den i lenken, eller nil.
+-- The game's link to the profession in the tradeskill window. Returns the
+-- player's ID and what comes after it in the link, or nil.
 local function ReadOpenLink()
     local getter = (C_TradeSkillUI and C_TradeSkillUI.GetTradeSkillListLink) or GetTradeSkillListLink
     if type(getter) ~= "function" then
@@ -272,10 +275,10 @@ local function ReadOpenLink()
     return guid, rest
 end
 
--- Professions spillet selv lister for karakteren (uten det vi har sett i
--- håndverksvinduet). Hver har også spillets nummer på professionen (line),
--- som trengs for å åpne den. Returnerer en tabell med navnet som nøkkel, og
--- funksjonen som legger til flere.
+-- Professions the game itself lists for the character (without what we have
+-- seen in the tradeskill window). Each also has the game's number for the
+-- profession (line), which is needed to open it. Returns a table with the name
+-- as key, and the function that adds more.
 local function ReadListedProfessions()
     local byName = {}
     local function Add(name, level, max, line)
@@ -294,7 +297,7 @@ local function ReadListedProfessions()
         end
     end
 
-    -- 1. Karakterens egen liste over professions.
+    -- 1. The character's own list of professions.
     if GetProfessions and GetProfessionInfo then
         for _, index in pairs({ GetProfessions() }) do
             local name, _, level, max, _, _, line = GetProfessionInfo(index)
@@ -304,8 +307,8 @@ local function ReadListedProfessions()
         end
     end
 
-    -- 2. Håndverkssystemets liste. Den har alle professions som finnes, så vi
-    --    tar bare dem karakteren har skill i.
+    -- 2. The tradeskill system's list. It has every profession that exists, so
+    --    we only take those the character has skill in.
     if C_TradeSkillUI and C_TradeSkillUI.GetAllProfessionTradeSkillLines and C_TradeSkillUI.GetProfessionInfoBySkillLineID then
         local ok, lines = pcall(C_TradeSkillUI.GetAllProfessionTradeSkillLines)
         if ok and type(lines) == "table" then
@@ -321,9 +324,9 @@ local function ReadListedProfessions()
     return byName, Add
 end
 
--- Hører oppskriften til professionen med dette nummeret? Spillet kan vise
--- navnet til én profession mens listen fortsatt er den forrige, så hver
--- oppskrift sjekkes for seg. Kan ikke spillet svare, godtas den.
+-- Does the recipe belong to the profession with this number? The game can show
+-- the name of one profession while the list is still the previous one, so each
+-- recipe is checked separately. If the game cannot answer, it is accepted.
 local function RecipeInLine(ui, id, line)
     if type(line) ~= "number" then
         return true
@@ -336,8 +339,8 @@ local function RecipeInLine(ui, id, line)
         end
         saidNo = ok and yes == false
     end
-    -- Oppskrifter kan ligge i en under-linje (f.eks. per utvidelse); da er
-    -- professionen "foreldre"-linjen.
+    -- Recipes can be in a sub-line (e.g. per expansion); then the profession
+    -- is the "parent" line.
     if ui.GetProfessionInfoByRecipeID then
         local ok, info = pcall(ui.GetProfessionInfoByRecipeID, id)
         if ok and type(info) == "table" then
@@ -350,9 +353,9 @@ local function RecipeInLine(ui, id, line)
     return not saidNo
 end
 
--- Oppskriftene du kan i professionen som står i håndverksvinduet, som en
--- sortert liste med spellID-er. nil når spillet ikke gir noen (vinduet er
--- ikke ferdig lastet, eller funksjonene finnes ikke).
+-- The recipes you know in the profession in the tradeskill window, as a sorted
+-- list of spellIDs. nil when the game gives none (the window has not finished
+-- loading, or the functions do not exist).
 local function ReadOpenRecipes(line)
     local ui = C_TradeSkillUI
     if not (ui and ui.GetAllRecipeIDs and ui.GetRecipeInfo) then
@@ -381,32 +384,32 @@ local function ReadOpenRecipes(line)
         end
     end
     if #learned == 0 then
-        return nil -- alle crafting-professions har minst én oppskrift; listen er ikke klar
+        return nil -- every crafting profession has at least one recipe; the list is not ready
     end
-    -- Sier spillet at ingen av dem hører til professionen, er det svaret
-    -- som er feil (f.eks. en under-linje vi ikke kjenner): ta alle. En liste
-    -- som var fra forrige profession, rettes uansett neste gang vinduet
-    -- oppdateres.
+    -- If the game says none of them belong to the profession, it is the answer
+    -- that is wrong (e.g. a sub-line we do not know): take all. A list that was
+    -- from the previous profession is corrected anyway the next time the
+    -- window is updated.
     return #inLine > 0 and inLine or learned
 end
 
--- Professionen addonen akkurat nå har bedt spillet åpne (se "Åpne neste"
--- lenger ned), eller nil.
+-- The profession the addon has just asked the game to open (see "Open next"
+-- (Open next) further down), or nil.
 local opening
 
--- Leser hvilken profession som står i håndverksvinduet akkurat nå, og husker
--- den. Returnerer true hvis vi fant noe.
+-- Reads which profession is in the tradeskill window right now, and remembers
+-- it. Returns true if we found something.
 local function RememberOpenTradeSkill()
     local name, level, max, windowLine
 
-    -- Ser du på en annens profession, er det ikke din.
+    -- If you are looking at someone else's profession, it is not yours.
     local linkOwner, linkRest = ReadOpenLink()
     local me = DW.MyGUID()
     if ShowsSomeoneElse() or (linkOwner and me and linkOwner ~= me) then
         return false
     end
     if linkOwner ~= me then
-        linkRest = nil -- uten egen ID kan vi ikke vite at lenken er din
+        linkRest = nil -- without our own ID we cannot know the link is yours
     end
 
     if C_TradeSkillUI then
@@ -427,10 +430,10 @@ local function RememberOpenTradeSkill()
         end
     end
 
-    -- Vinduet kan hete noe annet enn professionen i karakterens liste (vinduet
-    -- til Mining kan f.eks. hete "Smelting"). Bruk navnet fra listen når
-    -- spillets nummer på professionen stemmer, eller når det var addonen som
-    -- nettopp ba om å få akkurat den åpnet.
+    -- The window can have a different name than the profession in the
+    -- character's list (the Mining window can be called "Smelting", e.g.). Use
+    -- the name from the list when the game's number for the profession matches,
+    -- or when the addon had just asked for exactly that one to be opened.
     local listed = ReadListedProfessions()
     local lines = {}
     if windowLine then
@@ -466,8 +469,8 @@ local function RememberOpenTradeSkill()
     if type(db.seen[key]) ~= "table" then
         db.seen[key] = {}
     end
-    -- Lenken kommer ikke alltid med en gang vinduet åpnes. Behold den vi
-    -- hadde hvis spillet ikke ga noen nå.
+    -- The link does not always arrive right when the window opens. Keep the
+    -- one we had if the game gave none now.
     name = CleanName(name)
     local before = db.seen[key][name]
     db.seen[key][name] = {
@@ -476,7 +479,7 @@ local function RememberOpenTradeSkill()
         link = linkRest or (type(before) == "table" and ValidLinkRest(before.link) and before.link) or nil,
     }
 
-    -- Oppskriftene du kan, så guilden kan se dem (ikke for samleyrker).
+    -- The recipes you know, so the guild can see them (not for gathering professions).
     local line = (listed[name] and listed[name].line) or windowLine or linkLine
     if key:find("^Player%-") and not IsGathering({ name = name, line = line }) then
         local ids = ReadOpenRecipes(line)
@@ -485,7 +488,7 @@ local function RememberOpenTradeSkill()
             local crafts = CraftsOf(key, true)
             local old = crafts[name]
             if type(old) ~= "table" or old.ids ~= text or type(old.t) ~= "number" then
-                -- Alltid nyere enn forrige gang, selv om klokka står stille.
+                -- Always newer than last time, even if the clock stands still.
                 local t = math.max(DW.ServerNow(), (type(old) == "table" and type(old.t) == "number") and (old.t + 1) or 0)
                 crafts[name] = { t = t, ids = text }
                 RecipesChanged()
@@ -495,8 +498,8 @@ local function RememberOpenTradeSkill()
     return true
 end
 
--- Er denne av dine egne professions delt? Med oppskriftslister må listen
--- være lest; i en klient uten dem holder det med lenken, som før.
+-- Is this one of your own professions shared? With recipe lists the list must
+-- have been read; in a client without them the link is enough, as before.
 local function MineShared(name, links)
     if C_TradeSkillUI and C_TradeSkillUI.GetAllRecipeIDs then
         return CraftsEntry(MyStoreKey(), name) ~= nil
@@ -505,10 +508,10 @@ local function MineShared(name, links)
 end
 
 local function ReadMyProfessions()
-    -- 1 og 2: det spillet selv lister for karakteren.
+    -- 1 and 2: what the game itself lists for the character.
     local byName, Add = ReadListedProfessions()
 
-    -- 3. Det vi har sett i håndverksvinduet. Derfra har vi også lenkene.
+    -- 3. What we have seen in the tradeskill window. We also get the links from there.
     local key = MyStoreKey()
     local seen = key and type(db.seen) == "table" and db.seen[key]
     if type(seen) == "table" then
@@ -537,7 +540,7 @@ local function ReadMyProfessions()
     return list
 end
 
--- Gjør listen om til tekst for en melding: "Mining:225:300;Cooking:150:225".
+-- Turns the list into text for a message: "Mining:225:300;Cooking:150:225".
 local function Serialize(list)
     local parts = {}
     for _, profession in ipairs(list) do
@@ -557,8 +560,8 @@ local function Parse(text)
     return list
 end
 
--- Lenkene som tekst for en melding: "Blacksmithing:2018:164;Mining:2575:186".
--- Tar med så mange som får plass i én melding.
+-- The links as text for a message: "Blacksmithing:2018:164;Mining:2575:186".
+-- Includes as many as fit in one message.
 local function SerializeLinks(links)
     local names = {}
     for name in pairs(links) do
@@ -588,11 +591,11 @@ local function ParseLinks(text)
     return links
 end
 
--- En oppskriftsliste som meldinger: "C <ID> <profession> <tid> <del> <antall> <oppskrifter>".
--- Listen deles opp så hver melding holder seg under spillets 255 tegn.
+-- A recipe list as messages: "C <ID> <profession> <time> <part> <count> <recipes>".
+-- The list is split so each message stays under the game's 255 characters.
 local function CraftMessages(key, name, entry)
     local head = ("C%s%s%s%s%s%d%s"):format(SEP, key, SEP, name, SEP, entry.t, SEP)
-    local budget = 255 - #head - 6 -- plass til "12\t12\t"
+    local budget = 255 - #head - 6 -- room for "12\t12\t"
     local chunks, current = {}, ""
     for token in entry.ids:gmatch("[0-9a-z]+") do
         if current ~= "" and #current + 1 + #token > budget then
@@ -614,8 +617,8 @@ local function CraftMessages(key, name, entry)
     return messages
 end
 
--- Leser egne professions og tar vare på dem. Returnerer teksten til meldingen
--- om professions, nøkkelen, og teksten til meldingen om lenker.
+-- Reads your own professions and keeps them. Returns the text of the
+-- professions message, the key, and the text of the links message.
 local function StoreMine()
     local key = MyStoreKey()
     if not key then
@@ -632,16 +635,16 @@ local function StoreMine()
     return Serialize(list), key, SerializeLinks(links)
 end
 
--- Deling ------------------------------------------------------------------------
+-- Sharing -----------------------------------------------------------------------
 
 local Send = DW.CreateSender(PREFIX)
 local QueueRefresh
 
--- Det vi har fortalt guilden om egne professions, også etter utlogging:
--- db.sent[nøkkel] = { p, pt, sp, l, lt, sl }
---   p / l   teksten i P- og L-meldingen sist vi leste
---   pt / lt servertid da den teksten sist ble endret
---   sp / sl tiden (pt / lt) på det vi sist sendte
+-- What we have told the guild about our own professions, also after logout:
+-- db.sent[key] = { p, pt, sp, l, lt, sl }
+--   p / l   the text of the P and L message the last time we read
+--   pt / lt server time when that text last changed
+--   sp / sl the time (pt / lt) of what we last sent
 local function MySent(key)
     if type(db.sent) ~= "table" then
         db.sent = {}
@@ -654,19 +657,19 @@ local function MySent(key)
     return mine
 end
 
--- Forteller guilden hvilke professions karakteren har, hvis noe er endret
--- og ikke sendt ennå. Med since sendes også det som er endret etter den
--- tiden (0 = alt), til en som har bedt om det. Meldingen har spillerens faste
--- ID først. Lenkene til professions går i en egen melding, så eldre
--- versjoner av addonen ikke snubler i dem.
+-- Tells the guild which professions the character has, if something has
+-- changed and not been sent yet. With since, what has changed after that time
+-- (0 = everything) is also sent, to someone who has asked for it. The message
+-- has the player's permanent ID first. The links to professions go in a
+-- separate message, so older versions of the addon do not trip on them.
 local function Publish(since)
     local text, key, links = StoreMine()
     if not text then
         return
     end
     local mine = MySent(key)
-    -- Alltid nyere enn forrige gang, selv om klokka står stille i ett sekund:
-    -- ellers ville en endring rett etter en sending se ut som allerede sendt.
+    -- Always newer than last time, even if the clock stands still for a second:
+    -- otherwise a change right after a send would look like already sent.
     local function Stamp(before)
         return math.max(DW.ServerNow(), type(before) == "number" and (before + 1) or 0)
     end
@@ -685,7 +688,7 @@ local function Publish(since)
         Send("L" .. SEP .. key .. SEP .. links)
     end
 
-    -- Oppskriftslistene, for de professions karakteren har nå.
+    -- The recipe lists, for the professions the character has now.
     if not key:find("^Player%-") then
         return
     end
@@ -705,11 +708,11 @@ local function Publish(since)
 end
 
 local replyScheduled = false
-local replySince -- den tidligste tiden noen har bedt om endringer fra
+local replySince -- the earliest time anyone has asked for changes from
 
--- Noen ba alle om å si fra om det som er endret etter en tid (eller alt).
--- Svar etter en tilfeldig ventetid, så ikke hele guilden svarer i samme
--- øyeblikk, og bare med det som er endret etter den tiden.
+-- Someone asked everyone to report what has changed after a time (or everything).
+-- Answer after a random delay, so the whole guild does not answer at the same
+-- moment, and only with what has changed after that time.
 local function ScheduleReply(since)
     replySince = math.min(replySince or since, since)
     if replyScheduled then
@@ -726,12 +729,12 @@ local function ScheduleReply(since)
     end)
 end
 
--- Deler av oppskriftslister som ikke er komplette ennå, bare i minnet:
--- incoming["<ID>\t<profession>"] = { t, n, got, parts = { [del] = tekst } }
+-- Parts of recipe lists that are not complete yet, only in memory:
+-- incoming["<ID>\t<profession>"] = { t, n, got, parts = { [part] = text } }
 local incoming = {}
 
--- Et medlem sender (en del av) oppskriftslisten for én profession. Når alle
--- delene er kommet, og listen er nyere enn den vi har, lagres den.
+-- A member sends (part of) the recipe list for one profession. When all the
+-- parts have arrived, and the list is newer than the one we have, it is saved.
 local function ReceiveCrafts(text)
     local guid, name, t, part, total, ids = text:match("^C\t(Player%-[%w%-]+)\t([^\t]+)\t(%d+)\t(%d+)\t(%d+)\t([0-9a-z,]*)$")
     t, part, total = tonumber(t or ""), tonumber(part or ""), tonumber(total or "")
@@ -744,13 +747,13 @@ local function ReceiveCrafts(text)
     end
     local have = CraftsEntry(guid, name)
     if have and have.t >= t then
-        return -- vi har denne eller en nyere
+        return -- we have this one or a newer one
     end
 
     local slot = guid .. SEP .. name
     local pending = incoming[slot]
     if pending and t < pending.t then
-        return -- en eldre liste mens en nyere er på vei
+        return -- an older list while a newer one is on its way
     end
     if not pending or pending.t ~= t or pending.n ~= total then
         pending = { t = t, n = total, got = 0, parts = {} }
@@ -777,14 +780,14 @@ end
 DW.OnGuildMessage(PREFIX, function(text, sender)
     local kind = text:sub(1, 1)
     if kind == "P" then
-        -- Et medlem forteller hvilke professions karakteren har.
+        -- A member tells which professions the character has.
         local guid, rest = text:match("^P\t(Player%-[^\t]+)\t?(.*)$")
         local key = guid
         if not key then
-            -- Eldre versjon uten ID: bruk avsenderens navn.
+            -- Older version without ID: use the sender's name.
             key, rest = NameStoreKey(sender), text:sub(3)
         end
-        -- Lenkene kommer i en egen melding; behold dem vi har.
+        -- The links come in a separate message; keep the ones we have.
         local before = db.professions[key]
         db.professions[key] = {
             list = Parse(rest),
@@ -793,7 +796,7 @@ DW.OnGuildMessage(PREFIX, function(text, sender)
         }
         QueueRefresh()
     elseif kind == "L" then
-        -- Lenkene til et medlems professions, så de kan åpnes herfra.
+        -- The links to a member's professions, so they can be opened from here.
         local guid, rest = text:match("^L\t(Player%-[%w%-]+)\t(.*)$")
         if guid then
             local entry = db.professions[guid]
@@ -811,11 +814,11 @@ DW.OnGuildMessage(PREFIX, function(text, sender)
     end
 end)
 
--- Spillets egen oversikt -------------------------------------------------------
+-- The game's own overview --------------------------------------------------------
 
--- Noen klienter har en guild-oversikt over professions innebygd. Finnes den,
--- leser vi den for å dekke medlemmer addonen ikke har hørt fra. Den huskes
--- ikke mellom økter. Nøkkelen er navnet uten mellomrom og realm.
+-- Some clients have a guild overview of professions built in. If it exists, we
+-- read it to cover members the addon has not heard from. It is not remembered
+-- between sessions. The key is the name without spaces and realm.
 local gameProfessions = {}
 
 local function ReadGameProfessions()
@@ -846,9 +849,9 @@ local function ReadGameProfessions()
     end
 end
 
--- Professions for ett medlem: det addonen har fått høre, ellers spillets egen
--- oversikt. Andre verdi sier hvor det kom fra ("addon", "game" eller nil),
--- tredje er oppføringen vi fant, og fjerde er nøkkelen den lå under.
+-- Professions for one member: what the addon has heard, otherwise the game's
+-- own overview. The second value says where it came from ("addon", "game" or
+-- nil), the third is the entry we found, and the fourth is the key it was under.
 local function ProfessionsOf(member)
     for _, key in ipairs({ member.guid or false, NameStoreKey(member.key) }) do
         local shared = key and db.professions[key]
@@ -863,10 +866,10 @@ local function ProfessionsOf(member)
     return {}, nil
 end
 
--- Åpne et medlems profession -----------------------------------------------------
+-- Open a member's profession -----------------------------------------------------
 
--- Spillets lenke til et medlems profession ("trade:<ID>:2018:164"), eller nil
--- hvis medlemmet ikke har delt den.
+-- The game's link to a member's profession ("trade:<ID>:2018:164"), or nil if
+-- the member has not shared it.
 local function LinkData(member, profession)
     local shared, key = member.shared, member.storeKey
     if type(shared) ~= "table" or type(shared.links) ~= "table" or type(key) ~= "string" or not key:find("^Player%-[%w%-]+$") then
@@ -879,9 +882,9 @@ local function LinkData(member, profession)
     return "trade:" .. key .. ":" .. rest
 end
 
--- Åpner spillets vindu med hva medlemmet kan lage. Vi gjør nøyaktig det
--- spillet gjør når man klikker på en profession-lenke i chatten. Går ikke
--- det, legges lenken i chatten din så du kan klikke på den der.
+-- Opens the game's window with what the member can craft. We do exactly what
+-- the game does when you click a profession link in chat. If that does not
+-- work, the link is put in your chat so you can click it there.
 local function OpenProfession(member, profession)
     local data = LinkData(member, profession)
     if not data then
@@ -895,8 +898,8 @@ local function OpenProfession(member, profession)
     return true
 end
 
--- Oppskriftene et medlem har delt for en profession, som en liste med
--- spellID-er, og når listen sist ble endret. nil hvis ingen er delt.
+-- The recipes a member has shared for a profession, as a list of spellIDs, and
+-- when the list was last changed. nil if none are shared.
 local function RecipesOf(member, profession)
     if type(member) ~= "table" or type(profession) ~= "table" or type(member.guid) ~= "string" then
         return nil
@@ -908,10 +911,10 @@ local function RecipesOf(member, profession)
     return DecodeRecipes(entry.ids), entry.t
 end
 
--- Er det noe å vise for professionen: en oppskriftsliste, eller (bare for
--- dine egne) spillets lenke. Spillet åpner ikke en annen spillers profession
--- fra lenken i Forever (prøvd begge veier 21.11.2026), så for andre teller
--- bare oppskriftslisten.
+-- Is there anything to show for the profession: a recipe list, or (only for
+-- your own) the game's link. The game does not open another player's profession
+-- from the link in Forever (tried both ways 21.11.2026), so for others only the
+-- recipe list counts.
 local function CanShow(member, profession)
     if IsGathering(profession) then
         return false
@@ -923,8 +926,8 @@ local function CanShow(member, profession)
     return me ~= nil and type(member) == "table" and member.guid == me and LinkData(member, profession) ~= nil
 end
 
--- Viser hva medlemmet kan lage, i addonens eget oppskriftsvindu
--- (RecipeWindow.lua). Finnes ikke det, åpnes spillets lenke som før.
+-- Shows what the member can craft, in the addon's own recipe window
+-- (RecipeWindow.lua). If that does not exist, the game's link is opened as before.
 local function ShowProfession(member, profession)
     if DW.ShowRecipes then
         DW.ShowRecipes(member, profession)
@@ -933,29 +936,31 @@ local function ShowProfession(member, profession)
     return OpenProfession(member, profession)
 end
 
--- Påminnelsen om å åpne professionene -----------------------------------------------
+-- The reminder to open the professions -------------------------------------------
 --
--- Addonen får først vite om en profession, og lenken til den, når spilleren
--- åpner den. Derfor vises en liten rute første gang hovedvinduet åpnes på en
--- karakter (rett etter språkvalget), som ber om akkurat det og viser hva som
--- er funnet så langt. Den kan hentes fram igjen fra Medlemmer.
+-- The addon only learns about a profession, and the link to it, when the player
+-- opens it. That is why a small box is shown the first time the main window is
+-- opened on a character (right after the language choice), asking for exactly
+-- that and showing what has been found so far. It can be brought up again from
+-- the Roster tab.
 
 local NOTICE_NAME = "DragonworldShareNotice"
 
-local notice     -- ruten; lages første gang den trengs
-local mainWindow -- hovedvinduet, som ruten ligger oppå
+local notice     -- the box; created the first time it is needed
+local mainWindow -- the main window, which the box sits on top of
 
--- "Åpne neste": addonen kan åpne en profession for spilleren, men spillet
--- tillater bare én per klikk. Hvert klikk på knappen åpner derfor den neste
--- som ikke er delt. Når lenken er lest, lukkes vinduet igjen.
-local tried = {}   -- professions vi har prøvd å åpne i denne økten
-local noticeStatus -- { key, navn }: siste beskjed under listen, eller nil
+-- "Open next": the addon can open a profession for the player, but
+-- the game only allows one per click. Each click on the button therefore opens
+-- the next one that is not shared. When the link has been read, the window is
+-- closed again.
+local tried = {}   -- professions we have tried to open in this session
+local noticeStatus -- { key, navn }: the last message under the list, or nil
 
 local function CanOpenForPlayer()
     return C_TradeSkillUI ~= nil and type(C_TradeSkillUI.OpenTradeSkill) == "function"
 end
 
--- Denne karakterens professions slik de er lagret, og lenkene til dem.
+-- This character's professions as they are stored, and the links to them.
 local function MyStored()
     local key = MyStoreKey()
     local mine = key and db.professions[key]
@@ -965,8 +970,8 @@ local function MyStored()
     return mine.list, type(mine.links) == "table" and mine.links or {}
 end
 
--- Den neste professionen knappen skal åpne: en som ikke er delt, som spillet
--- har et nummer på, og som vi ikke alt har prøvd.
+-- The next profession the button should open: one that is not shared, that the
+-- game has a number for, and that we have not already tried.
 local function NextToOpen()
     local list, links = MyStored()
     for _, profession in ipairs(list) do
@@ -1004,8 +1009,8 @@ local function RefreshNotice()
     end
     notice.list:SetText(#lines > 0 and table.concat(lines, "\n") or L.RO_SHARE_NONE)
 
-    -- Knappen som åpner den neste. Finnes ikke funksjonen i spillet, vises
-    -- bare OK, midt i ruten.
+    -- The button that opens the next one. If the function does not exist in the
+    -- game, only OK is shown, in the middle of the box.
     local nextOne = canOpen and NextToOpen() or nil
     notice.open:SetShown(canOpen)
     notice.open.label:SetText(nextOne and L.RO_SHARE_OPEN_NEXT:format(nextOne.name) or L.RO_SHARE_OPEN_DONE)
@@ -1024,8 +1029,8 @@ local function RefreshNotice()
     end
 end
 
--- Åpner den neste professionen som ikke er delt. Må kalles rett fra et klikk:
--- spillet åpner bare en profession for en addon når spilleren selv trykker.
+-- Opens the next profession that is not shared. Must be called straight from a
+-- click: the game only opens a profession for an addon when the player presses.
 local function OpenNextProfession()
     if opening or not CanOpenForPlayer() then
         return
@@ -1045,14 +1050,14 @@ local function OpenNextProfession()
 
     local ok, success = pcall(C_TradeSkillUI.OpenTradeSkill, profession.line)
     if not ok or success == false then
-        -- Noen professions har ikke noe vindu (f.eks. Fishing).
+        -- Some professions have no window (e.g. Fishing).
         noticeStatus = { key = "RO_SHARE_FAILED", name = profession.name }
         RefreshNotice()
         return
     end
 
-    -- Vinduet åpnes, og lenken kommer et øyeblikk etterpå. Se etter den noen
-    -- ganger, og lukk vinduet når vi har den.
+    -- The window opens, and the link arrives a moment later. Look for it a few
+    -- times, and close the window when we have it.
     local run = { name = profession.name, checks = 0 }
     opening = run
     noticeStatus = { key = "RO_SHARE_OPENING", name = profession.name }
@@ -1073,8 +1078,8 @@ local function OpenNextProfession()
                 pcall(C_TradeSkillUI.CloseTradeSkill)
             end
         elseif run.checks >= 6 then
-            -- Vinduet ga oss ingenting. La det stå åpent, så ser spilleren hva
-            -- som kom opp.
+            -- The window gave us nothing. Leave it open, so the player sees what
+            -- came up.
             opening = nil
             noticeStatus = { key = "RO_SHARE_NOTHING", name = run.name }
         else
@@ -1096,7 +1101,7 @@ local function CreateNotice(parent)
     f:SetSize(480, 380)
     f:SetPoint("CENTER", parent, "CENTER", 0, -20)
     f:SetFrameStrata("DIALOG")
-    f:EnableMouse(true) -- så klikk ikke går gjennom til det som ligger under
+    f:EnableMouse(true) -- so clicks do not go through to what is underneath
     f:SetBackdrop(DW.PANEL_BACKDROP)
     f:SetBackdropColor(0.05, 0.05, 0.07, 0.98)
     f:SetBackdropBorderColor(1.00, 0.82, 0.00, 1)
@@ -1123,14 +1128,14 @@ local function CreateNotice(parent)
     f.note:SetWidth(432)
     f.note:SetJustifyH("LEFT")
 
-    -- Hva som skjedde sist knappen "Åpne neste" ble brukt.
+    -- What happened the last time the "Open next" button was used.
     f.status = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     f.status:SetPoint("BOTTOMLEFT", 24, 56)
     f.status:SetWidth(432)
     f.status:SetJustifyH("LEFT")
     f.status:SetWordWrap(false)
 
-    -- Åpner den neste professionen som ikke er delt. Ett klikk per profession.
+    -- Opens the next profession that is not shared. One click per profession.
     f.open = DW.CreateButton(f, 240, 28, "gold")
     f.open:SetPoint("BOTTOMRIGHT", f, "BOTTOM", 64, 18)
     f.open:SetScript("OnClick", function()
@@ -1140,7 +1145,7 @@ local function CreateNotice(parent)
     f.ok = DW.CreateButton(f, 110, 28, "gold")
     f.ok:SetPoint("BOTTOM", 0, 18)
     f.ok:SetScript("OnClick", function()
-        -- Husk at denne karakteren har sett den.
+        -- Remember that this character has seen it.
         local key = DW.CharacterKey()
         if key then
             if type(db.reminded) ~= "table" then
@@ -1165,7 +1170,7 @@ local function ShowNotice()
     RefreshNotice()
 end
 
--- Første gang hovedvinduet åpnes på en karakter: vis påminnelsen.
+-- The first time the main window is opened on a character: show the reminder.
 DW.OnWindowOpened(function(window)
     mainWindow = window
     local key = DW.CharacterKey()
@@ -1176,31 +1181,31 @@ DW.OnWindowOpened(function(window)
     end
 end)
 
--- Visning ---------------------------------------------------------------------
+-- Display ---------------------------------------------------------------------
 
 local ROW_HEIGHT = 22
 
--- Kolonnene i en rad, fra venstre: navn, level, rank, rolle, professions,
--- sist pålogget. Professions får plassen som er igjen. Sist pålogget er kort
--- tekst ("Pålogget", "3 d"), så den kolonnen er smal.
+-- The columns in a row, from the left: name, level, rank, role, professions,
+-- last online. Professions get the space that is left. Last online is short
+-- text ("Online", "3 d"), so that column is narrow.
 local NAME_WIDTH, LEVEL_WIDTH, RANK_WIDTH, LAST_WIDTH = 130, 28, 80, 60
-local LEGACY_WIDTH = 34   -- legacy-poeng, rett etter level (se Profile.lua)
-local ROLE_WIDTH = 34     -- rolleikonene (én eller to), rett etter rank
+local LEGACY_WIDTH = 34   -- legacy points, right after level (see Profile.lua)
+local ROLE_WIDTH = 34     -- the role icons (one or two), right after rank
 local RANK_LEFT = 4 + NAME_WIDTH + 4 + LEVEL_WIDTH + 6 + LEGACY_WIDTH + 10
 local ROLE_LEFT = RANK_LEFT + RANK_WIDTH + 6
 local PROFESSIONS_LEFT = ROLE_LEFT + ROLE_WIDTH + 6
 local PROFESSIONS_RIGHT = 6 + LAST_WIDTH + 8
-local PROFESSION_GAP = 10 -- luft mellom to professions
-local MORE_WIDTH = 22     -- plass til "+2" når ikke alle får plass
+local PROFESSION_GAP = 10 -- space between two professions
+local MORE_WIDTH = 22     -- room for "+2" when not all fit
 
-local panel -- lages første gang modulen velges i hovedvinduet
+local panel -- created the first time the module is selected in the main window
 local rows = {}
 local RefreshPanel
 
--- "all", "online", "active" eller "inactive". Fanen åpner med dem som er
--- pålogget (guildlederens ønske); de andre er ett klikk unna.
+-- "all", "online", "active" or "inactive". The tab opens with those who are
+-- online (the guild leader's wish); the others are one click away.
 local filterStatus = "online"
-local filterProfession     -- navnet på en profession, eller nil for alle
+local filterProfession     -- the name of a profession, or nil for all
 local searchText = ""
 
 local function ProfessionText(list)
@@ -1225,7 +1230,7 @@ local function LastOnlineText(member)
     return L.RO_HOURS:format(member.hours)
 end
 
--- Alle professions vi kjenner til, til menyen.
+-- All professions we know of, for the menu.
 local function KnownProfessions()
     local names = {}
     local function Add(list)
@@ -1254,8 +1259,8 @@ local function KnownProfessions()
     return sorted
 end
 
--- Medlemmene som passer filtrene, sortert på navn. Returnerer også hvor mange
--- det er i guilden totalt.
+-- The members who match the filters, sorted by name. Also returns how many
+-- there are in the guild in total.
 local function Collect()
     local members = DW.ReadGuildRoster()
 
@@ -1285,7 +1290,7 @@ local function Collect()
             end
         end
 
-        -- Søket leter i navn, rank, rolle (f.eks. "healer") og professions.
+        -- The search looks in name, rank, role (e.g. "healer") and professions.
         if keep and needle ~= "" then
             local roleNames = {}
             for _, role in ipairs(DW.ROLES or {}) do
@@ -1322,12 +1327,12 @@ local function SetProfession(name)
     RefreshPanel()
 end
 
--- Menyen for valg av profession. data er navnet, eller false for "alle".
+-- The menu for choosing a profession. data is the name, or false for "all".
 local function OpenProfessionMenu(owner)
     local names = KnownProfessions()
 
     if not (MenuUtil and MenuUtil.CreateContextMenu) then
-        -- Uten meny: gå til neste profession for hvert klikk, og til slutt alle.
+        -- Without a menu: go to the next profession on each click, and finally all.
         local nextName = names[1]
         for index, name in ipairs(names) do
             if name == filterProfession then
@@ -1354,8 +1359,8 @@ local function OpenProfessionMenu(owner)
     end)
 end
 
--- "Blacksmithing 225/300", eller bare "Blacksmithing 225" når vi ikke vet
--- hvor høyt den kan gå.
+-- "Blacksmithing 225/300", or just "Blacksmithing 225" when we do not know
+-- how high it can go.
 local function ProfessionLabel(profession)
     if profession.max > 0 then
         return ("%s %d/%d"):format(profession.name, profession.level, profession.max)
@@ -1363,8 +1368,8 @@ local function ProfessionLabel(profession)
     return ("%s %d"):format(profession.name, profession.level)
 end
 
--- Menyen som kommer opp når du klikker på en rad: alle professions medlemmet
--- har. De som er delt kan åpnes; de andre står grå.
+-- The menu that comes up when you click a row: all the professions the member
+-- has. Those that are shared can be opened; the others are grayed out.
 local function OpenMemberMenu(owner, member)
     if #member.professions == 0 or not (MenuUtil and MenuUtil.CreateContextMenu) then
         return
@@ -1382,7 +1387,7 @@ local function OpenMemberMenu(owner, member)
     end)
 end
 
--- Fargen på en profession i raden: gul når den kan åpnes, ellers hvit.
+-- The color of a profession in the row: yellow when it can be opened, otherwise white.
 local function ColourProfession(button, hover)
     if not button.linked then
         button.text:SetTextColor(0.90, 0.90, 0.90)
@@ -1393,8 +1398,8 @@ local function ColourProfession(button, hover)
     end
 end
 
--- Én profession i en rad. Den er en knapp, så den kan klikkes på som en lenke
--- i chatten.
+-- One profession in a row. It is a button, so it can be clicked like a link
+-- in chat.
 local function GetProfessionButton(row, index)
     local button = row.buttons[index]
     if button then
@@ -1438,8 +1443,8 @@ local function GetProfessionButton(row, index)
     return button
 end
 
--- Legger medlemmets professions ut i raden, så mange som får plass. Resten
--- vises som "+2", og finnes i menyen når du klikker på raden.
+-- Lays out the member's professions in the row, as many as fit. The rest is
+-- shown as "+2", and is in the menu when you click the row.
 local function LayoutProfessions(row, member)
     local available = row:GetWidth() - PROFESSIONS_LEFT - PROFESSIONS_RIGHT
     local list = member.professions
@@ -1447,7 +1452,7 @@ local function LayoutProfessions(row, member)
 
     for index, profession in ipairs(list) do
         local button = GetProfessionButton(row, index)
-        button.text:SetWidth(0) -- 0 = så bred som teksten
+        button.text:SetWidth(0) -- 0 = as wide as the text
         button.text:SetText(("%s %d"):format(profession.name, profession.level))
         local width = math.ceil(button.text:GetStringWidth())
         local reserve = index < #list and MORE_WIDTH or 0
@@ -1455,7 +1460,7 @@ local function LayoutProfessions(row, member)
             break
         end
         if width > available - reserve then
-            -- Selv den første er for lang: kutt den.
+            -- Even the first one is too long: cut it.
             width = math.max(10, available - reserve)
             button.text:SetWidth(width)
         end
@@ -1499,8 +1504,8 @@ local function GetRow(index)
     row.name:SetJustifyH("LEFT")
     row.name:SetWordWrap(false)
 
-    -- Lite ikon rett etter navnet når medlemmet har satt en status (quester,
-    -- dungeon, crafter / ikke forstyrr). Se Status.lua.
+    -- Small icon right after the name when the member has set a status (quester,
+    -- dungeon, crafter / do not disturb). See Status.lua.
     row.statusIcon = row:CreateTexture(nil, "OVERLAY")
     row.statusIcon:SetSize(14, 14)
     row.statusIcon:Hide()
@@ -1522,7 +1527,7 @@ local function GetRow(index)
     row.rank:SetJustifyH("LEFT")
     row.rank:SetWordWrap(false)
 
-    -- Rollen medlemmet har valgt (Profile.lua), som ikoner.
+    -- The role the member has chosen (Profile.lua), as icons.
     row.roles = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     row.roles:SetPoint("LEFT", row, "LEFT", ROLE_LEFT, 0)
     row.roles:SetWidth(ROLE_WIDTH)
@@ -1534,15 +1539,15 @@ local function GetRow(index)
     row.last:SetWidth(LAST_WIDTH)
     row.last:SetJustifyH("RIGHT")
 
-    -- Professions: én knapp per profession (lages etter behov), og "+2" når
-    -- ikke alle får plass.
+    -- Professions: one button per profession (created as needed), and "+2" when
+    -- not all fit.
     row.buttons = {}
     row.more = row:CreateFontString(nil, "OVERLAY", "GameFontDisable")
     row.more:SetJustifyH("LEFT")
 
-    -- Klikk på raden for å få opp medlemskortet (MemberCard.lua): alt om
-    -- medlemmet, med professions, talenter, utstyr og dine egne notater.
-    -- Uten kortet kommer menyen med professions, som før.
+    -- Click the row to bring up the member card (MemberCard.lua): everything
+    -- about the member, with professions, talents, gear and your own notes.
+    -- Without the card the menu with professions comes up, as before.
     row:SetScript("OnMouseUp", function(self)
         if not self.member then
             return
@@ -1555,7 +1560,7 @@ local function GetRow(index)
         end
     end)
 
-    -- Hold over raden for å se alt om medlemmet.
+    -- Hover over the row to see everything about the member.
     row:SetScript("OnEnter", function(self)
         local member = self.member
         if not member then
@@ -1596,7 +1601,7 @@ local function GetRow(index)
                 GameTooltip:AddLine(L.RO_TIP_FROM_GAME, 0.60, 0.60, 0.60)
             end
         end
-        -- Et klikk på raden åpner medlemskortet (MemberCard.lua).
+        -- A click on the row opens the member card (MemberCard.lua).
         GameTooltip:AddLine(L.RO_TIP_CLICK_ROW, 0.60, 0.60, 0.60, true)
         GameTooltip:Show()
     end)
@@ -1613,7 +1618,7 @@ RefreshPanel = function()
         return
     end
 
-    -- Les egne professions på nytt hver gang, så din egen rad alltid stemmer.
+    -- Read your own professions again every time, so your own row is always right.
     StoreMine()
     ReadGameProfessions()
 
@@ -1650,7 +1655,7 @@ RefreshPanel = function()
         else
             row.name:SetTextColor(1, 1, 1)
         end
-        -- Status vises bare for dem som er pålogget.
+        -- Status is only shown for those who are online.
         local statusCode = member.online and DW.StatusOf and DW.StatusOf(member)
         local status = statusCode and DW.STATUS_BY_CODE[statusCode]
         if status then
@@ -1686,7 +1691,7 @@ RefreshPanel = function()
     panel.count:SetText(L.RO_COUNT:format(#list, total))
 end
 
--- Kalles av hovedvinduet første gang modulen velges.
+-- Called by the main window the first time the module is selected.
 local function CreatePanel(parent)
     local f = CreateFrame("Frame", nil, parent)
     f:SetAllPoints(parent)
@@ -1713,7 +1718,7 @@ local function CreatePanel(parent)
         OpenProfessionMenu(self)
     end)
 
-    -- Søkefelt: leter i navn, rank og professions mens du skriver.
+    -- Search field: looks in name, rank and professions as you type.
     f.searchLabel = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     f.searchLabel:SetPoint("TOPLEFT", 14, -80)
 
@@ -1733,7 +1738,7 @@ local function CreatePanel(parent)
         RefreshPanel()
     end)
 
-    -- Viser påminnelsen om å åpne professionene dine, med hva som er funnet.
+    -- Shows the reminder to open your professions, with what has been found.
     f.mineChip = DW.CreateChip(f, 140, 24)
     f.mineChip:SetPoint("LEFT", f.searchBox, "RIGHT", 14, 0)
     f.mineChip.label:SetJustifyH("CENTER")
@@ -1744,7 +1749,7 @@ local function CreatePanel(parent)
     f.count = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     f.count:SetPoint("TOPRIGHT", -14, -82)
 
-    -- Overskriftene står over hver sin kolonne.
+    -- The headers sit above their own column.
     f.headerName = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     f.headerName:SetPoint("TOPLEFT", 14, -108)
     f.headerLevel = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -1779,7 +1784,7 @@ local function CreatePanel(parent)
     f.footer:SetWordWrap(false)
 
     f:SetScript("OnShow", function()
-        -- Be spillet om en fersk medlemsliste. Svaret kommer som en hendelse.
+        -- Ask the game for a fresh member list. The answer comes as an event.
         if C_GuildInfo and C_GuildInfo.GuildRoster then
             C_GuildInfo.GuildRoster()
         end
@@ -1790,9 +1795,9 @@ local function CreatePanel(parent)
     return f
 end
 
--- Hendelser -------------------------------------------------------------------
+-- Game events -----------------------------------------------------------------
 
--- Medlemslisten oppdateres ofte. Samle opp og tegn på nytt én gang.
+-- The member list is updated often. Collect and redraw once.
 local refreshQueued = false
 
 QueueRefresh = function()
@@ -1812,9 +1817,10 @@ end
 
 local helloSent = false
 
--- Én gang per økt, litt etter innlogging: fortell guilden det som er endret
--- i karakterens professions siden sist, og be de andre om det de har endret
--- siden vi sist var pålogget (se "Hva vi har fått med oss" i Comm.lua).
+-- Once per session, a little after login: tell the guild what has changed in
+-- the character's professions since last time, and ask the others for what
+-- they have changed since we were last online (see "What we have received"
+-- in Comm.lua).
 local function PlanHello()
     if helloSent or not (C_Timer and C_Timer.After) then
         return
@@ -1830,8 +1836,8 @@ end
 
 local publishQueued = false
 
--- Professions er endret (lært en ny, gått opp i skill, eller sett i
--- håndverksvinduet). Si fra til guilden, men ikke oftere enn hvert minutt.
+-- Professions have changed (learned a new one, gained skill, or seen in the
+-- tradeskill window). Tell the guild, but not more often than every minute.
 local function PlanPublish()
     if publishQueued or not helloSent or not (C_Timer and C_Timer.After) then
         return
@@ -1864,7 +1870,7 @@ frame:SetScript("OnEvent", function(self, event)
         PlanHello()
     else
         if TRADE_SKILL_EVENTS[event] then
-            -- Håndverksvinduet er åpent: husk hvilken profession det viser.
+            -- The tradeskill window is open: remember which profession it shows.
             RememberOpenTradeSkill()
             QueueRefresh()
             RefreshNotice()
@@ -1885,7 +1891,7 @@ for _, event in ipairs({
     pcall(frame.RegisterEvent, frame, event)
 end
 
--- Guild-navnet kan komme sent etter innlogging. Si da fra når det er klart.
+-- The guild name can arrive late after login. Then announce when it is ready.
 DW.OnMembershipChanged(function(member)
     if member then
         PlanHello()
@@ -1897,25 +1903,25 @@ DW.OnLanguageChanged(function()
     RefreshNotice()
 end)
 
--- Noen har endret status: tegn ikonene ved navnene på nytt.
+-- Someone has changed status: redraw the icons next to the names.
 DW.OnStatusChanged(function()
     QueueRefresh()
 end)
 
--- Nye legacy-poeng (Profile.lua): tegn kolonnen på nytt.
+-- New legacy points (Profile.lua): redraw the column.
 DW.OnProfileChanged(function()
     QueueRefresh()
 end)
 
--- For medlemskortet (MemberCard.lua) og oppskriftsvinduet (RecipeWindow.lua).
--- member er en rad fra listen her (den har professions og det som er delt).
---   DW.OpenMemberProfession: spillets eget vindu, via lenken (som før)
---   DW.CanOpenMemberProfession: finnes lenken
---   DW.ShowMemberProfession / DW.CanShowMemberProfession: oppskriftsvinduet,
---       og om det er noe å vise der
---   DW.MemberRecipes: oppskriftene (spellID-er) og når listen ble endret
---   DW.IsGatheringProfession: samleyrke uten oppskrifter
---   DW.OnRecipesChanged: kalles når en oppskriftsliste er kommet eller endret
+-- For the member card (MemberCard.lua) and the recipe window (RecipeWindow.lua).
+-- member is a row from the list here (it has professions and what is shared).
+--   DW.OpenMemberProfession: the game's own window, via the link (as before)
+--   DW.CanOpenMemberProfession: whether the link exists
+--   DW.ShowMemberProfession / DW.CanShowMemberProfession: the recipe window,
+--       and whether there is anything to show there
+--   DW.MemberRecipes: the recipes (spellIDs) and when the list was changed
+--   DW.IsGatheringProfession: gathering profession without recipes
+--   DW.OnRecipesChanged: called when a recipe list has arrived or changed
 DW.OpenMemberProfession = OpenProfession
 function DW.CanOpenMemberProfession(member, profession)
     return LinkData(member, profession) ~= nil
@@ -1928,7 +1934,7 @@ function DW.OnRecipesChanged(callback)
     recipeListeners[#recipeListeners + 1] = callback
 end
 
--- Feilsøking: hva spillet faktisk oppgir om professions på denne karakteren.
+-- Debugging: what the game actually reports about professions on this character.
 DW.AddDebug("professions", function(add)
     local text = DW.DebugText
 
@@ -2009,10 +2015,10 @@ DW.AddDebug("professions", function(add)
     add("spillets guild-oversikt: " .. text(GetNumGuildTradeSkill and select(2, pcall(GetNumGuildTradeSkill))))
 end)
 
--- For andre filer (Prestasjoner): egne professions slik vi leser dem
--- ({ { name, level, max, line }, ... }), og et medlems professions fra
--- DW.ReadGuildRoster() slik vi kjenner dem (delt med addonen, eller spillets
--- egen oversikt).
+-- For other files (Achievements.lua): your own professions
+-- as we read them ({ { name, level, max, line }, ... }), and a member's
+-- professions from DW.ReadGuildRoster() as we know them (shared with the addon,
+-- or the game's own overview).
 function DW.ReadMyProfessions()
     return ReadMyProfessions()
 end
@@ -2024,7 +2030,7 @@ function DW.ProfessionsOfMember(member)
     return (ProfessionsOf(member))
 end
 
--- Modul --------------------------------------------------------------------------
+-- Module -------------------------------------------------------------------------
 
 DW.RegisterModule({
     id = MODULE_ID,

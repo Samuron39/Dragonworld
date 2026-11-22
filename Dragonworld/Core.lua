@@ -1,35 +1,35 @@
 -- Dragonworld
 -- Guild-addon for Dragonworld (WoW Forever, interface 16001).
 --
--- Denne filen er kjernen. Den gjør tre ting:
---   1. Holder oversikt over modulene. Hver funksjon i addonen er en modul i
---      mappen Modules.
---   2. Gir hver modul sin egen lagringsplass som huskes mellom økter.
---   3. Gir kommandoen /dw.
+-- This file is the core. It does three things:
+--   1. Keeps track of the modules. Each feature of the addon is a module in
+--      the Modules folder.
+--   2. Gives each module its own storage that is remembered between sessions.
+--   3. Provides the /dw command.
 --
--- De andre filene:
---   Locales.lua     all tekst, på engelsk, norsk og nederlandsk
---   MainWindow.lua  hovedvinduet: logo, guildnavn, modul-chips, innstillinger
---   Minimap.lua     knappen ved minimapet
+-- The other files:
+--   Locales.lua     all text, in English, Norwegian and Dutch
+--   MainWindow.lua  the main window: logo, guild name, module chips, settings
+--   Minimap.lua     the minimap button
 --
--- Slik legger du til en ny modul:
---   1. Lag Modules\MinModul.lua og begynn den med:  local ADDON_NAME, DW = ...
---   2. Kall DW.RegisterModule({ id = "minmodul", ... })  (se under)
---   3. Skriv tekstene inn i Locales.lua på alle tre språk.
---   4. Legg til linjen Modules\MinModul.lua nederst i Dragonworld.toc
+-- How to add a new module:
+--   1. Create Modules\MinModul.lua and start it with:  local ADDON_NAME, DW = ...
+--   2. Call DW.RegisterModule({ id = "minmodul", ... })  (see below)
+--   3. Add the texts to Locales.lua in all three languages.
+--   4. Add the line Modules\MinModul.lua at the bottom of Dragonworld.toc
 
 local ADDON_NAME, DW = ...
 local L = DW.L
 
-DW.modules = {}     -- [id] = modul
-DW.moduleOrder = {} -- modulene i den rekkefølgen de ble registrert
+DW.modules = {}     -- [id] = module
+DW.moduleOrder = {} -- the modules in the order they were registered
 
--- Guild-logoen, laget fra bildet i mappen Iconer (ligger utenfor addonen).
---   ICON          hele skjoldet. Står også som IconTexture i Dragonworld.toc,
---                 så det vises i addon-listen.
---   MINIMAP_ICON  rundt utsnitt av dragehodet, til knappen ved minimapet.
+-- The guild logo, made from the image in the Iconer folder (outside the addon).
+--   ICON          the whole shield. Also set as IconTexture in Dragonworld.toc,
+--                 so it shows in the addon list.
+--   MINIMAP_ICON  a round crop of the dragon head, for the minimap button.
 local MEDIA = "Interface\\AddOns\\" .. ADDON_NAME .. "\\Media\\"
-DW.MEDIA = MEDIA -- mappen med addonens egne bilder, for moduler som har egne ikoner
+DW.MEDIA = MEDIA -- the folder with the addon's own images, for modules that have their own icons
 DW.ICON = MEDIA .. "icon"
 DW.MINIMAP_ICON = MEDIA .. "minimap"
 
@@ -43,15 +43,15 @@ function DW.PrintError(where, problem)
     DW.Print("|cffff5555" .. where .. "|r " .. tostring(problem))
 end
 
--- Den moderne klienten kan gi "hemmelige" verdier som addons ikke får lov til
--- å sammenligne eller regne med. Moduler bruker denne til å hoppe over slike.
+-- The modern client can give "secret" values that addons are not allowed to
+-- compare or do arithmetic on. Modules use this to skip such values.
 function DW.IsSecret(value)
     return type(issecretvalue) == "function" and issecretvalue(value)
 end
 
--- Gir en nøkkel som er unik for karakteren du er logget inn på, f.eks.
--- "Anna-Stormrage", pluss navn og realm hver for seg. Brukes av moduler som
--- lagrer noe per karakter. Returnerer ingenting hvis navnet ikke er klart ennå.
+-- Gives a key that is unique to the character you are logged in on, e.g.
+-- "Anna-Stormrage", plus name and realm separately. Used by modules that
+-- store something per character. Returns nothing if the name is not ready yet.
 function DW.CharacterKey()
     local name, realm = UnitFullName("player")
     if type(name) ~= "string" or DW.IsSecret(name) or name == "" then
@@ -66,9 +66,10 @@ function DW.CharacterKey()
     return name .. "-" .. realm, name, realm
 end
 
--- Karakterens faste ID i spillet (f.eks. "Player-1234-0ABCDEF1"). Brukes til å
--- kjenne igjen en spiller uansett hvordan navnet skrives. I Forever kan navn
--- ha mellomrom, og spillet oppgir dem ikke likt overalt, så ID-en er tryggest.
+-- The character's permanent ID in the game (e.g. "Player-1234-0ABCDEF1"). Used
+-- to recognize a player however the name is written. In Forever, names can
+-- have spaces, and the game does not report them the same everywhere, so the
+-- ID is the safest.
 function DW.MyGUID()
     local guid = UnitGUID and UnitGUID("player")
     if type(guid) == "string" and not DW.IsSecret(guid) and guid ~= "" then
@@ -77,8 +78,8 @@ function DW.MyGUID()
     return nil
 end
 
--- Et navn i en form som kan sammenlignes: uten realm, uten mellomrom og med
--- små bokstaver. "Anna Berg-Stormrage" og "AnnaBerg" blir begge "annaberg".
+-- A name in a form that can be compared: without realm, without spaces and in
+-- lowercase. "Anna Berg-Stormrage" and "AnnaBerg" both become "annaberg".
 function DW.NameKey(name)
     if type(name) ~= "string" or DW.IsSecret(name) then
         return ""
@@ -101,17 +102,18 @@ local function PlainText(value)
     return ""
 end
 
--- Leser spillets egen medlemsliste. Den har alle i guilden, også de som er
--- avlogget. Hver oppføring har:
---   key       navnet slik spillet oppgir det (som regel "Navn-Realm")
---   name      navnet uten realm
---   guid      spillerens faste ID, hvis spillet oppgir den
---   level, class (f.eks. "MAGE"), rank, rankIndex, zone, note
---   online    true hvis pålogget nå
---   days, hours   hvor lenge siden sist, for dem som er avlogget
---   points    achievement-poengene spillet oppgir (12. verdi), 0 hvis ingen.
---             I Forever er Legacy-systemet spillets versjon av achievements,
---             så dette kan være legacy-poengene. Ikke sjekket i spillet ennå.
+-- Reads the game's own member list. It has everyone in the guild, also those
+-- who are offline. Each entry has:
+--   key       the name as the game reports it (usually "Name-Realm")
+--   name      the name without realm
+--   guid      the player's permanent ID, if the game reports it
+--   level, class (e.g. "MAGE"), rank, rankIndex, zone, note
+--   online    true if online now
+--   days, hours   how long since last seen, for those who are offline
+--   points    the achievement points the game reports (12th value), 0 if none.
+--             In Forever the Legacy system is the game's version of
+--             achievements, so this may be the legacy points. Not checked in
+--             the game yet.
 function DW.ReadGuildRoster()
     local members = {}
     if not (GetNumGuildMembers and GetGuildRosterInfo) then
@@ -148,18 +150,18 @@ function DW.ReadGuildRoster()
     return members
 end
 
--- Feilsøking --------------------------------------------------------------------
+-- Debugging ---------------------------------------------------------------------
 
--- "/dw debug" skriver ut det addonen ser hos akkurat denne spilleren: navn,
--- ID, guild, professions og så videre. Det er ment å sendes til den som
--- utvikler addonen når noe ikke virker. Moduler legger til sin egen del.
+-- "/dw debug" prints what the addon sees for this exact player: name, ID,
+-- guild, professions and so on. It is meant to be sent to whoever develops
+-- the addon when something does not work. Modules add their own part.
 local debugSections = {}
 
 function DW.AddDebug(title, provider)
     debugSections[#debugSections + 1] = { title = title, provider = provider }
 end
 
--- Tekst av en verdi, uten å røre verdier spillet har gjort hemmelige.
+-- Text of a value, without touching values the game has made secret.
 function DW.DebugText(value)
     if DW.IsSecret(value) then
         return "<secret>"
@@ -205,27 +207,27 @@ DW.AddDebug("identitet", function(add)
     end
 end)
 
--- Medlemskap --------------------------------------------------------------------
+-- Membership --------------------------------------------------------------------
 
--- Addonen virker bare for karakterer som er med i guilden. Dette er en enkel
--- sperre, ikke sikkerhet: koden er åpen for alle som har filene, og en guild
--- med samme navn på en annen realm slipper også gjennom.
+-- The addon only works for characters that are in the guild. This is a simple
+-- lock, not security: the code is open to anyone who has the files, and a
+-- guild with the same name on another realm gets through too.
 --
--- Moduler som gjør noe av seg selv (tooltip, hendelser) må selv sjekke
--- DW.IsMember() først. Kommandoer bruker DW.Guard(), som også forklarer
--- spilleren hvorfor ingenting skjer.
+-- Modules that do something on their own (tooltip, events) must check
+-- DW.IsMember() themselves first. Commands use DW.Guard(), which also explains
+-- to the player why nothing happens.
 DW.GUILD_NAME = "Dragonworld"
 
 local isMember = false
-local currentGuild -- navnet på guilden karakteren er i, hvis det er kjent
+local currentGuild -- the name of the guild the character is in, if known
 local memberListeners = {}
 
 function DW.IsMember()
     return isMember
 end
 
--- Registrerer en funksjon som kalles når karakteren blir eller slutter å være
--- medlem (f.eks. når guild-navnet er lastet etter innlogging).
+-- Registers a function that is called when the character becomes or stops
+-- being a member (e.g. when the guild name has loaded after login).
 function DW.OnMembershipChanged(callback)
     memberListeners[#memberListeners + 1] = callback
 end
@@ -240,15 +242,15 @@ function DW.UpdateMembership()
         local name = GetGuildInfo("player")
         if type(name) == "string" and not DW.IsSecret(name) then
             currentGuild = name
-            -- Store og små bokstaver og mellomrom spiller ingen rolle, så
-            -- "Dragon World" og "dragonworld" godtas også.
+            -- Case and spaces do not matter, so
+            -- "Dragon World" and "dragonworld" are accepted too.
             local function Plain(text)
                 return (text:lower():gsub("%s+", ""))
             end
             member = (Plain(name) == Plain(DW.GUILD_NAME))
         end
-        -- Navnet kan mangle rett etter innlogging. Da beholder vi det vi
-        -- visste, og spillet sier fra på nytt når det er klart.
+        -- The name can be missing right after login. Then we keep what we
+        -- knew, and the game notifies us again when it is ready.
     end
 
     if member ~= isMember then
@@ -262,13 +264,13 @@ function DW.UpdateMembership()
     end
 end
 
--- Forklarer i chatten hvorfor addonen er låst.
+-- Explains in chat why the addon is locked.
 function DW.PrintLocked()
     DW.Print(L.LOCKED:format(DW.GUILD_NAME))
     DW.Print(currentGuild and L.LOCKED_GUILD:format(currentGuild) or L.LOCKED_NO_GUILD)
 end
 
--- For kommandoer: true hvis karakteren er medlem, ellers skrives forklaringen.
+-- For commands: true if the character is a member, otherwise the explanation is printed.
 function DW.Guard()
     if isMember then
         return true
@@ -277,22 +279,22 @@ function DW.Guard()
     return false
 end
 
--- Registrerer en modul. Tabellen kan ha disse feltene:
---   id          (påkrevd) kort navn med små bokstaver uten mellomrom. Brukes
---               i "/dw <id>" og som nøkkel i lagringen, så ikke endre det.
---   titleKey    navnet på teksten i Locales.lua som er modulens navn.
---   notesKey    navnet på teksten som sier i én linje hva modulen gjør.
---   shortcutKey navnet på teksten som er modulens egen snarvei, f.eks. "/kast".
---   icon        ikonet på modulens chip i hovedvinduet (bane eller fil-ID).
---   OnLoad(self, db)          kalles når lagrede data er lest inn. db er
---                             modulens egen tabell, og alt i den huskes.
---   OnSlash(self, message)    kalles for "/dw <id> <message>".
---   CreatePanel(self, parent) lager modulens innhold i hovedvinduet og
---                             returnerer rammen. Kalles én gang, første gang
---                             modulen velges. Moduler som har denne får en
---                             chip i hovedvinduet.
--- (title og notes kan brukes i stedet for titleKey og notesKey hvis teksten
--- ikke skal oversettes.)
+-- Registers a module. The table can have these fields:
+--   id          (required) short lowercase name without spaces. Used in
+--               "/dw <id>" and as the key in storage, so do not change it.
+--   titleKey    the name of the text in Locales.lua that is the module's name.
+--   notesKey    the name of the text that says in one line what the module does.
+--   shortcutKey the name of the text that is the module's own shortcut, e.g. "/kast".
+--   icon        the icon on the module's chip in the main window (path or file ID).
+--   OnLoad(self, db)          called when saved data has been read. db is
+--                             the module's own table, and everything in it is saved.
+--   OnSlash(self, message)    called for "/dw <id> <message>".
+--   CreatePanel(self, parent) creates the module's content in the main window
+--                             and returns the frame. Called once, the first
+--                             time the module is selected. Modules that have
+--                             this get a chip in the main window.
+-- (title and notes can be used instead of titleKey and notesKey if the text
+-- should not be translated.)
 function DW.RegisterModule(module)
     assert(type(module) == "table", "RegisterModule: mangler modul")
     assert(type(module.id) == "string" and module.id:match("^[%l%d]+$"),
@@ -306,7 +308,7 @@ function DW.RegisterModule(module)
     return module
 end
 
--- Modulens navn og beskrivelse på valgt språk.
+-- The module's name and description in the chosen language.
 function DW.ModuleTitle(module)
     return (module.titleKey and L[module.titleKey]) or module.title or module.id
 end
@@ -315,12 +317,12 @@ function DW.ModuleNotes(module)
     return (module.notesKey and L[module.notesKey]) or module.notes or ""
 end
 
--- Lagring ---------------------------------------------------------------------
+-- Storage ---------------------------------------------------------------------
 
 local frame = CreateFrame("Frame")
 frame:RegisterEvent("ADDON_LOADED")
--- Guild-navnet er ikke alltid klart ved innlogging, så sjekk på nytt hver gang
--- spillet melder noe om guilden.
+-- The guild name is not always ready at login, so check again every time
+-- the game reports something about the guild.
 for _, event in ipairs({ "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD", "PLAYER_GUILD_UPDATE", "GUILD_ROSTER_UPDATE" }) do
     pcall(frame.RegisterEvent, frame, event)
 end
@@ -328,8 +330,8 @@ end
 frame:SetScript("OnEvent", function(self, event, name)
     if event ~= "ADDON_LOADED" then
         DW.UpdateMembership()
-        -- Guild-navnet kan komme litt etter innlogging uten at spillet sier
-        -- fra. Sjekk derfor et par ganger til.
+        -- The guild name can arrive a bit after login without the game
+        -- saying so. So check a couple more times.
         if event == "PLAYER_ENTERING_WORLD" and not isMember and C_Timer and C_Timer.After then
             C_Timer.After(3, DW.UpdateMembership)
             C_Timer.After(10, DW.UpdateMembership)
@@ -351,8 +353,8 @@ frame:SetScript("OnEvent", function(self, event, name)
         DragonworldDB.minimap = {}
     end
 
-    -- Bruk språket spilleren valgte sist. Har de ikke valgt, gjelder engelsk
-    -- til hovedvinduet har spurt.
+    -- Use the language the player chose last. If they have not chosen, English
+    -- applies until the main window has asked.
     if DW.HasChosenLanguage() then
         DW.SetLanguage(DragonworldDB.language)
     end
@@ -365,7 +367,7 @@ frame:SetScript("OnEvent", function(self, event, name)
         end
         module.db = db
 
-        -- En feil i én modul skal ikke hindre de andre i å starte.
+        -- An error in one module must not stop the others from starting.
         if module.OnLoad then
             local ok, problem = pcall(module.OnLoad, module, db)
             if not ok then
@@ -376,7 +378,7 @@ frame:SetScript("OnEvent", function(self, event, name)
 
     DW.UpdateMembership()
 
-    -- Knappen ved minimapet (Minimap.lua).
+    -- The minimap button (Minimap.lua).
     if DW.InitMinimapButton then
         local ok, problem = pcall(DW.InitMinimapButton, DragonworldDB.minimap)
         if not ok then
@@ -385,9 +387,9 @@ frame:SetScript("OnEvent", function(self, event, name)
     end
 end)
 
--- Kommandoer ------------------------------------------------------------------
+-- Commands --------------------------------------------------------------------
 
--- Ordene virker på alle tre språk, uansett hvilket som er valgt.
+-- The words work in all three languages, whichever is chosen.
 local BUTTON_WORDS = { button = true, knapp = true, knop = true }
 
 function DW.PrintHelp()
@@ -406,8 +408,8 @@ SLASH_DRAGONWORLD2 = "/dragonworld"
 SlashCmdList["DRAGONWORLD"] = function(message)
     local word, rest = (message or ""):match("^%s*(%S+)%s*(.-)%s*$")
 
-    -- Feilsøking virker alltid, også når addonen er låst, så det går an å
-    -- finne ut hvorfor den er det.
+    -- Debugging always works, also when the addon is locked, so it is possible
+    -- to find out why it is.
     if word and word:lower() == "debug" then
         DW.PrintDebug()
         return
@@ -417,9 +419,9 @@ SlashCmdList["DRAGONWORLD"] = function(message)
         return
     end
 
-    -- Bare "/dw": åpne eller lukk hovedvinduet. Blinker knappen fordi noe
-    -- er nytt, åpnes fanen med det nye (Alerts.lua). Knappen på action bar
-    -- er en makro med nettopp "/dw".
+    -- Just "/dw": open or close the main window. If the button is flashing
+    -- because something is new, the tab with the new thing opens (Alerts.lua).
+    -- The action bar button is a macro with exactly "/dw".
     if not word then
         if DW.ClickOpen then
             DW.ClickOpen()
@@ -432,7 +434,7 @@ SlashCmdList["DRAGONWORLD"] = function(message)
     end
     word = word:lower()
 
-    -- "/dw <modul> ...": send resten til modulen, eller åpne den.
+    -- "/dw <module> ...": pass the rest to the module, or open it.
     local module = DW.modules[word]
     if module and module.OnSlash then
         module:OnSlash(rest)
@@ -443,10 +445,16 @@ SlashCmdList["DRAGONWORLD"] = function(message)
         return
     end
 
-    -- "/dw blink": vis hvordan blinkingen ser ut (Alerts.lua).
+    -- "/dw blink": show what the flashing looks like (Alerts.lua).
     if word == "blink" and DW.TestBlink then
         DW.TestBlink(15)
         DW.Print(L.BLINK_TEST)
+        return
+    end
+
+    -- "/dw nytt": the update window as it looks with this version's news (Update.lua).
+    if (word == "nytt" or word == "news" or word == "nieuw") and DW.ShowUpdateSample then
+        DW.ShowUpdateSample()
         return
     end
 

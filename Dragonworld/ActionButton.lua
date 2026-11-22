@@ -1,18 +1,18 @@
--- Dragonworld - knappen på action bar
+-- Dragonworld - the button on the action bar
 --
--- En addon kan ikke legge noe på action bar selv, men spilleren kan dra en
--- makro dit. Under Innstillinger (og i første oppsett) er det et ikon som
--- spilleren drar ned på action bar. Da lager addonen makroen "Dragonworld"
--- (kommandoen /dw) hvis den ikke finnes, og legger den på musepekeren.
+-- An addon can't put anything on the action bar itself, but the player can
+-- drag a macro there. Under Settings (and in the first setup) there is an icon
+-- the player drags down onto the action bar. The addon then creates the macro
+-- "Dragonworld" (the command /dw) if it doesn't exist, and puts it on the cursor.
 --
--- Makroen får dragehodet fra spillets egne ikoner. Der den ligger på action
--- bar, legger addonen guildlogoen oppå, og en farget glød rundt som blinker når noe
--- er nytt (Alerts.lua). Holder man musen over den, viser tooltipen en liste
--- over det nye, og blinkingen stopper. Det virker på spillets egne action
--- bars og på Bartender4, Dominos og ElvUI.
+-- The macro gets the dragon head from the game's own icons. Where it sits on
+-- the action bar, the addon puts the guild logo on top, and a coloured glow
+-- around it that blinks when something is new (Alerts.lua). If you hold the
+-- mouse over it, the tooltip shows a list of what is new, and the blinking
+-- stops. It works on the game's own action bars and on Bartender4, Dominos and ElvUI.
 --
--- Makroen er felles for alle karakterene på kontoen. Den slettes aldri av
--- addonen; spilleren kan slette den selv i makrovinduet (/macro).
+-- The macro is shared by all the characters on the account. The addon never
+-- deletes it; the player can delete it themselves in the macro window (/macro).
 
 local ADDON_NAME, DW = ...
 local L = DW.L
@@ -20,17 +20,17 @@ local L = DW.L
 local MACRO_NAME = "Dragonworld"
 local MACRO_BODY = "/dw"
 local MACRO_ICON = "Interface\\Icons\\INV_Misc_Head_Dragon_01"
--- Gløden rundt knappen: rammen fra spillets egen "proc"-glød (den myke
--- firkanten i IconAlert), gjort grå og farget, litt større enn knappen. Den
--- finnes i Forever (GlowingBars bruker den der).
+-- The glow around the button: the frame from the game's own "proc" glow (the
+-- soft square in IconAlert), made grey and coloured, a bit larger than the
+-- button. It exists in Forever (GlowingBars uses it there).
 local GLOW_TEXTURE = "Interface\\SpellActivationOverlay\\IconAlert"
 local GLOW_COORDS = { 0.0078125, 0.5078125, 0.27734375, 0.52734375 }
 local GLOW_SCALE = 1.4
-DW.ACTION_ICON = DW.MEDIA .. "button" -- guildlogoen som ikon (Media\button.tga)
--- Den samme gløden brukes av fanen i guildvinduet (Minimap.lua).
+DW.ACTION_ICON = DW.MEDIA .. "button" -- the guild logo as icon (Media\button.tga)
+-- The same glow is used by the tab in the guild window (Minimap.lua).
 DW.SQUARE_GLOW = { texture = GLOW_TEXTURE, coords = GLOW_COORDS, scale = GLOW_SCALE }
 
--- Makroen -----------------------------------------------------------------------
+-- The macro ---------------------------------------------------------------------
 
 local function MacroIndex()
     if not GetMacroIndexByName then
@@ -51,7 +51,7 @@ local function MacroIcon()
     return "INV_Misc_Head_Dragon_01"
 end
 
--- Lager makroen hvis den mangler. Gir makroens nummer, eller nil og hvorfor.
+-- Creates the macro if it is missing. Gives the macro's number, or nil and why.
 local function EnsureMacro()
     if InCombatLockdown and InCombatLockdown() then
         return nil, L.AB_COMBAT
@@ -74,7 +74,7 @@ local function EnsureMacro()
     return MacroIndex(), L.AB_FAILED
 end
 
--- Legger knappen på musepekeren, klar til å slippes på action bar.
+-- Puts the button on the cursor, ready to be dropped on the action bar.
 function DW.PickupActionButton()
     local index, problem = EnsureMacro()
     if not index then
@@ -87,7 +87,7 @@ function DW.PickupActionButton()
     return true
 end
 
--- Ikonet spilleren drar fra (Innstillinger og første oppsett).
+-- The icon the player drags from (Settings and first setup).
 function DW.CreateActionButtonSource(parent, size)
     local b = CreateFrame("Button", nil, parent)
     b:SetSize(size, size)
@@ -100,7 +100,7 @@ function DW.CreateActionButtonSource(parent, size)
 
     b:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square", "ADD")
 
-    -- Både et klikk og et drag legger den på musepekeren.
+    -- Both a click and a drag put it on the cursor.
     b:SetScript("OnDragStart", function()
         GameTooltip:Hide()
         DW.PickupActionButton()
@@ -121,10 +121,10 @@ function DW.CreateActionButtonSource(parent, size)
     return b
 end
 
--- Knappene på action bar -------------------------------------------------------------
+-- The buttons on the action bar ------------------------------------------------------
 
--- Navnene på knappene til spillets action bars og til de vanligste addonene
--- som lager egne. Bare de som finnes, brukes.
+-- The names of the buttons of the game's action bars and of the most common
+-- addons that make their own. Only the ones that exist are used.
 local function CandidateButtons()
     local list = {}
     local function Add(name)
@@ -153,10 +153,10 @@ local function CandidateButtons()
     return list
 end
 
--- Hvilken plass (1-180) knappen viser akkurat nå. Spillets knapper har den i
--- GetPagedID / CalculateAction (nyere klienter) eller i .action; attributtet
--- "action" er bare grunnplassen 1-12 på hovedlinjen, så det kommer sist.
--- (Samme rekkefølge som GlowingBars bruker i Forever.)
+-- Which slot (1-180) the button shows right now. The game's buttons have it in
+-- GetPagedID / CalculateAction (newer clients) or in .action; the attribute
+-- "action" is only the base slot 1-12 on the main bar, so it comes last.
+-- (The same order GlowingBars uses in Forever.)
 local function Valid(slot)
     if DW.IsSecret(slot) then
         return nil
@@ -181,7 +181,7 @@ local function SlotOf(button)
         return Valid(button.action)
     end
     if button._state_type == "action" and Valid(button._state_action) then
-        return Valid(button._state_action) -- Bartender4 og ElvUI
+        return Valid(button._state_action) -- Bartender4 and ElvUI
     end
     if button.GetAttribute then
         local ok, value = pcall(button.GetAttribute, button, "action")
@@ -192,7 +192,7 @@ local function SlotOf(button)
     return nil
 end
 
--- Navnet på makroen på en plass. Nyere klienter har det i C_ActionBar.
+-- The name of the macro in a slot. Newer clients have it in C_ActionBar.
 local function ActionText(slot)
     local get = (C_ActionBar and C_ActionBar.GetActionText) or GetActionText
     if not get then
@@ -205,7 +205,7 @@ local function ActionText(slot)
     return nil
 end
 
--- Hva som ligger på en plass: type og nummer (for feilsøking også).
+-- What is in a slot: type and number (for debugging too).
 local function ActionInfo(slot)
     if not GetActionInfo then
         return nil
@@ -225,13 +225,13 @@ local function HoldsMacro(slot, index)
     return id == index or ActionText(slot) == MACRO_NAME
 end
 
-local overlays = {} -- [knapp] = { logo, glow, target }
+local overlays = {} -- [button] = { logo, glow, target }
 
--- Tooltip: når musen er over knappen med makroen, legges listen over det nye
--- under spillets egen tekst, og det regnes som sett (Alerts.lua). Spillet
--- tegner tooltipen på action bar på nytt flere ganger i sekundet med
--- SetAction, så listen legges til hver gang det skjer.
-local hoverButton -- knappen musen er over nå, hvis den har makroen
+-- Tooltip: when the mouse is over the button with the macro, the list of what
+-- is new is added below the game's own text, and it counts as seen (Alerts.lua).
+-- The game redraws the tooltip on the action bar several times a second with
+-- SetAction, so the list is added every time that happens.
+local hoverButton -- the button the mouse is over now, if it has the macro
 
 local function OnButtonEnter(button)
     local overlay = overlays[button]
@@ -260,8 +260,8 @@ if hooksecurefunc and GameTooltip and GameTooltip.SetAction then
     end)
 end
 
--- Logoen og gløden på en knapp. Lages i selve knappen, så tastaturtegnet
--- (hotkey) fortsatt vises over logoen.
+-- The logo and the glow on a button. Created in the button itself, so the
+-- keyboard character (hotkey) is still shown over the logo.
 local function Overlay(button)
     local overlay = overlays[button]
     if overlay then
@@ -278,20 +278,20 @@ local function Overlay(button)
         overlay.logo = button:CreateTexture(nil, layer or "ARTWORK", nil, math.min(7, (tonumber(sublevel) or 0) + 1))
         overlay.logo:SetAllPoints(icon)
         overlay.logo:SetTexture(DW.ACTION_ICON)
-        -- Spillets nyere knapper runder av hjørnene på ikonet med en maske.
+        -- The game's newer buttons round off the corners of the icon with a mask.
         local mask = button.IconMask
         if mask and overlay.logo.AddMaskTexture then
             pcall(overlay.logo.AddMaskTexture, overlay.logo, mask)
         end
     end
 
-    -- Gløden dekker ikonet og lyser det opp i fargen.
+    -- The glow covers the icon and lights it up in the colour.
     local width = button:GetWidth()
     if type(width) ~= "number" or DW.IsSecret(width) or width <= 0 then
         width = 36
     end
-    -- I en egen ramme over knappen (som spillets egen proc-glød), så den ligger
-    -- over alt knappen selv tegner, også nedkjølingen og rammen rundt ikonet.
+    -- In a separate frame over the button (like the game's own proc glow), so it
+    -- sits above everything the button draws itself, also the cooldown and the border around the icon.
     overlay.frame = CreateFrame("Frame", nil, button)
     overlay.frame:SetAllPoints(button)
     local level = button.GetFrameLevel and button:GetFrameLevel()
@@ -302,7 +302,7 @@ local function Overlay(button)
     overlay.glow:SetPoint("CENTER", button, "CENTER", 0, 0)
     overlay.target = DW.AddGlowTarget({ glow = overlay.glow, hidden = true })
 
-    -- Etter spillets egne skript, så tooltipen deres er laget først.
+    -- After the game's own scripts, so their tooltip is made first.
     button:HookScript("OnEnter", OnButtonEnter)
     button:HookScript("OnLeave", OnButtonLeave)
 
@@ -312,8 +312,8 @@ end
 
 local waitingForCombat = false
 
--- Finner knappene som har makroen, og legger logo og glød på dem (og tar det
--- bort fra knapper som ikke har den lenger).
+-- Finds the buttons that have the macro, and puts logo and glow on them (and
+-- removes it from buttons that no longer have it).
 local function Scan()
     local index = MacroIndex()
     local inCombat = InCombatLockdown and InCombatLockdown()
@@ -322,7 +322,7 @@ local function Scan()
         local holds = slot and HoldsMacro(slot, index)
         local overlay = overlays[button]
         if holds and not overlay and inCombat then
-            waitingForCombat = true -- lag nye teksturer først etter kampen
+            waitingForCombat = true -- make new textures only after the combat
         elseif holds then
             overlay = Overlay(button)
             overlay.target.hidden = nil
@@ -340,7 +340,7 @@ local function Scan()
     DW.RefreshAlerts()
 end
 
--- Mange endringer kommer samtidig (f.eks. sidebytte). Se etter én gang.
+-- Many changes come at the same time (e.g. page switch). Look once.
 local scanQueued = false
 local function QueueScan()
     if scanQueued or not (C_Timer and C_Timer.After) then
@@ -352,7 +352,7 @@ local function QueueScan()
         Scan()
     end)
 end
-DW.ScanActionButtons = Scan -- til testene og feilsøking
+DW.ScanActionButtons = Scan -- for the tests and debugging
 
 local frame = CreateFrame("Frame")
 frame:SetScript("OnEvent", function(self, event)
@@ -381,7 +381,7 @@ DW.AddDebug("action bar", function(add)
         .. " | knapper med makroen: " .. shown .. " | kandidater: " .. #CandidateButtons()
         .. " | C_ActionBar.GetActionText: " .. DW.DebugText(C_ActionBar ~= nil and C_ActionBar.GetActionText ~= nil)
         .. " | GetActionText: " .. DW.DebugText(GetActionText ~= nil))
-    -- Knappene som har en makro på seg: hvor, hvilken, og om de har gløden.
+    -- The buttons that have a macro on them: where, which, and whether they have the glow.
     local listed = 0
     for _, button in ipairs(CandidateButtons()) do
         local slot = SlotOf(button)
