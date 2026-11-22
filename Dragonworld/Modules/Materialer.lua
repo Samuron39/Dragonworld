@@ -2,6 +2,8 @@
 -- Keeps track of crafting materials on all your characters, both in the
 -- bags and in the bank, and shows them together in the main window. You can
 -- filter on where they are (all, in bags, in bank) and by character.
+-- "Everything" shows all items instead of only the materials, and the gold
+-- on each character is shown too, so you can see what your alts are holding.
 --
 -- How the numbers are collected:
 --   * The bags are read when you log in and every time their contents change.
@@ -39,7 +41,11 @@ local GetItemInfo = (C_Item and C_Item.GetItemInfo) or GetItemInfo
 --       name, realm, class,
 --       bags = { [itemID] = count }, bagsTime = time,
 --       bank = { [itemID] = count }, bankTime = time or nil,
+--       (bags and bank hold only the materials)
+--       allBags, allBank = { [itemID] = count }   every item
+--       money = copper, moneyTime = time
 --   }
+--   db.kind = "all" when "Everything" is chosen
 --   db.items[itemID] = { name, quality }   names we have seen, so items on
 --                                          other characters can be shown by name
 --   db.reagents[itemID] = { [profession] = true }   which professions
@@ -232,24 +238,35 @@ local function RememberItem(itemID)
     end
 end
 
--- Counts the materials in the given slots. Also returns how many
--- slots existed, so we can tell "empty" from "not available".
-local function CountMaterials(containers)
-    local counts, slots = {}, 0
+-- Counts the items in the given slots: the materials, and everything. Also
+-- returns how many slots existed, so we can tell "empty" from "not available".
+local function CountItems(containers)
+    local materials, all, slots = {}, {}, 0
     for _, bag in ipairs(containers) do
         local size = C_Container.GetContainerNumSlots(bag) or 0
         slots = slots + size
         for slot = 1, size do
             local itemID = C_Container.GetContainerItemID(bag, slot)
-            if itemID and IsMaterial(itemID) then
+            if type(itemID) == "number" and not DW.IsSecret(itemID) then
                 local info = C_Container.GetContainerItemInfo and C_Container.GetContainerItemInfo(bag, slot)
                 local count = (type(info) == "table" and info.stackCount) or 1
-                counts[itemID] = (counts[itemID] or 0) + count
+                all[itemID] = (all[itemID] or 0) + count
+                if IsMaterial(itemID) then
+                    materials[itemID] = (materials[itemID] or 0) + count
+                end
                 RememberItem(itemID)
             end
         end
     end
-    return counts, slots
+    return materials, all, slots
+end
+
+local function ReadMoney(character)
+    local money = GetMoney and GetMoney()
+    if type(money) == "number" and not DW.IsSecret(money) then
+        character.money = money
+        character.moneyTime = time()
+    end
 end
 
 -- The entry for the character you are logged in on. Created if missing.
@@ -282,15 +299,16 @@ local function Scan()
         return
     end
 
-    character.bags = CountMaterials(BAG_CONTAINERS)
+    character.bags, character.allBags = CountItems(BAG_CONTAINERS)
     character.bagsTime = time()
+    ReadMoney(character)
 
     if bankOpen then
-        local counts, slots = CountMaterials(BankContainers())
+        local materials, all, slots = CountItems(BankContainers())
         -- If we found no bank slots, the bank is not readable right now. Then
         -- we keep what we remembered, instead of assuming it is empty.
         if slots > 0 then
-            character.bank = counts
+            character.bank, character.allBank = materials, all
             character.bankTime = time()
         end
     end
@@ -303,7 +321,7 @@ end
 local shownItem = {}
 
 local function OnTooltipItem(tooltip, data)
-    if not DW.IsMember() then
+    if not DW.HasAccess() then
         return
     end
     if tooltip ~= GameTooltip and tooltip ~= ItemRefTooltip then
@@ -380,7 +398,56 @@ local function DisplayName(key)
     return name
 end
 
--- Sums the materials by the current filter. One entry per item,
+-- db.kind is "all" when "Everything" is chosen, otherwise only materials are shown.
+local function ShowsAll()
+    return db.kind == "all"
+end
+
+-- What the character has in the bags or the bank ("bags" or "bank"), by the
+-- current filter. Characters read before "Everything" existed only have the
+-- materials until they log in again.
+local function Counts(character, where)
+    local counts
+    if ShowsAll() then
+        counts = character[where == "bags" and "allBags" or "allBank"]
+    end
+    if type(counts) ~= "table" then
+        counts = character[where]
+    end
+    return type(counts) == "table" and counts or {}
+end
+
+local function Money(copper)
+    if type(copper) ~= "number" or copper < 0 then
+        return "?"
+    end
+    if GetCoinTextureString then
+        local ok, text = pcall(GetCoinTextureString, copper)
+        if ok and type(text) == "string" and text ~= "" then
+            return text
+        end
+    end
+    local gold, silver, rest = math.floor(copper / 10000), math.floor(copper / 100) % 100, copper % 100
+    local parts = {}
+    if gold > 0 then parts[#parts + 1] = gold .. "g" end
+    if silver > 0 then parts[#parts + 1] = silver .. "s" end
+    if rest > 0 or #parts == 0 then parts[#parts + 1] = rest .. "c" end
+    return table.concat(parts, " ")
+end
+
+-- The gold of the chosen character, or of all of them together.
+local function TotalMoney()
+    local total = 0
+    for key, character in pairs(db.characters) do
+        if type(character) == "table" and (filterCharacter == nil or filterCharacter == key)
+            and type(character.money) == "number" then
+            total = total + character.money
+        end
+    end
+    return total
+end
+
+-- Sums the items by the current filter. One entry per item,
 -- sorted by name.
 local function Collect()
     local totals = {}
@@ -397,10 +464,10 @@ local function Collect()
     for key, character in pairs(db.characters) do
         if type(character) == "table" and (filterCharacter == nil or filterCharacter == key) then
             if filterSource ~= "bank" then
-                Add(character.bags)
+                Add(Counts(character, "bags"))
             end
             if filterSource ~= "bags" then
-                Add(character.bank)
+                Add(Counts(character, "bank"))
             end
         end
     end
@@ -524,8 +591,8 @@ local function GetRow(index)
         GameTooltip:AddLine(" ")
         for _, key in ipairs(SortedCharacterKeys()) do
             local character = db.characters[key]
-            local inBags = (type(character.bags) == "table" and character.bags[entry.itemID]) or 0
-            local inBank = (type(character.bank) == "table" and character.bank[entry.itemID]) or 0
+            local inBags = Counts(character, "bags")[entry.itemID] or 0
+            local inBank = Counts(character, "bank")[entry.itemID] or 0
             if inBags + inBank > 0 then
                 GameTooltip:AddLine(L.MAT_TOOLTIP_LINE:format(DisplayName(key), inBags, inBank), 0.75, 0.75, 0.75)
             end
@@ -550,11 +617,17 @@ RefreshPanel = function()
         filterCharacter = nil
     end
 
-    panel.title:SetText(L.MAT_PANEL_TITLE)
+    local all = ShowsAll()
+    panel.title:SetText(all and L.MAT_PANEL_TITLE_ALL or L.MAT_PANEL_TITLE)
     panel.searchLabel:SetText(L.MAT_SEARCH)
-    panel.headerItem:SetText(L.MAT_HEADER_ITEM)
+    panel.headerItem:SetText(all and L.MAT_HEADER_ITEM_ALL or L.MAT_HEADER_ITEM)
     panel.headerCount:SetText(L.MAT_HEADER_COUNT)
-    panel.empty:SetText(L.MAT_EMPTY)
+    panel.empty:SetText(all and L.MAT_EMPTY_ALL or L.MAT_EMPTY)
+    panel.kindChips.materials.label:SetText(L.MAT_KIND_MATERIALS)
+    panel.kindChips.all.label:SetText(L.MAT_KIND_ALL)
+    panel.kindChips.materials:SetSelected(not all)
+    panel.kindChips.all:SetSelected(all)
+    panel.gold:SetText(L.MAT_GOLD:format(Money(TotalMoney())))
 
     panel.sourceChips.all.label:SetText(L.MAT_SOURCE_ALL)
     panel.sourceChips.bags.label:SetText(L.MAT_SOURCE_BAGS)
@@ -650,6 +723,48 @@ local function CreatePanel(parent)
     f.headerCount = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     f.headerCount:SetPoint("TOPRIGHT", -38, -108)
 
+    -- What to show: only the materials, or everything.
+    f.kindChips = {}
+    for index, kind in ipairs({ "all", "materials" }) do
+        local chip = DW.CreateChip(f, 100, 26)
+        chip:SetPoint("TOPRIGHT", -14 - (index - 1) * 106, -76)
+        chip.label:SetJustifyH("CENTER")
+        chip:SetScript("OnClick", function()
+            db.kind = (kind == "all") and "all" or nil
+            RefreshPanel()
+        end)
+        f.kindChips[kind] = chip
+    end
+
+    -- The gold, in the header row. Hover to see it per character.
+    f.goldBox = CreateFrame("Frame", nil, f)
+    f.goldBox:SetSize(260, 16)
+    f.goldBox:SetPoint("TOPRIGHT", -130, -106)
+    f.goldBox:EnableMouse(true)
+    f.gold = f.goldBox:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    f.gold:SetAllPoints(f.goldBox)
+    f.gold:SetJustifyH("RIGHT")
+    f.goldBox:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_BOTTOM")
+        GameTooltip:AddLine(L.MAT_GOLD_TITLE)
+        local unknown = false
+        for _, key in ipairs(SortedCharacterKeys()) do
+            local money = db.characters[key].money
+            if type(money) == "number" then
+                GameTooltip:AddDoubleLine(DisplayName(key), Money(money), 1, 1, 1, 1, 1, 1)
+            else
+                unknown = true
+            end
+        end
+        if unknown then
+            GameTooltip:AddLine(L.MAT_GOLD_UNKNOWN, 0.75, 0.75, 0.75, true)
+        end
+        GameTooltip:Show()
+    end)
+    f.goldBox:SetScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
+
     local scroll = CreateFrame("ScrollFrame", "DragonworldMaterialerScroll", f, "ScrollFrameTemplate")
     scroll:SetPoint("TOPLEFT", 10, -124)
     scroll:SetPoint("BOTTOMRIGHT", -30, 34)
@@ -670,7 +785,7 @@ local function CreatePanel(parent)
 
     f:SetScript("OnShow", function()
         -- Read the bags again every time the panel opens, so the numbers are fresh.
-        if DW.IsMember() then
+        if DW.HasAccess() then
             Scan()
         end
         RefreshPanel()
@@ -697,7 +812,7 @@ local function QueueScan()
     scanQueued = true
     C_Timer.After(0.3, function()
         scanQueued = false
-        if DW.IsMember() then
+        if DW.HasAccess() then
             Scan()
             RefreshPanel()
         end
@@ -707,11 +822,17 @@ end
 local frame = CreateFrame("Frame")
 
 frame:SetScript("OnEvent", function(self, event, itemID)
-    if not DW.IsMember() then
+    if not DW.HasAccess() then
         return
     end
 
-    if event == "BANKFRAME_OPENED" then
+    if event == "PLAYER_MONEY" then
+        local character = CurrentCharacter()
+        if character then
+            ReadMoney(character)
+            RefreshPanel()
+        end
+    elseif event == "BANKFRAME_OPENED" then
         bankOpen = true
         QueueScan()
     elseif event == "BANKFRAME_CLOSED" then
@@ -740,6 +861,7 @@ for _, event in ipairs({
     "BANKFRAME_OPENED",
     "BANKFRAME_CLOSED",
     "GET_ITEM_INFO_RECEIVED",
+    "PLAYER_MONEY",
     "TRADE_SKILL_SHOW",
     "TRADE_SKILL_LIST_UPDATE",
     "TRADE_SKILL_DATA_SOURCE_CHANGED",
@@ -747,9 +869,9 @@ for _, event in ipairs({
     pcall(frame.RegisterEvent, frame, event)
 end
 
--- If the character becomes a member after login (the guild name loads late), read then.
-DW.OnMembershipChanged(function(member)
-    if member then
+-- If the tab is unlocked after login (the guild name loads late), read then.
+DW.OnAccessChanged(function(access)
+    if access then
         QueueScan()
     end
 end)
@@ -785,6 +907,7 @@ end)
 
 DW.RegisterModule({
     id = MODULE_ID,
+    personal = true, -- alts outside the guild may use it (Core.lua)
     titleKey = "MAT_TITLE",
     notesKey = "MAT_NOTES",
     icon = "Interface\\Icons\\Trade_BlackSmithing",

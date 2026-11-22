@@ -248,7 +248,7 @@ end
 local shownItem = {}
 
 local function OnTooltipItem(tooltip, data)
-    if not DW.IsMember() then
+    if not DW.HasAccess() then
         return
     end
     if tooltip ~= GameTooltip and tooltip ~= ItemRefTooltip then
@@ -732,7 +732,7 @@ local COMMANDS = {
 }
 
 local function HandleSlash(message)
-    if not DW.Guard() then
+    if not DW.GuardPersonal() then
         return
     end
     message = message or ""
@@ -783,6 +783,7 @@ SlashCmdList["DRAGONWORLD_RYDDESEKK"] = HandleSlash
 
 DW.RegisterModule({
     id = MODULE_ID,
+    personal = true, -- alts outside the guild may use it (Core.lua)
     titleKey = "RS_TITLE",
     notesKey = "RS_NOTES",
     shortcutKey = "RS_SLASH",

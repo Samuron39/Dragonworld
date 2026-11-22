@@ -326,6 +326,7 @@ end
 
 -- Lays out the tabs on the left edge in the chosen order. If there are too many
 -- to fit above Settings, they move a little closer together.
+-- On an alt outside the guild only the personal tabs are shown (Core.lua).
 local function LayoutChips()
     local position = {}
     for index, id in ipairs(OrderedModuleIDs()) do
@@ -334,10 +335,18 @@ local function LayoutChips()
     table.sort(moduleChips, function(a, b)
         return (position[a.id] or 999) < (position[b.id] or 999)
     end)
+    local shown = {}
+    for _, chip in ipairs(moduleChips) do
+        local usable = DW.CanUseModule(chip.id)
+        chip:SetShown(usable)
+        if usable then
+            shown[#shown + 1] = chip
+        end
+    end
     local room = BODY_HEIGHT - CHIP_HEIGHT - CHIP_GAP
-    local step = math.min(CHIP_HEIGHT + CHIP_GAP, math.floor(room / math.max(1, #moduleChips)))
+    local step = math.min(CHIP_HEIGHT + CHIP_GAP, math.floor(room / math.max(1, #shown)))
     local height = math.min(CHIP_HEIGHT, step - 2)
-    for index, chip in ipairs(moduleChips) do
+    for index, chip in ipairs(shown) do
         chip:ClearAllPoints()
         chip:SetPoint("TOPLEFT", 0, -(index - 1) * step)
         chip:SetHeight(height)
@@ -646,12 +655,17 @@ end)
 -- Page selection ----------------------------------------------------------------
 
 local function FirstModuleID()
-    return moduleChips[1] and moduleChips[1].id or SETTINGS
+    for _, chip in ipairs(moduleChips) do
+        if DW.CanUseModule(chip.id) then
+            return chip.id
+        end
+    end
+    return SETTINGS
 end
 
 local function Select(id)
     local module = DW.modules[id]
-    if id ~= SETTINGS and not (module and module.CreatePanel) then
+    if id ~= SETTINGS and not (module and module.CreatePanel and DW.CanUseModule(module)) then
         id = FirstModuleID()
         module = DW.modules[id]
     end
@@ -967,9 +981,12 @@ local function RefreshStatusPills()
         return
     end
     local current = DW.GetMyStatus()
+    -- The status is shared with the guild, so alts outside it have none.
+    local member = DW.IsMember()
     for _, pill in ipairs(window.statusPills) do
         pill.label:SetText(L[pill.status.key])
         pill:SetSelected(pill.status.code == current)
+        pill:SetShown(member)
     end
 end
 
@@ -1130,10 +1147,23 @@ end
 
 DW.OnLanguageChanged(ApplyLanguage)
 
--- If the character stops being a member while the window is open, it closes.
-DW.OnMembershipChanged(function(member)
-    if not member and window then
+-- If the character loses access while the window is open, it closes. If it
+-- only stops being a member (an alt), the guild tabs disappear.
+DW.OnAccessChanged(function(access)
+    if not access and window then
         window:Hide()
+    end
+end)
+
+DW.OnMembershipChanged(function()
+    if not window then
+        return
+    end
+    LayoutChips()
+    RefreshStatusPills()
+    if window:IsShown() and window.body:IsShown() and selected and selected ~= SETTINGS
+        and not DW.CanUseModule(selected) then
+        Select(FirstModuleID())
     end
 end)
 
@@ -1150,13 +1180,20 @@ end
 -- Shows the window. id is the module (or SETTINGS) to show; without id it
 -- shows what was shown last, or the first module.
 ShowWindow = function(id)
-    if not DW.Guard() then
+    if not DW.GuardPersonal() then
+        return
+    end
+    -- A guild tab asked for on an alt: say why, and do nothing.
+    if id and id ~= SETTINGS and DW.modules[id] and not DW.CanUseModule(id) then
+        DW.PrintLocked()
         return
     end
     if not window then
         window = CreateWindow()
         ApplyLanguage()
     end
+    LayoutChips()
+    RefreshStatusPills()
     window:Show()
 
     if not DW.HasChosenLanguage() then
@@ -1218,6 +1255,10 @@ ShowWindow = function(id)
     window.body:Show()
     Select(id or selected or FirstModuleID())
 
+    -- The reminders are about the guild.
+    if not DW.IsMember() then
+        return
+    end
     for _, callback in ipairs(openedCallbacks) do
         local ok, problem = pcall(callback, window)
         if not ok then

@@ -404,7 +404,7 @@ end
 local frame = CreateFrame("Frame")
 
 frame:SetScript("OnEvent", function(self, event)
-    if not DW.IsMember() then
+    if not DW.HasAccess() then
         return
     end
     if event == "PLAYER_REGEN_ENABLED" then
@@ -430,8 +430,8 @@ end)
 
 -- The guild name can arrive late after login. Then note which spec the
 -- character is in, so the first spec switch is detected.
-DW.OnMembershipChanged(function(member)
-    if member and lastSpec == nil then
+DW.OnAccessChanged(function(access)
+    if access and lastSpec == nil then
         lastSpec = ActiveSpec()
     end
 end)
@@ -440,6 +440,7 @@ end)
 
 DW.RegisterModule({
     id = MODULE_ID,
+    personal = true, -- alts outside the guild may use it (Core.lua)
     titleKey = "KB_TITLE",
     notesKey = "KB_NOTES",
     icon = "Interface\\Icons\\INV_Misc_Key_03",

@@ -305,6 +305,8 @@ end
 
 local character = { name = "Tester", realm = "Stormrage", class = "PALADIN" }
 function UnitFullName(unit) assert(unit == "player"); return character.name, character.realm end
+fakeMoney = 1234567                                      -- copper the character has (GetMoney)
+function GetMoney() return fakeMoney end
 function UnitName(unit) assert(unit == "player"); return character.name end
 function UnitLevel(unit) assert(unit == "player"); return character.level or 60 end
 -- The player's fixed id. Unless a test gives one, it is made from the name.
@@ -909,6 +911,10 @@ local function newTooltip(name)
         assert(type(text) == "string")
         self.lines[#self.lines + 1] = text
         self.colors[#self.lines] = r and { r, g, b } or nil
+    end
+    function t:AddDoubleLine(left, right, ...)
+        assert(type(left) == "string" and type(right) == "string")
+        self:AddLine(left .. " = " .. right, ...)
     end
     function t:Reset() self.lines = {}; self.colors = {}; self:Fire("OnTooltipCleared") end
     function t:SetText(text, r, g, b) assert(type(text) == "string"); self:Reset(); self.lines[1] = text; self.colors[1] = r and { r, g, b } or nil end
@@ -5639,6 +5645,9 @@ local function setGuild(name)
     guild.name = name
     fire("PLAYER_GUILD_UPDATE", "player")
 end
+-- Earlier tests logged in other characters while in the guild. Here the
+-- account has only this character, so leaving the guild locks everything.
+DragonworldDB.memberCharacters = { ["Tester-Stormrage"] = 1 }
 check("a member of Dragonworld sees everything", ns.IsMember() and win:IsShown() and mm:IsShown())
 
 setGuild("Other Guild")
@@ -5706,6 +5715,106 @@ setGuild("Other Guild")
 setGuild("Dragonworld")
 check("a hidden minimap button stays hidden after re-joining", ns.IsMember() and not mm:IsShown())
 ns.SetMinimapButtonShown(true)
+
+-- Alts outside the guild: another character on the account is a member, so the
+-- personal tabs work, and nothing from the guild.
+;(function()
+    check("the account remembers its characters that are in the guild",
+        DragonworldDB.memberCharacters["Tester-Stormrage"] ~= nil and ns.HasAccess())
+    DragonworldDB.memberCharacters["Mainy-Stormrage"] = 5
+    setGuild("Other Guild")
+    check("an alt in another guild is not a member, but gets the personal tabs, and the minimap button",
+        not ns.IsMember() and ns.HasAccess() and mm:IsShown() and DragonworldDB.memberCharacters["Tester-Stormrage"] == nil)
+    setGuild(nil)
+    check("...also with no guild at all", not ns.IsMember() and ns.HasAccess())
+
+    local sentBefore = #wire
+    clearChat()
+    dw("")
+    local shown = {}
+    for _, chip in ipairs(chipOrder) do
+        if chip:IsShown() then shown[#shown + 1] = chip.id end
+    end
+    table.sort(shown)
+    check("/dw opens the window with only the personal tabs", win:IsShown() and win.body:IsShown()
+        and table.concat(shown, ",") == "keybinds,materialer,professions,ryddesekk", table.concat(shown, ","))
+    local pills = false
+    for _, pill in ipairs(win.statusPills) do pills = pills or pill:IsShown() end
+    check("...without the status buttons, and the reminders about the guild stay away", not pills and not shareNotice:IsShown())
+    matChip.scripts.OnClick(matChip)
+    check("the Materialer tab opens on the alt", matPanel:IsVisible() and matChip.selected)
+
+    clearChat()
+    dw("roster")
+    check("a guild tab is refused, and the alt is told why and what works",
+        matPanel:IsVisible() and has("bare for medlemmer av guilden Dragonworld") and has("Karakteren din Mainy er i guilden"), chatText())
+    clearChat()
+    ns.OpenModule("events")
+    check("...also when opened from elsewhere", matPanel:IsVisible() and has("Karakteren din Mainy"), chatText())
+
+    BAGS[0][1] = 20
+    fire("BAG_UPDATE_DELAYED")
+    flush()
+    check("the alt's bags are recorded for Materialer", me.bags[20] == 1)
+
+    -- "Bank sharing": everything on the characters, and their gold.
+    local candle = BAGS[0][2]
+    BAGS[0][2] = 7                        -- an Iron Sword: not a material
+    fakeMoney = 52500
+    fire("PLAYER_MONEY")
+    fire("BAG_UPDATE_DELAYED")
+    flush()
+    check("the alt's gold and all its items are recorded", me.money == 52500 and me.allBags[7] == 2 and me.bags[7] == nil and me.allBags[20] == 1)
+    matChip.scripts.OnClick(matChip)
+    check("only the materials are shown at first", matRow("Iron Sword") == nil and matRow("Copper Ore") ~= nil
+        and matPanel.kindChips.materials.selected and matPanel.kindChips.materials.label.text == "Materialer")
+    matPanel.kindChips.all.scripts.OnClick(matPanel.kindChips.all)
+    check("\"Alt\" shows every item, with its own heading", matRow("Iron Sword") ~= nil and matRow("Copper Ore") ~= nil
+        and matPanel.title.text == "Alt på karakterene dine" and matPanel.headerItem.text == "Gjenstand" and matPanel.kindChips.all.selected
+        and DragonworldDB.modules.materialer.kind == "all", matPanel.title.text)
+    local others = DragonworldDB.modules.materialer.characters
+    others["Bankie-Stormrage"] = { name = "Bankie", realm = "Stormrage", money = 1000000, bags = { [21] = 2 }, bank = {} }
+    matPanel.kindChips.materials.scripts.OnClick(matPanel.kindChips.materials)
+    local copper = 0
+    for _, c in pairs(others) do if type(c) == "table" and type(c.money) == "number" then copper = copper + c.money end end
+    check("the gold of all the characters is added up", copper > 1052500
+        and matPanel.gold.text == ("Gull: %dg %ds %dc"):format(copper // 10000, copper // 100 % 100, copper % 100), matPanel.gold.text)
+    matPanel.kindChips.all.scripts.OnClick(matPanel.kindChips.all)
+    check("a character read before this version shows its materials under \"Alt\" too", matRow("Linen Cloth") ~= nil, matDescribe())
+    matPanel.goldBox.scripts.OnEnter(matPanel.goldBox)
+    local tip = table.concat(GameTooltip.lines, " / ")
+    check("hovering the gold lists it per character, and says who is not counted yet",
+        tip:find("Gull på karakterene dine", 1, true) and tip:find("Bankie = 100g", 1, true) and (tip:find("Logg inn", 1, true) ~= nil) == (function()
+            for _, c in pairs(others) do if type(c) == "table" and type(c.money) ~= "number" then return true end end
+            return false
+        end)(), tip)
+    matPanel.goldBox.scripts.OnLeave(matPanel.goldBox)
+    others["Bankie-Stormrage"] = nil
+    matPanel.kindChips.materials.scripts.OnClick(matPanel.kindChips.materials)
+    BAGS[0][2] = candle
+    fakeMoney = 1234567
+    kast("merk " .. link(4))
+    check("the Ryddesekk commands work", saved().marks[4] ~= nil)
+    kast("fjern " .. link(4))
+    check("nothing is sent to the guild from the alt", #wire == sentBefore)
+
+    setGuild("Dragonworld")
+    check("joining the guild brings back all the tabs", ns.IsMember() and roChip:IsShown() and evChip:IsShown()
+        and DragonworldDB.memberCharacters["Tester-Stormrage"] ~= nil)
+    roChip.scripts.OnClick(roChip)
+    setGuild("Other Guild")
+    local selectedID
+    for _, c in ipairs(chipOrder) do if c.selected then selectedID = c.id end end
+    check("leaving it while on a guild tab moves to a personal tab and hides the guild tabs",
+        win:IsShown() and not roChip:IsShown() and not roPanel:IsVisible() and ns.modules[selectedID] and ns.modules[selectedID].personal, selectedID)
+
+    DragonworldDB.memberCharacters["Mainy-Stormrage"] = nil
+    fire("PLAYER_GUILD_UPDATE", "player")
+    check("with no character left in the guild, the window closes and the button goes", not ns.HasAccess() and not win:IsShown() and not mm:IsShown())
+
+    BAGS[0][1] = false
+    setGuild("Dragonworld")
+end)()
 
 -- Leave things as the remaining tests expect: window open on Ryddesekk.
 fire("BAG_UPDATE_DELAYED")

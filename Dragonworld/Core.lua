@@ -193,7 +193,8 @@ DW.AddDebug("identitet", function(add)
     add("UnitName: " .. text(UnitName and UnitName("player")) .. " | GUID: " .. text(DW.MyGUID()))
     add("level: " .. text(UnitLevel and UnitLevel("player")) .. " | class: " .. text(UnitClass and select(2, UnitClass("player"))))
     add("IsInGuild: " .. text(IsInGuild and IsInGuild()) .. " | guild: " .. text(GetGuildInfo and GetGuildInfo("player"))
-        .. " | medlem: " .. text(DW.IsMember()))
+        .. " | medlem: " .. text(DW.IsMember()) .. " | personlig: " .. text(DW.HasAccess())
+        .. " | guild-alt: " .. text(DW.MemberAlt()))
     add("språk: " .. text(DW.GetLanguage()) .. " | interface: " .. text(GetBuildInfo and select(4, GetBuildInfo())))
 
     local roster = DW.ReadGuildRoster()
@@ -213,17 +214,43 @@ end)
 -- lock, not security: the code is open to anyone who has the files, and a
 -- guild with the same name on another realm gets through too.
 --
+-- Alts outside the guild: the saved data is shared by all characters on the
+-- account, so we remember which of them are in the guild. When one of them is,
+-- the other characters get the personal tabs (modules with personal = true:
+-- bags, bank, gold, professions, keybinds). Nothing from the guild is shown
+-- or sent on them. A character that is seen outside the guild is forgotten.
+--
 -- Modules that do something on their own (tooltip, events) must check
--- DW.IsMember() themselves first. Commands use DW.Guard(), which also explains
--- to the player why nothing happens.
+-- DW.IsMember() (guild modules) or DW.HasAccess() (personal modules) first.
+-- Commands use DW.Guard() or DW.GuardPersonal(), which also explain to the
+-- player why nothing happens.
 DW.GUILD_NAME = "Dragonworld"
 
 local isMember = false
+local hasAccess = false
 local currentGuild -- the name of the guild the character is in, if known
 local memberListeners = {}
+local accessListeners = {}
 
 function DW.IsMember()
     return isMember
+end
+
+-- True if the personal tabs may be used: the character is a member, or
+-- another character on the account is.
+function DW.HasAccess()
+    return hasAccess
+end
+
+-- True if the module (id or table) may be used on this character.
+function DW.CanUseModule(module)
+    if type(module) == "string" then
+        module = DW.modules[module]
+    end
+    if isMember then
+        return true
+    end
+    return hasAccess and type(module) == "table" and module.personal == true
 end
 
 -- Registers a function that is called when the character becomes or stops
@@ -232,8 +259,47 @@ function DW.OnMembershipChanged(callback)
     memberListeners[#memberListeners + 1] = callback
 end
 
+-- Like OnMembershipChanged, for DW.HasAccess().
+function DW.OnAccessChanged(callback)
+    accessListeners[#accessListeners + 1] = callback
+end
+
+-- DragonworldDB.memberCharacters["Name-Realm"] = time last seen in the guild
+local function MemberCharacters()
+    if type(DragonworldDB) ~= "table" then
+        return nil
+    end
+    if type(DragonworldDB.memberCharacters) ~= "table" then
+        DragonworldDB.memberCharacters = {}
+    end
+    return DragonworldDB.memberCharacters
+end
+
+-- The name of another character on the account that is in the guild, if any.
+function DW.MemberAlt()
+    local list = MemberCharacters()
+    local myKey = DW.CharacterKey()
+    local best, bestTime
+    for key, seen in pairs(list or {}) do
+        if key ~= myKey and type(key) == "string" and (not bestTime or (tonumber(seen) or 0) > bestTime) then
+            best, bestTime = key, tonumber(seen) or 0
+        end
+    end
+    return best and (best:match("^(.-)%-") or best)
+end
+
+local function Notify(listeners, value)
+    for _, callback in ipairs(listeners) do
+        local ok, problem = pcall(callback, value)
+        if not ok then
+            DW.PrintError(L.ERROR, problem)
+        end
+    end
+end
+
 function DW.UpdateMembership()
     local member = isMember
+    local known = true -- whether we know if this character is in Dragonworld
 
     if not (IsInGuild and IsInGuild()) then
         currentGuild = nil
@@ -248,31 +314,53 @@ function DW.UpdateMembership()
                 return (text:lower():gsub("%s+", ""))
             end
             member = (Plain(name) == Plain(DW.GUILD_NAME))
+        else
+            -- The name can be missing right after login. Then we keep what we
+            -- knew, and the game notifies us again when it is ready.
+            known = false
         end
-        -- The name can be missing right after login. Then we keep what we
-        -- knew, and the game notifies us again when it is ready.
     end
+
+    local list = MemberCharacters()
+    local key = DW.CharacterKey()
+    if list and key and known then
+        list[key] = member and (time and time() or true) or nil
+    end
+    local access = member or (list ~= nil and next(list) ~= nil)
 
     if member ~= isMember then
         isMember = member
-        for _, callback in ipairs(memberListeners) do
-            local ok, problem = pcall(callback, member)
-            if not ok then
-                DW.PrintError(L.ERROR, problem)
-            end
-        end
+        Notify(memberListeners, member)
+    end
+    if access ~= hasAccess then
+        hasAccess = access
+        Notify(accessListeners, access)
     end
 end
 
--- Explains in chat why the addon is locked.
+-- Explains in chat why the addon (or this part of it) is locked.
 function DW.PrintLocked()
     DW.Print(L.LOCKED:format(DW.GUILD_NAME))
     DW.Print(currentGuild and L.LOCKED_GUILD:format(currentGuild) or L.LOCKED_NO_GUILD)
+    local alt = hasAccess and DW.MemberAlt()
+    if alt then
+        DW.Print(L.LOCKED_PERSONAL:format(alt))
+    end
 end
 
 -- For commands: true if the character is a member, otherwise the explanation is printed.
 function DW.Guard()
     if isMember then
+        return true
+    end
+    DW.PrintLocked()
+    return false
+end
+
+-- For commands of personal modules: true if DW.HasAccess(), otherwise the
+-- explanation is printed.
+function DW.GuardPersonal()
+    if hasAccess then
         return true
     end
     DW.PrintLocked()
@@ -286,6 +374,8 @@ end
 --   notesKey    the name of the text that says in one line what the module does.
 --   shortcutKey the name of the text that is the module's own shortcut, e.g. "/kast".
 --   icon        the icon on the module's chip in the main window (path or file ID).
+--   personal    true if the module only uses this account's own characters
+--               (no guild data), so alts outside the guild may use it too.
 --   OnLoad(self, db)          called when saved data has been read. db is
 --                             the module's own table, and everything in it is saved.
 --   OnSlash(self, message)    called for "/dw <id> <message>".
@@ -415,7 +505,11 @@ SlashCmdList["DRAGONWORLD"] = function(message)
         return
     end
 
-    if not DW.Guard() then
+    -- An alt outside the guild may open the window (with the personal tabs),
+    -- the personal modules and the minimap button. The rest is for members.
+    local lower = word and word:lower()
+    local personal = not word or BUTTON_WORDS[lower] or DW.CanUseModule(lower)
+    if not (personal and DW.GuardPersonal() or (not personal and DW.Guard())) then
         return
     end
 

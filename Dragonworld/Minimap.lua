@@ -121,11 +121,11 @@ local function CreateButton()
     return b
 end
 
--- The button is only shown for members of the guild, and only if it is not hidden
--- under Settings.
+-- The button is only shown for members of the guild (and their alts, see
+-- DW.HasAccess in Core.lua), and only if it is not hidden under Settings.
 local function UpdateVisibility()
     if button then
-        button:SetShown(DW.IsMember() and not settings.hide)
+        button:SetShown(DW.HasAccess() and not settings.hide)
     end
 end
 
@@ -139,7 +139,7 @@ function DW.InitMinimapButton(saved)
     UpdateVisibility()
 end
 
-DW.OnMembershipChanged(UpdateVisibility)
+DW.OnAccessChanged(UpdateVisibility)
 
 function DW.IsMinimapButtonShown()
     return not settings.hide
@@ -414,9 +414,9 @@ local function UpdateSideTabs(side)
         return
     end
     local above = LowestShown(side.gameTabs(created[1]:GetParent()))
-    local show = DW.IsMember() and above ~= nil
+    local show = DW.HasAccess() and above ~= nil
     for _, tab in ipairs(created) do
-        if show and DW.modules[tab.module] then
+        if show and DW.modules[tab.module] and DW.CanUseModule(tab.module) then
             tab:ClearAllPoints()
             tab:SetPoint("TOPLEFT", above, "BOTTOMLEFT", 0, -2)
             tab:Show()
@@ -482,7 +482,7 @@ local function CreateSideTab(window, first, shortcut)
 
     if tab.SetCustomOnMouseUpHandler then
         tab:SetCustomOnMouseUpHandler(function(self, button, upInside)
-            if button == "LeftButton" and upInside ~= false and DW.OpenModule and DW.IsMember() then
+            if button == "LeftButton" and upInside ~= false and DW.OpenModule and DW.CanUseModule(self.module) then
                 DW.OpenModule(self.module)
             end
         end)
@@ -515,11 +515,13 @@ local function SetUpSideTabs(side)
     Update()
 end
 
-DW.OnMembershipChanged(function()
+local function UpdateAllSideTabs()
     for _, side in ipairs(SIDE_WINDOWS) do
         UpdateSideTabs(side)
     end
-end)
+end
+DW.OnMembershipChanged(UpdateAllSideTabs)
+DW.OnAccessChanged(UpdateAllSideTabs)
 
 DW.OnAlertsChanged(function()
     for _, side in ipairs(SIDE_WINDOWS) do

@@ -628,7 +628,7 @@ end
 local shownItem = {}
 
 local function OnTooltipItem(tooltip, data)
-    if not DW.IsMember() or (tooltip ~= GameTooltip and tooltip ~= ItemRefTooltip) then
+    if not DW.HasAccess() or (tooltip ~= GameTooltip and tooltip ~= ItemRefTooltip) then
         return
     end
     local itemID = data and data.id
@@ -1453,7 +1453,7 @@ local function CreatePanel(parent)
     f.footer:SetWordWrap(false)
 
     f:SetScript("OnShow", function()
-        if DW.IsMember() then
+        if DW.HasAccess() then
             Scan()
         end
         RefreshPanel()
@@ -1480,7 +1480,7 @@ local function Queue()
     queued = true
     C_Timer.After(0.4, function()
         queued = false
-        if DW.IsMember() then
+        if DW.HasAccess() then
             Scan()
             RefreshPanel()
         end
@@ -1490,7 +1490,7 @@ end
 local frame = CreateFrame("Frame")
 
 frame:SetScript("OnEvent", function(self, event, arg)
-    if not DW.IsMember() then
+    if not DW.HasAccess() then
         return
     end
     if event == "BANKFRAME_OPENED" then
@@ -1527,8 +1527,8 @@ for _, event in ipairs({
     pcall(frame.RegisterEvent, frame, event)
 end
 
-DW.OnMembershipChanged(function(member)
-    if member then
+DW.OnAccessChanged(function(access)
+    if access then
         Queue()
     end
 end)
@@ -1572,6 +1572,7 @@ end)
 
 DW.RegisterModule({
     id = MODULE_ID,
+    personal = true, -- alts outside the guild may use it (Core.lua)
     titleKey = "PROF_TITLE",
     notesKey = "PROF_NOTES",
     icon = "Interface\\Icons\\INV_Misc_Book_09",
