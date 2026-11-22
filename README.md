@@ -2,7 +2,7 @@
 
 Guild addon for the guild **Dragonworld** in World of Warcraft Forever. English, Norsk, Nederlands, Deutsch, Dansk, Svenska, Français.
 
-Only characters in the guild Dragonworld can use it.
+It is for characters in the guild Dragonworld. Alts outside the guild get the personal tabs (Materials, Professions, Tidy Bag, Keybinds) when another character on the same account is in the guild.
 
 ## English
 
