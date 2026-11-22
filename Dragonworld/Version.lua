@@ -11,11 +11,11 @@
 
 local ADDON_NAME, DW = ...
 
-DW.RELEASE = "0.24.0"
+DW.RELEASE = "0.24.1"
 
 -- When RELEASE was released (seconds since 1970, UTC). With automatic updates
 -- it is downloaded a few minutes after this. Written by release.ps1.
-DW.RELEASED_AT = 1795343467
+DW.RELEASED_AT = 1795346394
 
 -- The newest version that added or removed files or images. With an older
 -- one than this, /reload is not enough; the game must be fully restarted.
@@ -26,7 +26,7 @@ DW.RESTART_RELEASE = "0.22.0"
 -- window of those who still have an older version (it travels to them over
 -- the guild channel, so each text must stay within 220 bytes), and once in
 -- chat after updating. Written by release.ps1 from -News.
-DW.RELEASE_NEWS = { en = "Dragonworld now also comes in German, Danish, Swedish and French (choose under Settings). The update window now says what is new. Installing also works on PCs with Smart App Control.", nb = "Dragonworld finnes nå også på tysk, dansk, svensk og fransk (velg under Innstillinger). Oppdateringsvinduet sier nå hva som er nytt. Installering virker også på PC-er med Smart App Control.", nl = "Dragonworld is er nu ook in het Duits, Deens, Zweeds en Frans (kies bij Instellingen). Het updatevenster zegt nu wat er nieuw is. Installeren werkt ook op pc's met Smart App Control.", de = "Dragonworld gibt es jetzt auch auf Deutsch, Dänisch, Schwedisch und Französisch (unter Einstellungen). Das Update-Fenster zeigt, was neu ist. Installieren klappt auch mit Smart App Control.", da = "Dragonworld findes nu også på tysk, dansk, svensk og fransk (vælg under Indstillinger). Opdateringsvinduet viser, hvad der er nyt. Installation virker også med Smart App Control.", sv = "Dragonworld finns nu även på tyska, danska, svenska och franska (välj under Inställningar). Uppdateringsfönstret visar vad som är nytt. Installation fungerar även med Smart App Control.", fr = "Dragonworld existe aussi en allemand, danois, suédois et français (dans Options). La fenêtre de mise à jour indique les nouveautés. L'installation marche aussi avec Smart App Control." }
+DW.RELEASE_NEWS = { en = "New tabs in the game's Guild & Communities and Legacy windows open Dragonworld's Achievements tab.", nb = "Nye faner i spillets Guild & Communities- og Legacy-vindu åpner Prestasjoner i Dragonworld.", nl = "Nieuwe tabbladen in de vensters Guild & Communities en Legacy van het spel openen Prestaties in Dragonworld.", de = "Neue Tabs im Gilden- und Legacy-Fenster des Spiels öffnen Erfolge in Dragonworld.", da = "Nye faner i spillets Guild & Communities- og Legacy-vindue åbner Præstationer i Dragonworld.", sv = "Nya flikar i spelets Guild & Communities- och Legacy-fönster öppnar Prestationer i Dragonworld.", fr = "De nouveaux onglets dans les fenêtres Guilde et Legacy du jeu ouvrent Hauts faits dans Dragonworld." }
 
 -- Set to true by the updater (Updater\update.ps1) on PCs where automatic
 -- updates are turned on. Then the addon knows that new versions download by

@@ -6611,6 +6611,29 @@ end)()
     check("...and lights up when the buttons blink", gt.glow:IsShown())
     ns.TestBlink(0)
 
+    -- Under it, a tab for the Achievements tab.
+    local at = DragonworldGuildAchievementsTab
+    point, relTo, relPoint, x, y = at:GetPoint(1)
+    check("under the Dragonworld tab comes an Achievements tab, built the same way, with the guild shield in the corner",
+        at.parent == window and at.width == 32 and at.border.texture == "Interface\\SpellBook\\SpellBook-SkillLineTab"
+        and at.icon.texture == "Interface\\Icons\\Achievement_Level_60" and at.badge.texture == ns.ICON and at.level == 510
+        and at:IsShown() and point == "TOPLEFT" and relTo == gt and relPoint == "BOTTOMLEFT" and x == 0 and y == -20)
+    at.scripts.OnEnter(at)
+    check("hovering it says it is Dragonworld's Achievements", GameTooltip.lines[1] == "Dragonworld: " .. ns.ModuleTitle(ns.modules.achievements)
+        and GameTooltip.lines[2] == ns.ModuleNotes(ns.modules.achievements), table.concat(GameTooltip.lines, " / "))
+    at.scripts.OnLeave(at)
+    if win:IsShown() then ns.ToggleMainWindow() end
+    click(at)
+    check("clicking it opens Dragonworld on the Achievements tab", win:IsShown() and chipByID.achievements.selected)
+    check("...and it does not blink", at.glow == nil)
+    guildSelected = false
+    window:UpdateCommunitiesTabs()
+    check("it is hidden along with the Dragonworld tab when another community is selected", not at:IsShown() and not gt:IsShown())
+    guildSelected = true
+    window:UpdateCommunitiesTabs()
+    check("...and back with it on the guild", at:IsShown() and gt:IsShown())
+    if win:IsShown() then ns.ToggleMainWindow() end
+
     window:Hide()
 
     -- The game's Professions window (in Forever: ProfessionsFrame in Blizzard_Professions): the
@@ -6724,6 +6747,36 @@ end)()
     flush()
     check("opening Dungeons from it counts as seen: the glow stops", chipByID.dungeons.selected and not dgTab.glowPlaying)
     lfg:Hide()
+
+    -- The game's Legacy window (in Forever: LegacySystemFrame in Blizzard_LegacySystem):
+    -- three side tabs that are always shown; SelectPage changes the page.
+    check("the Legacy window is not loaded yet", LegacySystemFrame == nil)
+    local legacy = CreateFrame("Frame", "LegacySystemFrame", UIParent)
+    for _, key in ipairs({ "LegacyRewardTrackTab", "LegacyChallengeTab", "LegacyTreeTab" }) do
+        legacy[key] = CreateFrame("Frame", nil, legacy, "LargeSideTabButtonTemplate")
+        legacy[key]:SetFrameLevel(510)
+    end
+    local pages = 0
+    function legacy:SelectPage(id) pages = pages + 1 end
+    legacy:Hide()
+    fire("ADDON_LOADED", "Blizzard_LegacySystem")
+    local achTab
+    for _, child in ipairs(legacy.children) do if child.module == "achievements" then achTab = child end end
+    legacy:Show()
+    legacy:SelectPage(2)
+    point, relTo, relPoint, x, y = achTab:GetPoint(1)
+    check("when the game loads the Legacy window, an Achievements shortcut comes under its three tabs, built the same way",
+        achTab.template == "LargeSideTabButtonTemplate" and achTab.Icon.texture == "Interface\\Icons\\Achievement_Level_60"
+        and achTab.badge.texture == ns.ICON and achTab.level == 510 and achTab:IsVisible()
+        and point == "TOPLEFT" and relTo == legacy.LegacyTreeTab and relPoint == "BOTTOMLEFT" and x == 0 and y == -2 and pages == 1)
+    achTab.scripts.OnEnter(achTab)
+    check("hovering it says it is Dragonworld's Achievements", GameTooltip.lines[1] == "Dragonworld: " .. ns.ModuleTitle(ns.modules.achievements))
+    achTab.scripts.OnLeave(achTab)
+    if win:IsShown() then ns.ToggleMainWindow() end
+    achTab.scripts.OnMouseUp(achTab, "LeftButton", true)
+    check("a click opens Dragonworld on the Achievements tab", win:IsShown() and chipByID.achievements.selected)
+    check("...and it has nothing to glow for", achTab.alert == nil and not achTab.glowPlaying)
+    legacy:Hide()
 
     if win:IsShown() ~= wasShown then ns.ToggleMainWindow() end
 end)()

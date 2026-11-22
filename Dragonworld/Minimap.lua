@@ -7,8 +7,9 @@
 --
 -- In the game's guild window a Dragonworld tab appears below the other tabs on
 -- the right side (see "The tab in the guild window"), in the Professions window shortcuts to
--- the Dragonworld tabs Professions and Materialer, and in Looking For Group a
--- shortcut to Dungeons (see "Shortcuts under the game's side tabs").
+-- the Dragonworld tabs Professions and Materialer, in Looking For Group a
+-- shortcut to Dungeons, and in the Legacy window a shortcut to Achievements (see
+-- "Shortcuts under the game's side tabs").
 
 local ADDON_NAME, DW = ...
 local L = DW.L
@@ -165,7 +166,9 @@ end
 -- SpellBook-SkillLineTab, the icon and highlight when the mouse is over, 20 points below
 -- the tab above. A click does the same as the minimap button: opens Dragonworld,
 -- or the tab with what is new. It also blinks like the other buttons.
--- It is only shown when the guild (not another community) is chosen in the window.
+-- Below it comes one more, made the same way, that opens the Achievements tab
+-- (with the guild shield in the corner, so you can see it is Dragonworld's).
+-- They are only shown when the guild (not another community) is chosen in the window.
 --
 -- The window is only loaded when it is first opened, so the tab is made then. We
 -- only hook into the game's code (hooksecurefunc), and don't change it.
@@ -174,7 +177,8 @@ local GUILD_WINDOW_ADDON = "Blizzard_Communities"
 -- The tabs in the window, lowest first.
 local WINDOW_TABS = { "GuildPreferredPlaySettingsTab", "GuildInfoTab", "GuildBenefitsTab", "RosterTab", "ChatTab" }
 
-local guildTab
+local guildTab, achievementsTab
+local ACHIEVEMENTS_ICON = "Interface\\Icons\\Achievement_Level_60" -- the same as the module's
 
 local function LowestTab(window)
     for _, key in ipairs(WINDOW_TABS) do
@@ -202,10 +206,26 @@ local function UpdateGuildTab()
         guildTab:SetPoint("TOPLEFT", below, "BOTTOMLEFT", 0, -20)
     end
     guildTab:SetShown(show and true or false)
+
+    if achievementsTab then
+        local achievements = show and DW.modules.achievements ~= nil
+        if achievements then
+            achievementsTab:ClearAllPoints()
+            achievementsTab:SetPoint("TOPLEFT", guildTab, "BOTTOMLEFT", 0, -20)
+        end
+        achievementsTab:SetShown(achievements and true or false)
+    end
 end
 
-local function CreateGuildTab(window)
-    local tab = CreateFrame("Button", "DragonworldGuildTab", window)
+local function PlayClickSound()
+    if type(PlaySound) == "function" and SOUNDKIT and SOUNDKIT.IG_MAINMENU_OPTION_CHECKBOX_ON then
+        pcall(PlaySound, SOUNDKIT.IG_MAINMENU_OPTION_CHECKBOX_ON)
+    end
+end
+
+-- A tab that looks like the game's own: the frame, the icon, the highlight.
+local function CreateSquareTab(window, name, icon)
+    local tab = CreateFrame("Button", name, window)
     tab:SetSize(32, 32)
     local chat = window.ChatTab
     local level = type(chat) == "table" and chat.GetFrameLevel and chat:GetFrameLevel()
@@ -222,9 +242,45 @@ local function CreateGuildTab(window)
     tab.icon = tab:CreateTexture(nil, "ARTWORK", nil, 1)
     tab.icon:SetSize(30, 30)
     tab.icon:SetPoint("CENTER")
-    tab.icon:SetTexture(DW.ACTION_ICON or DW.ICON)
+    tab.icon:SetTexture(icon)
 
     tab:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square")
+    tab:SetScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
+    tab:Hide()
+    return tab
+end
+
+-- The Achievements tab: opens Dragonworld on that tab.
+local function CreateAchievementsTab(window)
+    local tab = CreateSquareTab(window, "DragonworldGuildAchievementsTab", ACHIEVEMENTS_ICON)
+    tab.badge = tab:CreateTexture(nil, "OVERLAY", nil, 7)
+    tab.badge:SetSize(14, 14)
+    tab.badge:SetPoint("BOTTOMLEFT", tab.icon, "BOTTOMLEFT", -2, -2)
+    tab.badge:SetTexture(DW.ICON)
+
+    tab:SetScript("OnClick", function()
+        PlayClickSound()
+        if DW.OpenModule and DW.IsMember() then
+            DW.OpenModule("achievements")
+        end
+    end)
+    tab:SetScript("OnEnter", function(self)
+        local module = DW.modules.achievements
+        if not module then
+            return
+        end
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine("Dragonworld: " .. DW.ModuleTitle(module))
+        GameTooltip:AddLine(DW.ModuleNotes(module), 1, 1, 1, true)
+        GameTooltip:Show()
+    end)
+    return tab
+end
+
+local function CreateGuildTab(window)
+    local tab = CreateSquareTab(window, "DragonworldGuildTab", DW.ACTION_ICON or DW.ICON)
 
     -- Blinks like the action bar button (the same glow around the square).
     local square = DW.SQUARE_GLOW
@@ -237,9 +293,7 @@ local function CreateGuildTab(window)
     end
 
     tab:SetScript("OnClick", function()
-        if type(PlaySound) == "function" and SOUNDKIT and SOUNDKIT.IG_MAINMENU_OPTION_CHECKBOX_ON then
-            pcall(PlaySound, SOUNDKIT.IG_MAINMENU_OPTION_CHECKBOX_ON)
-        end
+        PlayClickSound()
         DW.ClickOpen()
     end)
     tab:SetScript("OnEnter", function(self)
@@ -249,10 +303,6 @@ local function CreateGuildTab(window)
         DW.AlertsHovered(GameTooltip)
         GameTooltip:Show()
     end)
-    tab:SetScript("OnLeave", function()
-        GameTooltip:Hide()
-    end)
-    tab:Hide()
     return tab
 end
 
@@ -263,6 +313,7 @@ local function SetUpGuildTab()
         return
     end
     guildTab = CreateGuildTab(window)
+    achievementsTab = CreateAchievementsTab(window)
     if type(window.UpdateCommunitiesTabs) == "function" then
         hooksecurefunc(window, "UpdateCommunitiesTabs", UpdateGuildTab)
     end
@@ -281,8 +332,11 @@ DW.OnMembershipChanged(UpdateGuildTab)
 --     shown and hidden by RefreshRightTabs.
 --   * Looking For Group (LFGParentFrame in Blizzard_GroupFinder_VanillaStyle):
 --     ListingTab, BrowsingTab and WhoListingTab, set by UpdateTabs.
+--   * Legacy (LegacySystemFrame in Blizzard_LegacySystem): LegacyRewardTrackTab
+--     (Progress Track), LegacyChallengeTab and LegacyTreeTab, always shown.
 -- Below the lowest one we add shortcuts to Dragonworld tabs: Professions and
--- Materialer in the Professions window, Dungeons in Looking For Group. They are made
+-- Materialer in the Professions window, Dungeons in Looking For Group, Achievements
+-- in the Legacy window. They are made
 -- with the game's own template, so they look exactly the same, with a small guild shield
 -- in the corner so you can see they are Dragonworld's. A click opens Dragonworld on
 -- that tab. The Dungeons shortcut blinks when someone in the guild is open to
@@ -315,6 +369,17 @@ local SIDE_WINDOWS = {
             -- Blinks when someone in the guild is open to dungeons at your level
             -- (the alert "dungeon" in Dungeons.lua, the same as the minimap button).
             { module = "dungeons", icon = "Interface\\Icons\\Ability_DualWield", alert = "dungeon" },
+        },
+    },
+    {
+        -- The Legacy window (Progress Track, Legacy Challenges, Legacy Tree).
+        -- Its tabs never hide, and SelectPage runs on every change of page.
+        addon = "Blizzard_LegacySystem", frame = "LegacySystemFrame", refresh = "SelectPage",
+        gameTabs = function(window)
+            return { window.LegacyRewardTrackTab, window.LegacyChallengeTab, window.LegacyTreeTab }
+        end,
+        shortcuts = {
+            { module = "achievements", icon = ACHIEVEMENTS_ICON },
         },
     },
 }
