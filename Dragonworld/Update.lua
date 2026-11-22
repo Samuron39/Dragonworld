@@ -199,6 +199,65 @@ end
 local popup
 local shownFor -- the version the window was last shown for in this session
 
+-- "Reload now" -------------------------------------------------------------------
+--
+-- In Forever an addon may not reload the interface itself: ReloadUI() called
+-- from addon code gives "Interface action failed because of an AddOn". The
+-- game's own secure button code may: a secure button with the macro "/reload"
+-- does exactly what typing /reload does. It lies invisibly over the gold
+-- button while that says "Reload now", and takes the click.
+--
+-- A secure button can't be shown, hidden or moved during combat. So it hangs
+-- on UIParent rather than in the window (which must still open, close and be
+-- dragged in combat), is let go of when combat starts (PLAYER_REGEN_DISABLED
+-- comes just before the lockdown), and comes back when combat ends. During
+-- combat the click reaches the gold button itself, which closes the window and
+-- says to type /reload afterwards.
+local reloadButton
+
+local function ReleaseReloadButton()
+    if reloadButton then
+        reloadButton:Hide()
+        reloadButton:ClearAllPoints()
+    end
+end
+
+-- Puts the secure button over the gold button when the window is open and
+-- says "Reload now", and takes it away otherwise. Does nothing in combat.
+local function PlaceReloadButton()
+    if InCombatLockdown and InCombatLockdown() then
+        return
+    end
+    if not (popup and popup:IsShown() and popup.ok.reload) then
+        ReleaseReloadButton()
+        return
+    end
+    if not reloadButton then
+        reloadButton = CreateFrame("Button", "DragonworldUpdateReloadButton", UIParent, "SecureActionButtonTemplate")
+        -- Both down and up: the game acts on one of them, depending on the
+        -- setting for action buttons, and ignores the other.
+        reloadButton:RegisterForClicks("LeftButtonUp", "LeftButtonDown")
+        reloadButton:SetAttribute("type", "macro")
+        reloadButton:SetAttribute("macrotext", "/reload")
+        -- The gold button underneath lights up as usual.
+        reloadButton:SetScript("OnEnter", function()
+            if popup then
+                popup.ok:SetHovered(true)
+            end
+        end)
+        reloadButton:SetScript("OnLeave", function()
+            if popup then
+                popup.ok:SetHovered(false)
+            end
+        end)
+    end
+    reloadButton:SetFrameStrata("DIALOG")
+    reloadButton:SetFrameLevel(popup.ok:GetFrameLevel() + 5)
+    reloadButton:ClearAllPoints()
+    reloadButton:SetAllPoints(popup.ok)
+    reloadButton:Show()
+end
+
 local function SelectLink(box)
     box:SetText(DW.DOWNLOAD_URL or "")
     box:HighlightText()
@@ -272,15 +331,20 @@ local function CreatePopup()
     f.news:SetJustifyH("LEFT")
     f.news:Hide()
 
-    -- Gold: OK, or "Reload now" when a /reload is all that's needed.
+    -- Gold: OK, or "Reload now" when a /reload is all that's needed. The
+    -- reload itself is done by the secure button over it (see "Reload now"
+    -- above); a click that reaches this button while it says "Reload now"
+    -- only happens in combat.
     f.ok = DW.CreateButton(f, 130, 28, "gold")
     f.ok:SetPoint("BOTTOM", 0, 16)
     f.ok:SetScript("OnClick", function(self)
         f:Hide()
-        if self.reload and ReloadUI then
-            ReloadUI()
+        if self.reload then
+            DW.Print(L.UP_RELOAD_COMBAT)
         end
     end)
+    f:HookScript("OnShow", PlaceReloadButton)
+    f:HookScript("OnHide", PlaceReloadButton)
 
     -- "Later", next to "Reload now".
     f.later = DW.CreateChip(f, 110, 28)
@@ -346,6 +410,7 @@ local function RefreshPopup()
         popup.ok:SetPoint("BOTTOM", 0, 16)
         popup.later:Hide()
     end
+    PlaceReloadButton()
 end
 
 -- Shows the window. Also used by the button under Innstillinger.
@@ -635,7 +700,11 @@ end
 
 local frame = CreateFrame("Frame")
 frame:SetScript("OnEvent", function(self, event)
-    if event == "PLAYER_REGEN_ENABLED" then
+    if event == "PLAYER_REGEN_DISABLED" then
+        -- Combat is about to start: let go of the secure button while that is allowed.
+        ReleaseReloadButton()
+    elseif event == "PLAYER_REGEN_ENABLED" then
+        PlaceReloadButton()
         if waitingForCombat then
             waitingForCombat = false
             MaybeShowPopup()
@@ -645,6 +714,7 @@ frame:SetScript("OnEvent", function(self, event)
     end
 end)
 pcall(frame.RegisterEvent, frame, "PLAYER_ENTERING_WORLD")
+pcall(frame.RegisterEvent, frame, "PLAYER_REGEN_DISABLED")
 pcall(frame.RegisterEvent, frame, "PLAYER_REGEN_ENABLED")
 
 DW.OnMembershipChanged(function(member)

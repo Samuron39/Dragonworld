@@ -474,7 +474,10 @@ end
 function PickupMacro(index) assert(MACROS[index], "PickupMacro: no such macro"); CURSOR_MACRO = index end
 function GetFileIDFromPath(path) if path == "Interface\\Icons\\INV_Misc_Head_Dragon_01" then return 134153 end end
 function GetActionInfo(slot) local a = ACTION_SLOTS[slot]; if a then return a[1], a[2] end end
-function ReloadUI() RELOADS = (RELOADS or 0) + 1 end
+-- Like Forever: an addon may not reload the interface itself ("Interface action
+-- failed because of an AddOn"). Only a secure button's /reload macro may; see
+-- SecureActionButtonTemplate below, which counts RELOADS.
+function ReloadUI() error("ADDON_ACTION_FORBIDDEN: ReloadUI() is protected; use a secure button with the macro /reload") end
 
 -- The guild's message of the day, and its event log ({ type, player1, player2, rank, years, months, days, hours }).
 GUILD_MOTD_TEXT = "Raid fredag kl 20!"
@@ -555,7 +558,7 @@ SetItemRef = realSetItemRef
 -- Widgets ------------------------------------------------------------------------
 local frames = {}
 local TEMPLATES = { BackdropTemplate = true, UIPanelCloseButton = true, UICheckButtonTemplate = true, ScrollFrameTemplate = true, InputBoxTemplate = true,
-                    LargeSideTabButtonTemplate = true }
+                    LargeSideTabButtonTemplate = true, SecureActionButtonTemplate = true }
 local FRAME_TYPES = { Frame = true, Button = true, CheckButton = true, ScrollFrame = true, GameTooltip = true, EditBox = true, ScrollingMessageFrame = true }
 local FONTS = { GameFontNormal = true, GameFontNormalSmall = true, GameFontNormalLarge = true, GameFontNormalHuge = true,
                 GameFontHighlight = true, GameFontHighlightSmall = true, GameFontHighlightLarge = true, GameFontDisable = true, GameFontDisableSmall = true }
@@ -567,7 +570,13 @@ function Region:SetWidth(w) assert(type(w) == "number"); self.width = w end
 function Region:SetHeight(h) assert(type(h) == "number"); self.height = h end
 function Region:GetWidth() return self.width or 0 end
 function Region:GetHeight() return self.height or 0 end
+-- Like the game: a protected (secure) frame can't be shown, hidden, moved or
+-- changed during combat.
+function Region.notLocked(self, what)
+    assert(not (self.protected and inCombat), "ADDON_ACTION_BLOCKED: " .. what .. " on a protected frame in combat")
+end
 function Region:SetPoint(point, a, b, c, d)
+    Region.notLocked(self, "SetPoint")
     assert(type(point) == "string", "SetPoint needs a point name")
     local relTo, relPoint, x, y
     if a == nil or type(a) == "number" then
@@ -579,12 +588,12 @@ function Region:SetPoint(point, a, b, c, d)
     self.points = self.points or {}
     self.points[#self.points + 1] = { point, relTo, relPoint, x, y }
 end
-function Region:SetAllPoints(relTo) assert(relTo == nil or type(relTo) == "table"); self.allPoints = relTo or true end
+function Region:SetAllPoints(relTo) Region.notLocked(self, "SetAllPoints"); assert(relTo == nil or type(relTo) == "table"); self.allPoints = relTo or true end
 function Region:GetPoint(i)
     local p = self.points and self.points[i or 1]
     if p then return p[1], p[2], p[3], p[4], p[5] end
 end
-function Region:ClearAllPoints() self.points = nil end
+function Region:ClearAllPoints() Region.notLocked(self, "ClearAllPoints"); self.points = nil; self.allPoints = nil end
 function Region:Fire(script, ...)
     local fn = self.scripts and self.scripts[script]
     if fn then fn(self, ...) end
@@ -602,12 +611,14 @@ function Region:VisibilityChanged(visible)
     if not visible then self:Fire("OnHide") end
 end
 function Region:Show()
+    Region.notLocked(self, "Show")
     if not self.shown then
         self.shown = true
         if self:IsVisible() then self:VisibilityChanged(true) end
     end
 end
 function Region:Hide()
+    Region.notLocked(self, "Hide")
     if self.shown then
         local wasVisible = self:IsVisible()
         self.shown = false
@@ -763,6 +774,8 @@ function Frame:HighlightText() assert(self.kind == "EditBox", "HighlightText on 
 function Frame:SetPassword(on) assert(self.kind == "EditBox", "SetPassword on non-EditBox"); self.password = on and true or false end
 function Frame:SetChecked(v) assert(self.kind == "CheckButton", "SetChecked on non-CheckButton"); self.checked = v and true or false end
 function Frame:GetChecked() assert(self.kind == "CheckButton", "GetChecked on non-CheckButton"); return self.checked end
+function Frame:SetAttribute(key, value) Region.notLocked(self, "SetAttribute"); self.attributes = self.attributes or {}; self.attributes[key] = value end
+function Frame:GetAttribute(key) return self.attributes and self.attributes[key] end
 
 function CreateFrame(kind, name, parent, template)
     assert(FRAME_TYPES[kind], "unexpected frame type " .. tostring(kind))
@@ -784,6 +797,19 @@ end
 
 -- Templates whose parts the addon uses, built like the game's (a global: the main chunk is out of locals).
 TEMPLATE_BUILDERS = {
+    -- The game's secure action button (SecureTemplates.lua): protected, and a
+    -- click runs its action from secure code. Only the action the addon uses is
+    -- modelled: type "macro" with macrotext "/reload" reloads (counted in RELOADS).
+    SecureActionButtonTemplate = function(f)
+        assert(f.kind == "Button", "SecureActionButtonTemplate on a " .. f.kind)
+        f.protected = true
+        f.scripts.OnClick = function(self, button, down)
+            assert(not self.protected or self:IsVisible(), "a hidden secure button was clicked")
+            if self:GetAttribute("type") == "macro" and self:GetAttribute("macrotext") == "/reload" then
+                RELOADS = (RELOADS or 0) + 1
+            end
+        end
+    end,
     -- The game's side tab (SharedUIPanelTemplates.xml with SidePanelTabButtonMixin): an icon, a
     -- "selected" texture, a click handler on mouse up, and a tooltip from tooltipText or a setup function.
     LargeSideTabButtonTemplate = function(f)
@@ -6136,13 +6162,37 @@ end)()
     RELOADS = 0
     notice.later.scripts.OnClick(notice.later)
     check("Later just closes it", RELOADS == 0 and not notice:IsShown())
+    check("...and takes away the secure reload button", not DragonworldUpdateReloadButton:IsShown() and DragonworldUpdateReloadButton.allPoints == nil)
     ns.ShowUpdatePopup()
+    check("Reload now is a secure button with the macro /reload, lying over the gold button",
+        DragonworldUpdateReloadButton:IsShown() and DragonworldUpdateReloadButton.protected and DragonworldUpdateReloadButton.parent == UIParent
+        and DragonworldUpdateReloadButton.allPoints == notice.ok and DragonworldUpdateReloadButton.level > notice.ok:GetFrameLevel()
+        and DragonworldUpdateReloadButton:GetAttribute("type") == "macro" and DragonworldUpdateReloadButton:GetAttribute("macrotext") == "/reload")
+    DragonworldUpdateReloadButton.scripts.OnEnter(DragonworldUpdateReloadButton)
+    check("...hovering it lights up the gold button", notice.ok.hovered == true)
+    DragonworldUpdateReloadButton.scripts.OnLeave(DragonworldUpdateReloadButton)
+    DragonworldUpdateReloadButton.scripts.OnClick(DragonworldUpdateReloadButton, "LeftButton", false)
+    check("Reload now reloads the interface, through the game's secure code", RELOADS == 1)
+    -- Combat: the game fires PLAYER_REGEN_DISABLED just before the lockdown starts.
+    fire("PLAYER_REGEN_DISABLED")
+    inCombat = true
+    check("when combat starts, the secure button is let go of", not DragonworldUpdateReloadButton:IsShown() and DragonworldUpdateReloadButton.allPoints == nil)
+    clearChat()
     notice.ok.scripts.OnClick(notice.ok)
-    check("Reload now reloads the interface", RELOADS == 1 and not notice:IsShown())
+    check("...a click in combat reaches the gold button: it closes the window and says to type /reload afterwards",
+        not notice:IsShown() and RELOADS == 1 and has(ns.strings.nb.UP_RELOAD_COMBAT), chatText())
+    ns.ShowUpdatePopup()
+    check("...the window still opens in combat, without the secure button", notice:IsShown() and not DragonworldUpdateReloadButton:IsShown())
+    inCombat = false
+    fire("PLAYER_REGEN_ENABLED")
+    check("...and when combat ends, the secure button is back over the gold button",
+        DragonworldUpdateReloadButton:IsShown() and DragonworldUpdateReloadButton.allPoints == notice.ok)
+    notice:Hide()
 
     verReceive(table.concat({ "V", "3.0.0", "3.0.0", "3.0.0", tostring(SERVER_NOW - 3600) }, "\t"), "Altine-Stormrage")
     check("a version with new files, out for an hour: restart the game, and no reload button",
-        notice:IsShown() and notice.text.text == ns.strings.nb.UP_READY_RESTART:format("3.0.0") and notice.ok.label.text == "OK" and not notice.later:IsShown())
+        notice:IsShown() and notice.text.text == ns.strings.nb.UP_READY_RESTART:format("3.0.0") and notice.ok.label.text == "OK" and not notice.later:IsShown()
+        and not DragonworldUpdateReloadButton:IsShown())
     settings:Refresh()
     check("...Settings says so too", settings.versionStatus.text == "Versjon 3.0.0 er lastet ned - start spillet på nytt!")
     notice.ok.scripts.OnClick(notice.ok)
@@ -6208,9 +6258,11 @@ end)()
         notice:IsShown() and notice.title.text == "Ny versjon er klar!" and notice.text.text == ns.strings.nb.UP_READY_RELOAD:format(ns.RELEASE)
         and notice.news:IsShown() and notice.news.text == "|cffffd100Nytt i " .. ns.RELEASE .. ":|r " .. ns.RELEASE_NEWS.nb
         and notice.ok.label.text == "Reload nå" and notice.later:IsShown() and notice.height > 160, notice.news.text)
+    check("...without the secure reload button", not DragonworldUpdateReloadButton:IsShown())
     RELOADS = 0
+    clearChat()
     notice.ok.scripts.OnClick(notice.ok)
-    check("...and its button only closes it", RELOADS == 0 and not notice:IsShown())
+    check("...and its button only closes it", RELOADS == 0 and not notice:IsShown() and chatText() == "", chatText())
     ns.ShowUpdatePopup()
     check("the real window afterwards is not the example", not notice.news:IsShown() and notice.title.text == "Oppdater Dragonworld!" and notice.ok.label.text == "OK")
     notice:Hide()

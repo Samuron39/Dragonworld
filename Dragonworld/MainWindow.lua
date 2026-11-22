@@ -183,6 +183,13 @@ function DW.CreateButton(parent, width, height, style)
         PaintButton(self)
     end
 
+    -- For a button that lies over this one and takes the mouse (the secure
+    -- "Reload now" button in Update.lua): light this one up as if hovered.
+    function button:SetHovered(hovered)
+        self.hovered = hovered and true or false
+        PaintButton(self)
+    end
+
     PaintButton(button)
     return button
 end
