@@ -27,10 +27,11 @@
 # script in Constrained Language Mode, where it may only use PowerShell's own
 # commands, not .NET or COM. Everything here that needs .NET or COM therefore
 # has a fallback that uses only commands and Windows' own programs (tar.exe,
-# schtasks.exe). On such PCs the first install is a line pasted into
-# Windows + R (see README.md), which downloads this script with PowerShell
-# itself, so it is not marked as downloaded:
-#   powershell -ep bypass -c "iwr https://github.com/Samuron39/Dragonworld/releases/latest/download/update.ps1 -OutFile $env:TEMP\dragonworld-update.ps1 -UseBasicParsing; & $env:TEMP\dragonworld-update.ps1"
+# schtasks.exe). On such PCs the first install is a line pasted into a
+# Windows PowerShell window (see README.md), which downloads this script with
+# PowerShell itself, so it is not marked as downloaded. (Not Windows + R:
+# Windows often stops PowerShell started from there with a line like this.)
+#   Set-ExecutionPolicy Bypass -Scope Process -Force; iwr https://github.com/Samuron39/Dragonworld/releases/latest/download/update.ps1 -OutFile $env:TEMP\dragonworld-update.ps1 -UseBasicParsing; & $env:TEMP\dragonworld-update.ps1
 
 param(
     [switch]$NoPause,

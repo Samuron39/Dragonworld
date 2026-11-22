@@ -14,13 +14,18 @@ Only characters in the guild Dragonworld can use it.
 
 Windows may warn that the file comes from the internet: choose *More info* and *Run anyway*. By hand also works: unzip `Dragonworld.zip` into `World of Warcraft\_forever_\Interface\AddOns`, so that you get `AddOns\Dragonworld\Dragonworld.toc`.
 
-**Does Windows say Smart App Control blocked the file?** Smart App Control (on by default on many new PCs) blocks every script file downloaded with a browser. Install this way instead: press **Windows key + R**, paste this line and press **Enter**:
+**Does Windows say Smart App Control blocked the file?** Smart App Control (on by default on many new PCs) blocks every script file downloaded with a browser. Install this way instead:
 
-```
-powershell -ep bypass -c "iwr https://github.com/Samuron39/Dragonworld/releases/latest/download/update.ps1 -OutFile $env:TEMP\dragonworld-update.ps1 -UseBasicParsing; & $env:TEMP\dragonworld-update.ps1"
-```
+1. Click **Start**, type `powershell` and open **Windows PowerShell**. It does not need to run as administrator.
+2. Paste this line into the window and press **Enter**:
 
-It downloads the same updater and runs it, and everything works as above, automatic updates included. On such PCs the desktop shortcut gets Windows' standard icon.
+   ```
+   Set-ExecutionPolicy Bypass -Scope Process -Force; iwr https://github.com/Samuron39/Dragonworld/releases/latest/download/update.ps1 -OutFile $env:TEMP\dragonworld-update.ps1 -UseBasicParsing; & $env:TEMP\dragonworld-update.ps1
+   ```
+
+3. Answer **Y** to the shortcut and to automatic updates.
+
+It downloads the same updater and runs it, and everything works as above, automatic updates included. The first part only lets this one window run the updater, until you close it. On such PCs the desktop shortcut gets Windows' standard icon. Don't paste the line into Windows + R: Windows often stops PowerShell started from there.
 
 **Update**
 
@@ -40,13 +45,18 @@ The updater only downloads the newest `Dragonworld.zip` from this page and repla
 
 Windows kan advare om at filen kommer fra internett: velg *Mer informasjon* og *Kjør likevel*.
 
-**Sier Windows at Smart App Control har blokkert filen?** Smart App Control (som er på fra start på mange nye PC-er) stopper alle skriptfiler som er lastet ned med nettleseren. Installer slik i stedet: trykk **Windows-tasten + R**, lim inn denne linjen og trykk **Enter**:
+**Sier Windows at Smart App Control har blokkert filen?** Smart App Control (som er på fra start på mange nye PC-er) stopper alle skriptfiler som er lastet ned med nettleseren. Installer slik i stedet:
 
-```
-powershell -ep bypass -c "iwr https://github.com/Samuron39/Dragonworld/releases/latest/download/update.ps1 -OutFile $env:TEMP\dragonworld-update.ps1 -UseBasicParsing; & $env:TEMP\dragonworld-update.ps1"
-```
+1. Klikk **Start**, skriv `powershell` og åpne **Windows PowerShell**. Den trenger ikke kjøres som administrator.
+2. Lim inn denne linjen i vinduet og trykk **Enter**:
 
-Den laster ned det samme oppdateringsprogrammet og kjører det, og alt virker som over, også automatisk oppdatering. På slike PC-er får snarveien på skrivebordet Windows' vanlige ikon.
+   ```
+   Set-ExecutionPolicy Bypass -Scope Process -Force; iwr https://github.com/Samuron39/Dragonworld/releases/latest/download/update.ps1 -OutFile $env:TEMP\dragonworld-update.ps1 -UseBasicParsing; & $env:TEMP\dragonworld-update.ps1
+   ```
+
+3. Svar **J** på snarveien og på automatisk oppdatering.
+
+Den laster ned det samme oppdateringsprogrammet og kjører det, og alt virker som over, også automatisk oppdatering. Det første leddet gir bare dette ene vinduet lov til å kjøre oppdateringsprogrammet, til du lukker det. På slike PC-er får snarveien på skrivebordet Windows' vanlige ikon. Ikke lim linjen inn i Windows + R: Windows stopper ofte PowerShell som startes derfra.
 
 **Oppdatere**
 
@@ -64,13 +74,18 @@ Uten sier addonen "Oppdater Dragonworld!" i spillet. Lukk spillet, dobbeltklikk 
 
 Windows kan waarschuwen dat het bestand van internet komt: kies *Meer info* en *Toch uitvoeren*.
 
-**Zegt Windows dat Smart App Control het bestand heeft geblokkeerd?** Smart App Control (standaard aan op veel nieuwe pc's) blokkeert elk scriptbestand dat met een browser is gedownload. Installeer dan zo: druk op **Windows-toets + R**, plak deze regel en druk op **Enter**:
+**Zegt Windows dat Smart App Control het bestand heeft geblokkeerd?** Smart App Control (standaard aan op veel nieuwe pc's) blokkeert elk scriptbestand dat met een browser is gedownload. Installeer dan zo:
 
-```
-powershell -ep bypass -c "iwr https://github.com/Samuron39/Dragonworld/releases/latest/download/update.ps1 -OutFile $env:TEMP\dragonworld-update.ps1 -UseBasicParsing; & $env:TEMP\dragonworld-update.ps1"
-```
+1. Klik op **Start**, typ `powershell` en open **Windows PowerShell**. Het hoeft niet als administrator.
+2. Plak deze regel in het venster en druk op **Enter**:
 
-Hij downloadt hetzelfde updateprogramma en voert het uit, en alles werkt zoals hierboven, ook automatische updates. Op zulke pc's krijgt de snelkoppeling op het bureaublad het standaardpictogram van Windows.
+   ```
+   Set-ExecutionPolicy Bypass -Scope Process -Force; iwr https://github.com/Samuron39/Dragonworld/releases/latest/download/update.ps1 -OutFile $env:TEMP\dragonworld-update.ps1 -UseBasicParsing; & $env:TEMP\dragonworld-update.ps1
+   ```
+
+3. Antwoord **J** op de snelkoppeling en op automatische updates.
+
+Hij downloadt hetzelfde updateprogramma en voert het uit, en alles werkt zoals hierboven, ook automatische updates. Het eerste deel laat alleen dit ene venster het updateprogramma uitvoeren, tot je het sluit. Op zulke pc's krijgt de snelkoppeling op het bureaublad het standaardpictogram van Windows. Plak de regel niet in Windows + R: Windows houdt PowerShell die daar wordt gestart vaak tegen.
 
 **Bijwerken**
 
