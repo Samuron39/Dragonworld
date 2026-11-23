@@ -205,12 +205,7 @@ end
 -- Chat ------------------------------------------------------------------------
 
 local function InsertLink(link)
-    if ChatFrameUtil and ChatFrameUtil.InsertLink then
-        return ChatFrameUtil.InsertLink(link)
-    elseif ChatEdit_InsertLink then
-        return ChatEdit_InsertLink(link)
-    end
-    return false
+    return DW.InsertChatLink(link)
 end
 
 -- Puts the link in the chat; if no chat line is open, one is opened.
@@ -235,13 +230,7 @@ local function CanWhisper(who)
 end
 
 local function Whisper(name)
-    if ChatFrameUtil and ChatFrameUtil.SendTell then
-        ChatFrameUtil.SendTell(name)
-    elseif ChatFrame_SendTell then
-        ChatFrame_SendTell(name)
-    else
-        DW.Print("/w " .. name)
-    end
+    DW.WhisperTo(name)
 end
 
 -- Display ---------------------------------------------------------------------
@@ -571,7 +560,8 @@ end
 
 -- Shows what a member can make in a profession. member is a row from
 -- the Roster tab (with professions and what is shared), profession is one of them.
-function DW.ShowRecipes(who, which)
+-- search (optional) is put in the search field (from the craft search).
+function DW.ShowRecipes(who, which, search)
     local window = _G.DragonworldFrame
     if not window or type(who) ~= "table" or type(which) ~= "table" then
         return
@@ -579,16 +569,24 @@ function DW.ShowRecipes(who, which)
     if not view then
         CreateView(window)
     end
-    if _G.DragonworldDungeonPicker then
-        _G.DragonworldDungeonPicker:Hide()
-    end
+    -- Other overlays close; the member card and the craft search stay underneath.
+    DW.HideOverlays(VIEW_NAME, "DragonworldMemberCard", "DragonworldCraftSearch")
     member, profession = who, which
     searchText = ""
     slotFilter = nil
     view.searchBox:SetText("")
+    if type(search) == "string" and search ~= "" then
+        view.searchBox:SetText(search)
+        searchText = view.searchBox:GetText() or ""
+    end
     view:Show()
     Refresh()
 end
+
+-- For the craft search (CraftSearch.lua): the link to what a recipe makes
+-- (RecipeLink(spellID, { itemID = ... })), and putting a link in the chat.
+DW.RecipeLink = RecipeLink
+DW.LinkInChat = LinkInChat
 
 -- Events ----------------------------------------------------------------------
 

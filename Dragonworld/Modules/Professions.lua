@@ -744,8 +744,8 @@ local function CraftsText(row)
 end
 
 local function InsertLink(link)
-    if link and ChatEdit_InsertLink then
-        pcall(ChatEdit_InsertLink, link)
+    if link then
+        pcall(DW.InsertChatLink, link)
     end
 end
 

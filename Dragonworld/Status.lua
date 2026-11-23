@@ -14,6 +14,13 @@
 --   * Your own is remembered across /reload, but forgotten if you have been
 --     away for more than 4 hours, so you don't show as "open for dungeons"
 --     the next day.
+--   * "Open for dungeons" lasts one hour at a time (DUNGEON_LIFETIME): your
+--     own turns itself off after an hour ("Keep me listed" in the Dungeons
+--     tab starts the hour again, DW.TouchMyStatus), and when you go into a
+--     dungeon or raid. Other members' "D" statuses older than an hour are
+--     treated as gone everywhere (DW.StatusOf).
+--   * DW.OnDungeonEntered(callback) tells other files when you go into a
+--     dungeon or raid (Dungeons.lua closes your group post then).
 --
 -- The dungeon list comes from the DungeonJournal addon (Data\Dungeons.lua,
 -- version 2.1.2), with the levels it gives. Each dungeon has a fixed number
@@ -37,6 +44,9 @@ local PREFIX = "DragonworldSt" -- name of the messages; max 16 characters
 local SEP = "\t"
 local FORGET_AFTER = 4 * 3600   -- own status is forgotten after this long away
 local HELLO_DELAY = 9           -- after login
+local DUNGEON_LIFETIME = 3600   -- "open for dungeons" lasts this long at a time
+local EXPIRY_CHECK = 30         -- seconds between checks while your own status is "D"
+DW.DUNGEON_STATUS_LIFETIME = DUNGEON_LIFETIME
 
 -- The statuses, in the order the buttons appear.
 DW.STATUSES = {
@@ -77,6 +87,9 @@ end
 -- Dungeons and raids. The levels are the ones DungeonJournal gives (the game's
 -- "Looking For Group" levels where it has them). The raids are not in
 -- DungeonJournal yet; the two here are the ones the game's quests refer to.
+-- size is the group size a "Lead a group" post starts with: 5 for a dungeon
+-- and 40 for a raid when it is left out. Use one of the sizes the form
+-- offers (5, 10, 20, 25 or 40), e.g. size = 20 for a 20-man raid.
 DW.DUNGEONS = {
     { id = 1, name = "Hall of Thanes", min = 13, max = 20 },
     { id = 2, name = "Ragefire Chasm", min = 13, max = 18 },
@@ -113,8 +126,8 @@ DW.DUNGEONS = {
     { id = 33, name = "Stratholme: Undead", min = 58, max = 60 },
     { id = 34, name = "Scholomance", min = 58, max = 60 },
     { id = 35, name = "Shaper's Terrace", min = 58, max = 60 },
-    { id = 101, name = "Molten Core", min = 60, max = 60, raid = true },
-    { id = 102, name = "Onyxia's Lair", min = 60, max = 60, raid = true },
+    { id = 101, name = "Molten Core", min = 60, max = 60, raid = true, size = 40 },
+    { id = 102, name = "Onyxia's Lair", min = 60, max = 60, raid = true, size = 40 },
 }
 local DUNGEON_BY_ID = {}
 for _, dungeon in ipairs(DW.DUNGEONS) do
@@ -341,6 +354,58 @@ function DW.SetMyStatus(code, wish)
     end
     SendMine()
     Changed()
+    if code == "D" then
+        DW.PlanStatusExpiry()
+    end
+end
+
+-- "Open for dungeons" for one hour at a time -----------------------------------------
+
+local expiryScheduled = false
+
+-- Seconds left of your own "open for dungeons" hour, or nil when it is not on.
+function DW.MyStatusTimeLeft()
+    local code, entry = DW.GetMyStatus()
+    if code ~= "D" or not entry then
+        return nil
+    end
+    return math.max(0, DUNGEON_LIFETIME - (Now() - (entry.time or 0)))
+end
+
+local function CheckExpiry()
+    expiryScheduled = false
+    local code, entry = DW.GetMyStatus()
+    if code ~= "D" or not entry then
+        return
+    end
+    if Now() - (entry.time or 0) > DUNGEON_LIFETIME then
+        DW.SetMyStatus(nil)
+        DW.Print(L.ST_EXPIRED)
+        return
+    end
+    DW.PlanStatusExpiry()
+end
+
+-- Looks at your own status every 30 s while it is "D" (one timer at a time).
+function DW.PlanStatusExpiry()
+    if expiryScheduled or not (C_Timer and C_Timer.After) or DW.GetMyStatus() ~= "D" then
+        return
+    end
+    expiryScheduled = true
+    C_Timer.After(EXPIRY_CHECK, CheckExpiry)
+end
+
+-- "Keep me listed": starts the hour again. Returns true when your status is "D".
+function DW.TouchMyStatus()
+    local code, entry = DW.GetMyStatus()
+    if code ~= "D" or not entry then
+        return false
+    end
+    entry.time = math.max(Now(), (entry.time or 0) + 1)
+    SendMine()
+    Changed()
+    DW.PlanStatusExpiry()
+    return true
 end
 
 -- Others' status -----------------------------------------------------------------
@@ -354,13 +419,18 @@ function DW.StatusOf(member)
         return nil
     end
     local myGUID = DW.MyGUID()
-    local _, myName = DW.CharacterKey()
-    if (myGUID and member.guid == myGUID) or (not member.guid and myName and DW.NameKey(member.key) == DW.NameKey(myName)) then
+    local myName = DW.CharacterKey()
+    if (myGUID and member.guid == myGUID) or (not member.guid and myName and DW.SameCharacter(member.key, myName)) then
         local code, entry = DW.GetMyStatus()
         return code, entry
     end
     local entry = others[KeyOf(member.guid, member.key)]
     if entry and entry.code then
+        -- "Open for dungeons" lasts an hour; an older one is stale (the
+        -- member's addon may be older and never turn it off).
+        if entry.code == "D" and Now() - (entry.time or 0) > DUNGEON_LIFETIME then
+            return nil
+        end
         return entry.code, entry
     end
     return nil
@@ -381,11 +451,226 @@ function DW.MembersWithStatus(code)
     return list
 end
 
+-- Group, instance and invites ------------------------------------------------------
+
+-- Every call below is guarded (the function may be missing, or fail), and
+-- every value the game returns is checked with DW.IsSecret before it is
+-- compared or used in a condition.
+
+-- Calls fn(...) if it is a function; returns its results, or nothing if it
+-- is missing or failed.
+local function Pack(...)
+    return select("#", ...), { ... }
+end
+
+local function SafeCall(fn, ...)
+    if type(fn) ~= "function" then
+        return nil
+    end
+    local count, result = Pack(pcall(fn, ...))
+    if not result[1] then
+        return nil
+    end
+    return (table.unpack or unpack)(result, 2, count)
+end
+
+local function PlainTrue(value)
+    return not DW.IsSecret(value) and value == true
+end
+
+local function PlainBool(value)
+    return not DW.IsSecret(value) and type(value) == "boolean"
+end
+
+local function PlainString(value)
+    if type(value) == "string" and not DW.IsSecret(value) then
+        return value
+    end
+    return nil
+end
+
+local function PlainCount(value)
+    if type(value) == "number" and not DW.IsSecret(value) then
+        return value
+    end
+    return 0
+end
+
+-- The unit tokens of the OTHER members of your group (not you). Empty when solo.
+function DW.GroupUnits()
+    local units = {}
+    if not PlainTrue(SafeCall(IsInGroup)) then
+        return units
+    end
+    local count = PlainCount(SafeCall(GetNumGroupMembers))
+    if PlainTrue(SafeCall(IsInRaid)) then
+        for index = 1, count do
+            local unit = "raid" .. index
+            local ok, isMe = pcall(UnitIsUnit, unit, "player")
+            -- A unit we cannot tell apart from ourselves is left out.
+            if ok and not DW.IsSecret(isMe) and isMe ~= true then
+                units[#units + 1] = unit
+            end
+        end
+    else
+        for index = 1, count - 1 do
+            units[#units + 1] = "party" .. index
+        end
+    end
+    return units
+end
+
+-- A set of keys for the other group members: [guid] = true, and
+-- ["name:" .. DW.NameKey(name)] = true. Forever's UnitName gives first and
+-- last name as name and realm, so both the first name and the full name are in it.
+function DW.GroupMemberKeys()
+    local set = {}
+    for _, unit in ipairs(DW.GroupUnits()) do
+        local guid = PlainString(SafeCall(UnitGUID, unit))
+        if guid and guid ~= "" then
+            set[guid] = true
+        end
+        local name, realm = SafeCall(UnitName, unit)
+        name, realm = PlainString(name), PlainString(realm)
+        if name and name ~= "" then
+            set["name:" .. DW.NameKey(name)] = true
+            if realm and realm ~= "" then
+                set["name:" .. DW.NameKey(name .. realm)] = true
+            end
+        end
+    end
+    return set
+end
+
+-- True if the member (a row from DW.ReadGuildRoster) is in your group.
+function DW.InMyGroup(member)
+    if type(member) ~= "table" then
+        return false
+    end
+    if member.guid and C_PartyInfo and PlainTrue(SafeCall(C_PartyInfo.IsGUIDInGroup, member.guid)) then
+        return true
+    end
+    local set = DW.GroupMemberKeys()
+    if member.guid and set[member.guid] then
+        return true
+    end
+    local key = DW.NameKey(member.key or member.name)
+    return key ~= "" and set["name:" .. key] == true
+end
+
+-- The number of people in your group, yourself included (1 when solo).
+function DW.GroupSize()
+    return math.max(1, PlainCount(SafeCall(GetNumGroupMembers)))
+end
+
+-- True if you may invite someone to your group now.
+function DW.CanInviteToGroup()
+    if C_PartyInfo and type(C_PartyInfo.CanInvite) == "function" then
+        local can = SafeCall(C_PartyInfo.CanInvite)
+        if PlainBool(can) then
+            return can
+        end
+    end
+    if not PlainTrue(SafeCall(IsInGroup)) then
+        return true
+    end
+    if PlainTrue(SafeCall(UnitIsGroupLeader, "player")) then
+        return true
+    end
+    return PlainTrue(SafeCall(IsInRaid)) and PlainTrue(SafeCall(UnitIsGroupAssistant, "player"))
+end
+
+-- Invites a player to your group. Returns true when the invite was ATTEMPTED;
+-- that does not mean it went out (a refusal arrives later as a system
+-- message). InviteUnit is not click-only (no HasRestrictions), but the game
+-- may ask for confirmation when the party would turn into a raid.
+function DW.InviteToGroup(name)
+    if type(name) ~= "string" or name == "" then
+        return false
+    end
+    local invite = (C_PartyInfo and C_PartyInfo.InviteUnit) or InviteUnit
+    if type(invite) ~= "function" then
+        return false
+    end
+    return (pcall(invite, name))
+end
+
+-- True if you may turn your party into a raid.
+function DW.CanConvertToRaid()
+    if C_PartyInfo and type(C_PartyInfo.AllowedToDoPartyConversion) == "function" then
+        local allowed = SafeCall(C_PartyInfo.AllowedToDoPartyConversion, true)
+        if PlainBool(allowed) then
+            return allowed
+        end
+        return false
+    end
+    return PlainTrue(SafeCall(UnitIsGroupLeader, "player"))
+end
+
+-- Turns the party into a raid. Returns true when ATTEMPTED. The call has
+-- HasRestrictions: when blocked, the game shows "Interface action failed
+-- because of an AddOn" without a Lua error, so callers must check IsInRaid()
+-- after the next GROUP_ROSTER_UPDATE. Only ever call it from a click.
+function DW.ConvertToRaid()
+    local convert = (C_PartyInfo and C_PartyInfo.ConvertToRaid) or ConvertToRaid
+    if type(convert) ~= "function" then
+        return false
+    end
+    return (pcall(convert))
+end
+
+-- Where you are: inside (bool), instance type ("none" if unknown), the
+-- instance name (or "") and its map ID (or 0).
+function DW.InstanceInfo()
+    local inside, itype = SafeCall(IsInInstance)
+    inside = PlainTrue(inside)
+    itype = PlainString(itype) or "none"
+    local info = { SafeCall(GetInstanceInfo) }
+    local name = PlainString(info[1]) or ""
+    if itype == "none" and PlainString(info[2]) then
+        itype = info[2]
+    end
+    local mapID = info[8]
+    if type(mapID) ~= "number" or DW.IsSecret(mapID) then
+        mapID = 0
+    end
+    return inside, itype, name, mapID
+end
+
+-- True inside a dungeon or a raid.
+function DW.InDungeonInstance()
+    local inside, itype = DW.InstanceInfo()
+    return inside and (itype == "party" or itype == "raid")
+end
+
 -- Receiving ---------------------------------------------------------------------
 
 local replyScheduled = false
 
-DW.OnGuildMessage(PREFIX, function(text)
+-- May sender (given by the server) set the status under key? Only for
+-- themselves: the roster member with that GUID (or name) must be the sender.
+-- While the roster is not read yet, nothing can be checked and it is taken.
+local function SenderOwnsKey(key, sender)
+    if type(sender) ~= "string" or DW.IsSecret(sender) or sender == "" then
+        return false
+    end
+    local name = key:match("^name:(.+)$")
+    if name then
+        return name == DW.NameKey(sender) or name == DW.IdentityKey(sender)
+    end
+    local roster = DW.ReadGuildRoster()
+    if #roster == 0 then
+        return true
+    end
+    for _, member in ipairs(roster) do
+        if member.guid == key then
+            return DW.SameCharacter(member.key, sender)
+        end
+    end
+    return false
+end
+
+DW.OnGuildMessage(PREFIX, function(text, sender)
     local fields = {}
     for field in (text .. SEP):gmatch("(.-)" .. SEP) do
         fields[#fields + 1] = field
@@ -398,17 +683,30 @@ DW.OnGuildMessage(PREFIX, function(text)
         if code ~= "-" and not STATUS_BY_CODE[code or ""] then
             return
         end
+        if not SenderOwnsKey(key, sender) then
+            return
+        end
         local known = others[key]
         if known and known.time >= when then
             return
         end
-        others[key] = {
+        local entry = {
             code = (code ~= "-") and code or nil,
             time = when,
             dungeons = ParseDungeons(fields[5]),
             purposes = ParsePurposes(fields[6]),
             roles = ParseRoles(fields[7]),
         }
+        -- since: when this "open for dungeons" began. "Keep me listed" only
+        -- renews the hour of an unchanged one, which is not news (no alert).
+        entry.since = when
+        if known and entry.code == "D" and known.code == "D" and when - known.time <= DUNGEON_LIFETIME
+            and DungeonsText(entry.dungeons) == DungeonsText(known.dungeons)
+            and PurposesText(entry.purposes) == PurposesText(known.purposes)
+            and RolesText(entry.roles) == RolesText(known.roles) then
+            entry.since = known.since or known.time
+        end
+        others[key] = entry
         Changed()
     elseif fields[1] == "R" then
         -- Someone asks for our status. Reply after a short, random delay so
@@ -446,23 +744,76 @@ local function PlanHello()
             entry.code = nil
             entry.time = Now()
             Changed()
+        elseif code == "D" and Now() - (entry.time or 0) > DUNGEON_LIFETIME then
+            -- "Open for dungeons" from more than an hour ago: off, quietly.
+            entry.code = nil
+            entry.time = Now()
+            Changed()
         end
         SendMine()
         Send("R")
+        DW.PlanStatusExpiry()
     end)
 end
 
+-- Going into a dungeon or raid ----------------------------------------------------
+
+local enteredListeners = {}
+
+-- Registers a function that is called when you go into a dungeon or a raid.
+function DW.OnDungeonEntered(callback)
+    enteredListeners[#enteredListeners + 1] = callback
+end
+
+-- nil until the first look after login (then it is only recorded), then
+-- whether you were inside a dungeon or raid the last time we looked.
+local lastInInstance
+
+-- (A login or /reload sets lastInInstance back to nil first: see the frame below.)
+local function CheckInstance()
+    local inside = DW.InDungeonInstance() and true or false
+    local was = lastInInstance
+    lastInInstance = inside
+    if was ~= false or not inside then
+        return
+    end
+    if DW.GetMyStatus() == "D" then
+        DW.SetMyStatus(nil)
+        DW.Print(L.ST_EXPIRED_INSTANCE)
+    end
+    for _, callback in ipairs(enteredListeners) do
+        local ok, problem = pcall(callback)
+        if not ok then
+            DW.PrintError(L.ERROR, problem)
+        end
+    end
+end
+
 local frame = CreateFrame("Frame")
-frame:SetScript("OnEvent", function()
+frame:SetScript("OnEvent", function(self, event, ...)
+    local isInitialLogin, isReloadingUi = ...
+    if event == "PLAYER_ENTERING_WORLD" and (isInitialLogin == true or isReloadingUi == true) then
+        -- A login or /reload: what we knew is gone, also before we know the guild.
+        lastInInstance = nil
+    end
     if DW.IsMember() then
-        PlanHello()
+        if event == "PLAYER_ENTERING_WORLD" then
+            PlanHello()
+        end
+        CheckInstance()
     end
 end)
 pcall(frame.RegisterEvent, frame, "PLAYER_ENTERING_WORLD")
+pcall(frame.RegisterEvent, frame, "ZONE_CHANGED_NEW_AREA")
 
 DW.OnMembershipChanged(function(member)
     if member then
         PlanHello()
+        -- The guild name can come after the login's PLAYER_ENTERING_WORLD:
+        -- record where we are now, so walking into a dungeon later counts.
+        if lastInInstance == nil then
+            lastInInstance = DW.InDungeonInstance() and true or false
+        end
     end
 end)
 
@@ -471,7 +822,8 @@ DW.AddDebug("status", function(add)
     local code, entry = DW.GetMyStatus()
     add("min status: " .. DW.DebugText(code) .. " | nøkkel: " .. DW.DebugText(MyStatusKey())
         .. " | dungeons: " .. (entry and DungeonsText(entry.dungeons) or "") .. " | formål: " .. (entry and PurposesText(entry.purposes) or "")
-        .. " | roller: " .. (entry and RolesText(entry.roles) or ""))
+        .. " | roller: " .. (entry and RolesText(entry.roles) or "")
+        .. " | dungeon-tid igjen: " .. DW.DebugText(DW.MyStatusTimeLeft()))
     local count = 0
     for key, known in pairs(others) do
         if known.code then

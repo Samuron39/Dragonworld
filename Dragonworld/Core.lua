@@ -88,6 +88,125 @@ function DW.NameKey(name)
     return (short:lower():gsub("%s+", ""))
 end
 
+-- The realm you play on, lowercase and without spaces, or nil if not known.
+local function MyRealmKey()
+    local realm = GetNormalizedRealmName and GetNormalizedRealmName()
+    if type(realm) ~= "string" or DW.IsSecret(realm) or realm == "" then
+        return nil
+    end
+    return (realm:lower():gsub("%s+", ""))
+end
+
+-- A name in the form used to tell who someone is. Unlike DW.NameKey it keeps
+-- the whole name: Forever can give first and last name as name and realm
+-- ("Akro-Polis"), while the roster has "Akro Polis-Stormrage". So only the
+-- realm you play on is dropped, then spaces and "-": both become "akropolis",
+-- and "Akro Smith" stays apart from "Akro Polis". Use DW.SameCharacter to compare.
+function DW.IdentityKey(name)
+    if type(name) ~= "string" or DW.IsSecret(name) or name == "" then
+        return ""
+    end
+    local text = name:lower():gsub("%s+", "")
+    local realm = MyRealmKey()
+    if realm then
+        local base, suffix = text:match("^(.+)%-([^%-]+)$")
+        if base and suffix == realm then
+            text = base
+        end
+    end
+    return (text:gsub("%-", ""))
+end
+
+-- Only the first name, lowercase: "Akro Polis-Stormrage" and "Akro-Polis"
+-- both give "akro".
+function DW.FirstNameKey(name)
+    if type(name) ~= "string" or DW.IsSecret(name) then
+        return ""
+    end
+    return (name:match("^[%s%-]*([^%s%-]+)") or ""):lower()
+end
+
+-- Chat --------------------------------------------------------------------------
+
+-- Sends a chat message ("GUILD", "PARTY", "WHISPER" with a target, ...).
+-- "|" becomes "/" (the game only accepts real links), and the text is cut to
+-- 255 bytes without splitting a letter. The modern C_ChatInfo form comes
+-- first: the old global exists only with the deprecation setting on.
+-- Returns true if the game took the message.
+function DW.SendChat(text, chatType, target)
+    if type(text) ~= "string" or DW.IsSecret(text) or text == "" then
+        return false
+    end
+    text = text:gsub("|", "/")
+    if #text > 255 then
+        local cut = 256
+        -- Step back while the byte at the cut continues a UTF-8 letter.
+        while cut > 1 do
+            local byte = text:byte(cut)
+            if not byte or byte < 0x80 or byte > 0xBF then
+                break
+            end
+            cut = cut - 1
+        end
+        text = text:sub(1, cut - 1)
+    end
+    local send = (C_ChatInfo and C_ChatInfo.SendChatMessage) or SendChatMessage
+    if type(send) ~= "function" then
+        return false
+    end
+    if C_ChatInfo and type(C_ChatInfo.InChatMessagingLockdown) == "function" then
+        local ok, locked = pcall(C_ChatInfo.InChatMessagingLockdown)
+        if ok and not DW.IsSecret(locked) and locked == true then
+            return false
+        end
+    end
+    if target then
+        return (pcall(send, text, chatType, nil, target))
+    end
+    return (pcall(send, text, chatType))
+end
+
+-- Opens a whisper to the player in the chat line.
+function DW.WhisperTo(name)
+    if ChatFrameUtil and type(ChatFrameUtil.SendTell) == "function" then
+        ChatFrameUtil.SendTell(name)
+    elseif type(ChatFrame_SendTell) == "function" then
+        ChatFrame_SendTell(name)
+    else
+        DW.Print("/w " .. tostring(name))
+    end
+end
+
+-- Puts a link in the open chat line. Returns what the game returns (true if
+-- a chat line was open), or false. ChatEdit_InsertLink only exists with the
+-- deprecation setting on.
+function DW.InsertChatLink(link)
+    if link == nil then
+        return false
+    end
+    if ChatFrameUtil and type(ChatFrameUtil.InsertLink) == "function" then
+        return ChatFrameUtil.InsertLink(link)
+    elseif type(ChatEdit_InsertLink) == "function" then
+        return ChatEdit_InsertLink(link)
+    end
+    return false
+end
+
+-- The guild's message of the day as plain text, or "". GetGuildRosterMOTD is
+-- only a deprecation fallback in Forever.
+function DW.GuildMOTD()
+    local read = (C_GuildInfo and type(C_GuildInfo.GetMOTD) == "function" and C_GuildInfo.GetMOTD)
+        or (type(GetGuildRosterMOTD) == "function" and GetGuildRosterMOTD)
+    if not read then
+        return ""
+    end
+    local ok, motd = pcall(read)
+    if ok and type(motd) == "string" and not DW.IsSecret(motd) then
+        return motd
+    end
+    return ""
+end
+
 local function PlainNumber(value)
     if type(value) == "number" and not DW.IsSecret(value) then
         return value
@@ -107,7 +226,8 @@ end
 --   key       the name as the game reports it (usually "Name-Realm")
 --   name      the name without realm
 --   guid      the player's permanent ID, if the game reports it
---   level, class (e.g. "MAGE"), rank, rankIndex, zone, note
+--   level, class (e.g. "MAGE"), rank, rankIndex (0 = Guild Master, nil if
+--   unknown), zone, note
 --   online    true if online now
 --   days, hours   how long since last seen, for those who are offline
 --   points    the achievement points the game reports (12th value), 0 if none.
@@ -135,7 +255,9 @@ function DW.ReadGuildRoster()
                 name = name:match("^([^-]+)") or name,
                 guid = PlainText(guid) ~= "" and guid or nil,
                 rank = PlainText(rankName),
-                rankIndex = PlainNumber(rankIndex),
+                -- nil when the game gives no plain number: an unknown rank
+                -- must never read as 0 (Guild Master).
+                rankIndex = (type(rankIndex) == "number" and not DW.IsSecret(rankIndex)) and rankIndex or nil,
                 level = PlainNumber(level),
                 class = PlainText(class),
                 zone = PlainText(zone),
@@ -190,6 +312,8 @@ DW.AddDebug("identitet", function(add)
     local key, name, realm = DW.CharacterKey()
     local text = DW.DebugText
     add("CharacterKey: " .. text(key) .. " | name: " .. text(name) .. " | realm: " .. text(realm))
+    add("IdentityKey: " .. text(DW.IdentityKey(key)) .. " | realm (normalized): "
+        .. text(GetNormalizedRealmName and GetNormalizedRealmName()))
     add("UnitName: " .. text(UnitName and UnitName("player")) .. " | GUID: " .. text(DW.MyGUID()))
     add("level: " .. text(UnitLevel and UnitLevel("player")) .. " | class: " .. text(UnitClass and select(2, UnitClass("player"))))
     add("IsInGuild: " .. text(IsInGuild and IsInGuild()) .. " | guild: " .. text(GetGuildInfo and GetGuildInfo("player"))
@@ -201,7 +325,7 @@ DW.AddDebug("identitet", function(add)
     add("medlemsliste: " .. #roster .. " medlemmer")
     local guid = DW.MyGUID()
     for _, member in ipairs(roster) do
-        if (guid and member.guid == guid) or DW.NameKey(member.key) == DW.NameKey(name) then
+        if (guid and member.guid == guid) or (key and DW.SameCharacter and DW.SameCharacter(member.key, key)) then
             add("min rad: key=" .. text(member.key) .. " | guid=" .. text(member.guid) .. " | class=" .. text(member.class)
                 .. " | level=" .. text(member.level))
         end
@@ -396,6 +520,52 @@ function DW.RegisterModule(module)
     DW.modules[module.id] = module
     DW.moduleOrder[#DW.moduleOrder + 1] = module
     return module
+end
+
+-- Sections of the Home page ("While you were away", Modules\Home.lua). Any
+-- file may register one; Home shows them sorted by order, then id.
+--   id          (required) short unique name
+--   order       where it goes (lower first)
+--   titleKey    the text in Locales.lua that is the section's heading
+--   icon        the heading's icon
+--   Lines(ctx)  (required) returns a list of lines. ctx = { since, now,
+--               before (this section's Snapshot value from the previous
+--               session), hasRosterBaseline, Member(key) }. since is nil the
+--               first time. Member takes a "Player-" GUID, "name:x" or
+--               "Name-Realm" and gives the roster row, or nil.
+--   Snapshot()  optional: a small saveable value, kept at logout and given
+--               back as ctx.before next session. It must return a value it
+--               already has, not call the game (the game may be gone).
+-- A line is { text (required), icon, when (server time, shown as time ago),
+-- changed (true: counts as new and goes in the chat summary), member (a
+-- roster row: a click opens the card), onClick (when there is no member),
+-- tab (module id, for the tooltip), tip, muted, button = { text, onClick } }.
+DW.HOME_SECTIONS = {}
+
+function DW.RegisterHomeSection(section)
+    assert(type(section) == "table", "RegisterHomeSection: mangler seksjon")
+    assert(type(section.id) == "string" and section.id ~= "", "RegisterHomeSection: mangler id")
+    assert(type(section.Lines) == "function", "RegisterHomeSection: mangler Lines")
+    for _, existing in ipairs(DW.HOME_SECTIONS) do
+        if existing.id == section.id then
+            return existing
+        end
+    end
+    DW.HOME_SECTIONS[#DW.HOME_SECTIONS + 1] = section
+    return section
+end
+
+-- A name in its class colour ("MAGE", "PRIEST", ...), or as it is when the
+-- class is unknown.
+function DW.ColoredName(name, class)
+    local colour = RAID_CLASS_COLORS and RAID_CLASS_COLORS[class]
+    if colour and colour.r then
+        local function Byte(value)
+            return math.floor(math.max(0, math.min(1, value)) * 255 + 0.5)
+        end
+        return ("|cff%02x%02x%02x%s|r"):format(Byte(colour.r), Byte(colour.g), Byte(colour.b), name)
+    end
+    return name
 end
 
 -- The module's name and description in the chosen language.

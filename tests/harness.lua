@@ -223,10 +223,14 @@ local LOG = {
 }
 C_QuestLog = {
     GetNumQuestLogEntries = function() return #LOG, #LOG - 1 end,
+    -- level, difficultyLevel, suggestedGroup (0 when unset, like the game), isHidden
+    -- and isTask come from optional fields of the LOG entry.
     GetInfo = function(i)
         local q = LOG[i]
         if not q then return nil end
-        return { isHeader = q.isHeader or false, title = q.title, questID = q.questID or 0 }
+        return { isHeader = q.isHeader or false, title = q.title, questID = q.questID or 0, level = q.level or 0,
+                 difficultyLevel = q.difficultyLevel or q.level or 0, suggestedGroup = q.suggestedGroup or 0,
+                 isHidden = q.isHidden or false, isTask = q.isTask or false }
     end,
     GetQuestObjectives = function(questID)
         for _, q in ipairs(LOG) do
@@ -235,6 +239,43 @@ C_QuestLog = {
     end,
     IsQuestFlaggedCompleted = function(questID) return COMPLETED[questID] == true end,
 }
+-- Quest details read by Quest together (globals: the main chunk is out of locals).
+function QT_LOG_ENTRY(questID)
+    for _, q in ipairs(LOG) do
+        if q.questID == questID and not q.isHeader then return q end
+    end
+end
+C_QuestLog.IsComplete = function(questID) local q = QT_LOG_ENTRY(questID); return q ~= nil and q.complete == true end
+C_QuestLog.IsEliteQuest = function(questID) local q = QT_LOG_ENTRY(questID); return q ~= nil and q.elite == true end
+-- nil for a quest without a tag, like the game.
+C_QuestLog.GetQuestTagInfo = function(questID) local q = QT_LOG_ENTRY(questID); if q and q.tag then return { tagID = q.tag } end end
+C_QuestLog.GetSuggestedGroupSize = function(questID) local q = QT_LOG_ENTRY(questID); return q and q.groupSize or 0 end
+C_QuestLog.GetTitleForQuestID = function(questID) local q = QT_LOG_ENTRY(questID); return q and q.title end
+-- The quest link the game gives; nil for an uncached quest (999 here).
+function GetQuestLink(questID)
+    if questID == 999 then return nil end
+    return "|cffffff00|Hquest:" .. questID .. ":24|h[Title]|h|r"
+end
+-- Where the player is on the map: QT_PLAYER_MAP is what GetBestMapForUnit gives,
+-- QT_MAPS the map details; GetRealZoneText gives QT_ZONE_TEXT, IsResting QT_RESTING.
+QT_PLAYER_MAP = nil
+QT_MAPS = {
+    [1415] = { name = "Eastern Kingdoms", mapType = 2, parentMapID = 13 },
+    [1429] = { name = "Elwynn Forest", mapType = 3, parentMapID = 1415 },
+    [9001] = { name = "Fargodeep Mine", mapType = 5, parentMapID = 1429 },
+    [9003] = { name = "Orphan Cave", mapType = 5, parentMapID = 9004 },
+    [9004] = { name = "Nowhere", mapType = 6, parentMapID = 0 },
+    [1436] = { name = "Westfall", mapType = 3, parentMapID = 1415 },
+    [9002] = { name = "The Deadmines", mapType = 4, parentMapID = 1436 },
+}
+C_Map = {
+    GetBestMapForUnit = function(unit) assert(unit == "player", "GetBestMapForUnit is only modelled for the player"); return QT_PLAYER_MAP end,
+    GetMapInfo = function(id) assert(type(id) == "number", "GetMapInfo needs a map ID"); return QT_MAPS[id] end,
+}
+QT_ZONE_TEXT = nil
+function GetRealZoneText() return QT_ZONE_TEXT end
+QT_RESTING = false
+function IsResting() return QT_RESTING end
 function GetQuestLogQuestText(i)
     local q = LOG[i]
     if not q then return nil end
@@ -254,6 +295,11 @@ function GetGuildInfo(unit)
     assert(unit == "player")
     if guild.inGuild and guild.name then return guild.name, "Member", guild.rankIndex or 3, nil end
 end
+-- The guild's ranks (globals: the main chunk is out of locals). Index 0 is the Guild Master.
+GUILD_RANK_NAMES = { "Guild Master", "Officer", "Veteran", "Member", "Initiate" }
+function GuildControlGetNumRanks() return #GUILD_RANK_NAMES end
+function GuildControlGetRankName(index) assert(type(index) == "number"); return GUILD_RANK_NAMES[index] end
+function IsGuildLeader() return (guild.rankIndex or 3) == 0 end
 
 -- The guild roster as the game reports it: name, rank, rank index, level, class
 -- name, zone, public note, officer note, online, status, class token. `last`
@@ -285,6 +331,12 @@ function GetGuildRosterLastOnline(index)
     if member and member.last then return table.unpack(member.last) end
 end
 C_GuildInfo = { GuildRoster = function() rosterRequests = rosterRequests + 1 end }
+-- Guild invites sent through the modern API (globals: the main chunk is out of locals).
+guildInvites = {}
+C_GuildInfo.Invite = function(name) guildInvites[#guildInvites + 1] = name end
+-- The game's system texts for a join and for an invite you sent.
+ERR_GUILD_JOIN_S = "%s has joined the guild."
+ERR_GUILD_INVITE_S = "You have invited %s to join your guild."
 RAID_CLASS_COLORS = {
     PALADIN = { r = 0.96, g = 0.55, b = 0.73 }, MAGE = { r = 0.25, g = 0.78, b = 0.92 }, WARRIOR = { r = 0.78, g = 0.61, b = 0.43 },
     ROGUE = { r = 1.00, g = 0.96, b = 0.41 }, PRIEST = { r = 1.00, g = 1.00, b = 1.00 }, HUNTER = { r = 0.67, g = 0.83, b = 0.45 },
@@ -307,13 +359,67 @@ local character = { name = "Tester", realm = "Stormrage", class = "PALADIN" }
 function UnitFullName(unit) assert(unit == "player"); return character.name, character.realm end
 fakeMoney = 1234567                                      -- copper the character has (GetMoney)
 function GetMoney() return fakeMoney end
-function UnitName(unit) assert(unit == "player"); return character.name end
+-- The player's group (globals: the main chunk is out of locals). members are
+-- the OTHER people in it: { name, realm (or nil), guid, class, level }.
+-- GROUP.canInvite, when not nil, is what C_PartyInfo.CanInvite answers.
+GROUP = { members = {}, raid = false, leader = true, assistant = false, invites = {}, converted = 0, canInvite = nil }
+function GetNumGroupMembers() if #GROUP.members == 0 then return 0 end return #GROUP.members + 1 end
+function IsInGroup() return #GROUP.members > 0 end
+function IsInRaid() return GROUP.raid end
+function UnitIsGroupLeader(unit) return unit == "player" and GROUP.leader end
+function UnitIsGroupAssistant(unit) return unit == "player" and GROUP.assistant end
+-- Who a unit token is: "player" (also "raid1" in a raid, the player's own
+-- raid slot), a member table (partyN, raidN), or nil for an unknown index.
+-- Any other token fails, so the addon cannot use one the fakes do not model.
+function GROUP_UNIT(unit)
+    if unit == "player" then return "player" end
+    local kind, index = tostring(unit):match("^(%a+)(%d+)$")
+    index = tonumber(index)
+    if kind == "party" and index then return GROUP.members[index] end
+    if kind == "raid" and index then
+        if not GROUP.raid then return nil end
+        if index == 1 then return "player" end
+        return GROUP.members[index - 1]
+    end
+    error("unexpected unit token " .. tostring(unit))
+end
+function UnitName(unit)
+    local who = GROUP_UNIT(unit)
+    if who == "player" then return character.name end
+    if who then return who.name, who.realm end
+end
 function UnitLevel(unit) assert(unit == "player"); return character.level or 60 end
 -- The player's fixed id. Unless a test gives one, it is made from the name.
-function UnitGUID(unit) assert(unit == "player"); return character.guid or ("Player-1-" .. (character.name:gsub("%s", ""))) end
+function UnitGUID(unit)
+    local who = GROUP_UNIT(unit)
+    if who == "player" then return character.guid or ("Player-1-" .. (character.name:gsub("%s", ""))) end
+    if who then return who.guid end
+end
 function GetBuildInfo() return "1.60.1", "71037", "Nov 1 2026", 16001 end
-function GetNormalizedRealmName() return character.realm end
-function UnitClass(unit) assert(unit == "player"); return "Class", character.class, 2 end
+-- fakeNormalizedRealm: the realm the game says you play on, when a test gives
+-- first and last name as name and realm (UnitFullName "Akro", "Polis").
+function GetNormalizedRealmName() return fakeNormalizedRealm or character.realm end
+function UnitClass(unit)
+    local who = GROUP_UNIT(unit)
+    if who == "player" then return "Class", character.class, 2 end
+    if who then return "Class", who.class, 2 end
+end
+-- True when both tokens are the same person. "target" and "mouseover" are
+-- never anyone here.
+function UnitIsUnit(a, b)
+    local function resolve(u) if u == "target" or u == "mouseover" then return nil end return GROUP_UNIT(u) end
+    local x, y = resolve(a), resolve(b)
+    return x ~= nil and x == y
+end
+function UnitExists(unit)
+    if unit == "target" or unit == "mouseover" or unit == "focus" then return false end
+    return GROUP_UNIT(unit) ~= nil
+end
+
+-- Where the player is: IsInInstance and GetInstanceInfo.
+INSTANCE = { inside = false, type = "none", name = "", map = 0 }
+function IsInInstance() return INSTANCE.inside, INSTANCE.type end
+function GetInstanceInfo() return INSTANCE.name, INSTANCE.type, 1, "Normal", 5, 0, false, INSTANCE.map, 5, nil end
 
 -- A made-up clock that is easy to reason about: time({year=..}) and time() use
 -- the same scale, so "22.11.2026 20:00" really is two days and an hour after NOW.
@@ -323,9 +429,11 @@ local function fakeEpoch(t)
     return ((((t.year - 2000) * 12 + t.month) * 31 + t.day) * 24 + (t.hour or 0)) * 3600 + (t.min or 0) * 60
 end
 local NOW = fakeEpoch({ year = 2026, month = 11, day = 20, hour = 19, min = 0 })
+-- Tests move the local clock (time() with no argument) by setting CLOCK_SHIFT.
+CLOCK_SHIFT = 0
 function time(t)
     if t ~= nil then assert(type(t) == "table", "time() takes a table or nothing"); return fakeEpoch(t) end
-    return NOW
+    return NOW + CLOCK_SHIFT
 end
 
 -- Seconds since the client started, for throttling.
@@ -337,7 +445,7 @@ SERVER_NOW = NOW
 function GetServerTime() return SERVER_NOW end
 
 -- Sounds the addon plays: the game's sound kit numbers, by name.
-SOUNDKIT = { IG_MAINMENU_OPEN = 850, LFG_REWARDS = 17316, UI_ALERT_ACHIEVEMENT_GAINED = 12891 }
+SOUNDKIT = { IG_MAINMENU_OPEN = 850, LFG_REWARDS = 17316, UI_ALERT_ACHIEVEMENT_GAINED = 12891, READY_CHECK = 8960, IG_PLAYER_INVITE = 880 }
 SOUNDS_PLAYED = {}
 function PlaySound(kit, channel)
     assert(type(kit) == "number", "PlaySound needs a sound kit number")
@@ -399,6 +507,26 @@ C_Calendar = {
 -- then AddEvent. The game only accepts AddEvent during a hardware event (a
 -- click). Timers are not clicks, so inHardwareEvent is false while they run.
 local inHardwareEvent = true
+-- The game's party functions. The click assert in InviteUnit is a test
+-- convenience (it makes sure invites come from buttons), not a claim about
+-- the real API; ConvertToRaid really is click-only.
+C_PartyInfo = {
+    InviteUnit = function(name)
+        assert(inHardwareEvent, "InviteUnit outside a click")
+        assert(type(name) == "string" and name ~= "", "InviteUnit needs a name")
+        GROUP.invites[#GROUP.invites + 1] = name
+    end,
+    ConvertToRaid = function()
+        assert(inHardwareEvent, "ConvertToRaid outside a click")
+        GROUP.raid = true
+        GROUP.converted = GROUP.converted + 1
+    end,
+    AllowedToDoPartyConversion = function() return GROUP.leader end,
+    CanInvite = function()
+        if GROUP.canInvite ~= nil then return GROUP.canInvite end
+        return not IsInGroup() or GROUP.leader
+    end,
+}
 local candidate
 calendar.created = {}
 function C_Calendar.CreatePlayerEvent() candidate = { kind = "PLAYER" } end
@@ -528,9 +656,11 @@ local lastMenu
 MenuUtil = {
     CreateContextMenu = function(owner, generator)
         assert(type(owner) == "table" and type(generator) == "function")
-        local menu = { owner = owner, titles = {}, radios = {}, buttons = {} }
+        local menu = { owner = owner, titles = {}, radios = {}, buttons = {}, dividers = {} }
         local root = {}
         function root:CreateTitle(text) assert(type(text) == "string"); menu.titles[#menu.titles + 1] = text end
+        -- Where a divider goes: after this many radios.
+        function root:CreateDivider() menu.dividers[#menu.dividers + 1] = #menu.radios end
         function root:CreateButton(text, callback)
             assert(type(text) == "string" and type(callback) == "function")
             local entry = { text = text, enabled = true, click = callback }
@@ -639,6 +769,7 @@ function FontString:GetText() return self.text end
 function FontString:SetTextColor(r, g, b) assert(r and g and b); self.color = { r, g, b } end
 function FontString:SetJustifyH(j) assert(j == "LEFT" or j == "RIGHT" or j == "CENTER"); self.justifyH = j end
 function FontString:SetWordWrap(wrap) end
+function FontString:SetSpacing(spacing) assert(type(spacing) == "number", "SetSpacing needs a number"); self.spacing = spacing end
 function FontString:SetFontObject(font) assert(FONTS[font] or type(font) == "table", "SetFontObject: unknown font " .. tostring(font)); self.fontTemplate = font end
 -- How wide the text is drawn. Here every character is 6 wide.
 function FontString:GetStringWidth() return #(self.text or "") * 6 end
@@ -887,7 +1018,8 @@ local function queued(delay)
 end
 
 -- Tooltips ---------------------------------------------------------------------
-Enum = { ItemClass = { Questitem = 12 }, TooltipDataType = { Item = 0 }, PlayerInteractionType = { Banker = 8, GuildBanker = 10 } }
+Enum = { ItemClass = { Questitem = 12 }, TooltipDataType = { Item = 0 }, PlayerInteractionType = { Banker = 8, GuildBanker = 10 },
+         UIMapType = { Cosmic = 0, World = 1, Continent = 2, Zone = 3, Dungeon = 4, Micro = 5, Orphan = 6 } }
 
 -- Like the game, every module that asks gets called, in the order they asked.
 TOOLTIP_CALLBACKS = {}
@@ -911,12 +1043,14 @@ local function newTooltip(name)
         assert(type(text) == "string")
         self.lines[#self.lines + 1] = text
         self.colors[#self.lines] = r and { r, g, b } or nil
+        self.wraps = self.wraps or {}
+        self.wraps[#self.lines] = wrap and true or nil
     end
     function t:AddDoubleLine(left, right, ...)
         assert(type(left) == "string" and type(right) == "string")
         self:AddLine(left .. " = " .. right, ...)
     end
-    function t:Reset() self.lines = {}; self.colors = {}; self:Fire("OnTooltipCleared") end
+    function t:Reset() self.lines = {}; self.colors = {}; self.wraps = {}; self:Fire("OnTooltipCleared") end
     function t:SetText(text, r, g, b) assert(type(text) == "string"); self:Reset(); self.lines[1] = text; self.colors[1] = r and { r, g, b } or nil end
     function t:SetOwner(owner, anchor) assert(type(owner) == "table" and type(anchor) == "string"); self.owner = owner; self:Reset() end
     function t:IsOwned(frame) return self.owner == frame end
@@ -960,6 +1094,19 @@ local OtherTooltip = newTooltip("OtherTooltip")
 
 SlashCmdList = {}
 
+-- The game's EventRegistry (CallbackRegistryMixin): callbacks per event and
+-- owner, called with the owner first. Clicking an addon link in chat
+-- ("|Haddon:...|h") triggers "SetItemRef" with the bare link.
+EventRegistry = { cbs = {} }
+function EventRegistry:RegisterCallback(event, func, owner)
+    assert(type(event) == "string" and type(func) == "function" and owner ~= nil, "RegisterCallback(event, func, owner)")
+    self.cbs[event] = self.cbs[event] or {}
+    self.cbs[event][owner] = func
+end
+function EventRegistry:TriggerEvent(event, ...)
+    for owner, func in pairs(self.cbs[event] or {}) do func(owner, ...) end
+end
+
 -- Load the addon -----------------------------------------------------------------
 -- Saved data as left by the previous version: marks and positions, but no
 -- language yet. This is what an existing user has when they update.
@@ -982,6 +1129,20 @@ for _, file in ipairs(ADDON_FILES) do
 end
 io.write("loaded: ", ADDON_FOLDER, " (", #ADDON_FILES, " files)\n")
 
+-- Closes the gold banner and every one waiting behind it. The harness never
+-- runs the banner's OnUpdate (which would fade it out), so a test section
+-- that raises banners calls this at its end. A global: the main chunk is out of locals.
+function DrainBanners()
+    for _ = 1, 20 do
+        local banner = DragonworldMilestoneBanner
+        local shown = banner ~= nil and banner:IsShown()
+        local waiting = ns.BannerQueueLength and ns.BannerQueueLength() or 0
+        if not shown and waiting == 0 then return end
+        if shown then banner.close.scripts.OnClick(banner.close) end
+        flush()
+    end
+end
+
 local function kast(message) return SlashCmdList.DRAGONWORLD_RYDDESEKK(message) end
 local function dw(message) return SlashCmdList.DRAGONWORLD(message) end
 local function saved() return DragonworldDB.modules.ryddesekk end
@@ -999,7 +1160,7 @@ local function verdict(id, tooltip)
     return lines[2], lines[3], #lines
 end
 
-check("tooltip callbacks registered: Ryddesekk's verdict, Materialer's crafting line and Professions' shopping line", #TOOLTIP_CALLBACKS == 3, #TOOLTIP_CALLBACKS)
+check("tooltip callbacks registered: Ryddesekk's verdict, Materialer's crafting line, Professions' shopping line and the craft search's crafter line", #TOOLTIP_CALLBACKS == 4, #TOOLTIP_CALLBACKS)
 check("slash /dw registered", SLASH_DRAGONWORLD1 == "/dw" and SLASH_DRAGONWORLD2 == "/dragonworld" and type(SlashCmdList.DRAGONWORLD) == "function")
 check("Ryddesekk shortcut registered in all three languages",
     SLASH_DRAGONWORLD_RYDDESEKK1 == "/kast" and SLASH_DRAGONWORLD_RYDDESEKK2 == "/tidybag" and SLASH_DRAGONWORLD_RYDDESEKK3 == "/opruimtas"
@@ -1170,9 +1331,10 @@ do
         and intro.next.label.text == "Volgende" and #intro.tips == 5 and intro.tips[1].text == "- " .. ns.strings.nl.INTRO_TIP_BANK
         and intro.tips[2].text == "- " .. ns.strings.nl.INTRO_TIP_PROFESSIONS and intro.tips[3].text == "- " .. ns.strings.nl.INTRO_TIP_GUILDBANK)
     check("the intro lists every tab in tab order, with its icon, name and what it does",
-        #intro.rows == 13 and intro.rows[1].icon.texture == ns.modules.roster.icon
-        and intro.rows[1].text.text == "|cffffd100" .. ns.ModuleTitle(ns.modules.roster) .. "|r  " .. ns.ModuleNotes(ns.modules.roster)
-        and intro.rows[2].text.text:find(ns.strings.nl.GC_TITLE, 1, true) ~= nil, intro.rows[1] and intro.rows[1].text.text)
+        #intro.rows == 15 and intro.rows[1].icon.texture == ns.modules.home.icon
+        and intro.rows[1].text.text == "|cffffd100" .. ns.ModuleTitle(ns.modules.home) .. "|r  " .. ns.ModuleNotes(ns.modules.home)
+        and intro.rows[2].text.text:find(ns.ModuleTitle(ns.modules.roster), 1, true) ~= nil
+        and intro.rows[3].text.text:find(ns.strings.nl.GC_TITLE, 1, true) ~= nil, intro.rows[1] and intro.rows[1].text.text)
     intro.next.scripts.OnClick(intro.next)
 end
 -- Step 3: what the buttons blink for, and the action bar button.
@@ -1182,8 +1344,9 @@ check("Next leads to the choices, in that language",
     and setup.title.text == "Bijna klaar!" and setup.done.label.text == "Doorgaan" and setup.blink.main.label.text == ns.strings.nl.BLINK_ON
     and setup.blinkHint.text == ns.strings.nl.BLINK_HINT and setup.actionText.text == ns.strings.nl.AB_SETUP)
 check("blinking is on by default, with a choice for each thing; guild chat is off by default (a busy guild would blink all the time)",
-    setup.blink.main.checked == true and ns.IsBlinkOn() and #setup.blink.kinds == 4
+    setup.blink.main.checked == true and ns.IsBlinkOn() and #setup.blink.kinds == 5
     and setup.blink.kinds[1].checked and setup.blink.kinds[2].checked and not setup.blink.kinds[3].checked and setup.blink.kinds[4].checked
+    and setup.blink.kinds[5].checked and setup.blink.kinds[5].label.text == ns.strings.nl.AL_QUEST
     and setup.blink.kinds[2].label.text == ns.strings.nl.AL_WHISPER and setup.blink.kinds[3].label.text == ns.strings.nl.AL_GUILDCHAT)
 setup.blink.kinds[3].checked = true
 setup.blink.kinds[3].scripts.OnClick(setup.blink.kinds[3])
@@ -1267,23 +1430,23 @@ local rsChip, etterChip, kaputtChip = chipByID.ryddesekk, chipByID.etter, chipBy
 local matChip, kbChip, evChip, roChip = chipByID.materialer, chipByID.keybinds, chipByID.events, chipByID.roster
 check("the module asked for (/kast) is the one that opens", rsPanel ~= nil and rsPanel:IsVisible() and rsChip.selected and isGold(rsChip.borderColor))
 check("one chip per module that has content, top to bottom in order",
-    #chipOrder == 13 and chipOrder[1] == rsChip and chipOrder[2] == matChip and chipOrder[3] == kbChip and chipOrder[4] == evChip
+    #chipOrder == 15 and chipOrder[1] == rsChip and chipOrder[2] == matChip and chipOrder[3] == kbChip and chipOrder[4] == evChip
     and chipOrder[5] == roChip and chipOrder[6] == chipByID.guildchat and chipOrder[7] == chipByID.guildbank and chipOrder[8] == chipByID.forslag
-    and chipOrder[9] == chipByID.dungeons and chipOrder[10] == chipByID.professions and chipOrder[11] == chipByID.achievements
-    and chipOrder[12] == etterChip and chipOrder[13] == kaputtChip
+    and chipOrder[9] == chipByID.dungeons and chipOrder[10] == chipByID.quest and chipOrder[11] == chipByID.professions
+    and chipOrder[12] == chipByID.achievements and chipOrder[13] == chipByID.home and chipOrder[14] == etterChip and chipOrder[15] == kaputtChip
     and chipByID.boom == nil, #chipOrder)
 do
     local ok = true
     -- The default order (the guild leader's choice), test modules last.
-    local position = { roster = 1, guildchat = 2, dungeons = 3, guildbank = 4, events = 5, achievements = 6, professions = 7, materialer = 8, ryddesekk = 9,
-                       keybinds = 10, forslag = 11, etter = 12, kaputt = 13 }
+    local position = { home = 1, roster = 2, guildchat = 3, dungeons = 4, quest = 5, guildbank = 6, events = 7, achievements = 8, professions = 9, materialer = 10,
+                       ryddesekk = 11, keybinds = 12, forslag = 13, etter = 14, kaputt = 15 }
     for _, chip in ipairs(chipOrder) do
         local index = position[chip.id] or 99
         local point, relTo, _, x, y = chip:GetPoint(1)
-        -- Thirteen tabs (eleven modules and two test ones) do not fit 48 apart above
-        -- Settings (434 - 48 = 386 high), so they move to 29 apart and get 27 tall.
-        if not (point == "TOPLEFT" and x == 0 and y == -(index - 1) * 29 and chip:GetWidth() == 190 and chip:GetHeight() == 27
-            and (index - 1) * 29 + 27 <= 434 - 40) then ok = false end
+        -- Fifteen tabs (thirteen modules and two test ones) do not fit 48 apart above
+        -- Settings (434 - 48 = 386 high), so they move to floor(386 / 15) = 25 apart and get 23 tall.
+        if not (point == "TOPLEFT" and x == 0 and y == -(index - 1) * 25 and chip:GetWidth() == 190 and chip:GetHeight() == 23
+            and (index - 1) * 25 + 23 <= 434 - 40) then ok = false end
     end
     local sPoint, _, _, sx, sy = win.settingsChip:GetPoint(1)
     check("chips are stacked down the left side, Settings at the bottom", ok and sPoint == "BOTTOMLEFT" and sx == 0 and sy == 0)
@@ -2191,6 +2354,12 @@ STATUS_LOGIN = sentNow("DragonworldSt")     -- and this in the Status section
 PROFILE_LOGIN = sentNow("DragonworldPf")    -- and this in the member card section
 VERSION_LOGIN = sentNow("DragonworldVer")   -- and this in the version section
 ACH_LOGIN = sentNow("DragonworldAch")       -- and this in the achievements section
+OFF_LOGIN = sentNow("DragonworldOff")       -- and this in the officers section
+ANN_LOGIN = sentNow("DragonworldAnn")       -- and this in the announcements section
+POLL_LOGIN = sentNow("DragonworldPoll")     -- and this in the polls section
+GROUP_LOGIN = sentNow("DragonworldGrp")     -- and this in the group posts section (Dungeons)
+-- Quest together: the login Q, plus one for each quest change the Ryddesekk section made.
+QT_LOGIN = sentNow("DragonworldQt")         -- looked at in the Quest together section
 check("nothing else is waiting on the wire", #wire == 0, #wire)
 
 evChip.scripts.OnClick(evChip)
@@ -2913,6 +3082,958 @@ end
 flush()
 sentNow()
 clearChat()
+
+-- ---- Event slots: needed roles, a max with standby, and comments (S5) ----
+;(function()
+    local savedEvents, savedShift = evDB().events, CLOCK_SHIFT
+    local savedRoles = {}
+    for code, on in pairs(ns.GetMyRoles()) do savedRoles[code] = on end
+    local _, statusEntry = ns.GetMyStatus()
+    local savedStatusRoles = statusEntry.roles
+    statusEntry.roles = {}
+    CLOCK_SHIFT = 0
+    evDB().events = {}
+    reopenEvents()
+    local function esc(text) return (text:gsub("%p", "%%%0")) end
+    local function icon(code, size)
+        for _, role in ipairs(ns.ROLES) do
+            if role.code == code then return ns.RoleIcon(role, size) end
+        end
+    end
+    local function fillForm(title, t, h, d, cap)
+        form.titleBox:SetText(title)
+        form.dateBox:SetText("22.11.2026")
+        form.timeBox:SetText("20:00")
+        tick(form.calendarCheck, false)
+        form.needBoxes.T:SetText(t or "")
+        form.needBoxes.H:SetText(h or "")
+        form.needBoxes.D:SetText(d or "")
+        form.capBox:SetText(cap or "")
+    end
+    local function lastID() return "Tester-Stormrage:" .. NOW .. ":" .. evDB().seq end
+    local function pickEvent(title) eventRow(title).scripts.OnClick(eventRow(title)) end
+    local function clickAnswer(status) detail.chips[status].scripts.OnClick(detail.chips[status]) end
+
+    -- 1. The form.
+    gv.newButton.scripts.OnClick(gv.newButton)
+    local function at(region) local _, rel, _, x, y = region:GetPoint(1); return rel == nil and x, y end
+    check("S5 form: need and max boxes with Norwegian labels, empty, in their places",
+        form.needLabel.text == "Trenger:" and form.capLabel.text == "Maks" and form.needIcons.T.text == icon("T", 16) and form.needIcons.D.text == icon("D", 16)
+        and form.needBoxes.T:GetText() == "" and form.needBoxes.H:GetText() == "" and form.needBoxes.D:GetText() == "" and form.capBox:GetText() == ""
+        and at(form.needLabel) == 0 and select(2, at(form.needLabel)) == -224
+        and at(form.needIcons.T) == 70 and at(form.needIcons.H) == 124 and at(form.needIcons.D) == 178
+        and at(form.needBoxes.T) == 88 and at(form.needBoxes.H) == 142 and at(form.needBoxes.D) == 196 and select(2, at(form.needBoxes.T)) == -220
+        and at(form.capLabel) == 236 and at(form.capBox) == 270 and form.capBox:GetWidth() == 30 and form.needBoxes.T:GetWidth() == 28)
+    do
+        local errPoint, errRel, errRelPoint, errX, errY = form.error:GetPoint(1)
+        check("...the calendar box moved down, room left for a weekly box, Save and Cancel at -320, the error right above them",
+            select(2, at(form.calendarCheck)) == -248 and select(2, at(form.save)) == -320
+            and errPoint == "BOTTOMLEFT" and errRel == form.save and errRelPoint == "TOPLEFT" and errX == 0 and errY == 2
+            and select(2, form.cancel:GetPoint(1)) == form.save)
+    end
+    sentNow()
+    for _, bad in ipairs({ "50", "x", "-1" }) do
+        fillForm("Raid slots", "1", bad, "3", "")
+        form.save.scripts.OnClick(form.save)
+        check("a number that is not 0-40 is refused: '" .. bad .. "'", form.error.text == ns.strings.nb.EV_ERR_SLOTS and next(evDB().events) == nil, form.error.text)
+    end
+    fillForm("Raid slots", "1", "1", "3", "x")
+    form.save.scripts.OnClick(form.save)
+    check("...the max too", form.error.text == ns.strings.nb.EV_ERR_SLOTS and next(evDB().events) == nil)
+    fillForm("Raid slots", "1", "1", "3", "3")
+    form.save.scripts.OnClick(form.save)
+    check("a max below tanks + healers + DPS is refused", form.error.text == ns.strings.nb.EV_ERR_CAP and next(evDB().events) == nil and #sentNow() == 0, form.error.text)
+    fillForm("Raid slots", "1", "1", "3", "5")
+    form.save.scripts.OnClick(form.save)
+    local slotID = lastID()
+    local slotted = evDB().events[slotID]
+    local slotWhen = time({ year = 2026, month = 11, day = 22, hour = 20, min = 0 })
+    check("a slotted event is stored with what it needs and its max",
+        slotted ~= nil and slotted.need.T == 1 and slotted.need.H == 1 and slotted.need.D == 3 and slotted.cap == 5 and slotted.weekly == nil)
+    -- 2. The E message.
+    do
+        local sent = sentNow()
+        check("S5 E: the slots go in field 10, with an empty field 9 in front",
+            #sent == 1 and sent[1] == table.concat({ "E", slotID, NOW, slotWhen, "0", "Raid slots", "", "0:A", "", "T1H1D3C5" }, TAB), sent[1])
+    end
+    check("the boxes are empty again after saving", form.needBoxes.T:GetText() == "" and form.needBoxes.D:GetText() == "" and form.capBox:GetText() == "")
+    gv.newButton.scripts.OnClick(gv.newButton)
+    fillForm("Plain", "", "", "", "")
+    form.save.scripts.OnClick(form.save)
+    local plainID = lastID()
+    do
+        local sent = sentNow()
+        check("empty boxes make an ordinary event, sent with exactly 8 fields as before",
+            evDB().events[plainID] ~= nil and evDB().events[plainID].need == nil and evDB().events[plainID].cap == nil
+            and #sent == 1 and sent[1] == table.concat({ "E", plainID, NOW, slotWhen, "0", "Plain", "", "0:A" }, TAB), sent[1])
+    end
+
+    local altID = "Altine-Stormrage:" .. (NOW - 10) .. ":21"
+    local function altE(updated, ...) receive(table.concat({ "E", altID, updated, slotWhen + 3600, "0", "Alt raid", "", ... }, TAB)) end
+    altE(NOW - 10, "0:A", "", "T2H3D5C10W1")
+    local alt = evDB().events[altID]
+    check("receiving field 10 sets need, max and weekly", alt ~= nil and alt.need.T == 2 and alt.need.H == 3 and alt.need.D == 5 and alt.cap == 10 and alt.weekly == true)
+    altE(NOW - 9, "0:A", "", "T99H0D1C0")
+    check("numbers over 40 become 40, and a max of 0 is no max", alt.need.T == 40 and alt.need.H == 0 and alt.need.D == 1 and alt.cap == nil and alt.weekly == nil)
+    altE(NOW - 8, "0:A", "", "Zx9Q5T1W2qq")
+    check("unknown letters and junk are ignored", alt.need.T == 1 and alt.need.H == 0 and alt.need.D == 0 and alt.cap == nil and alt.weekly == nil)
+    altE(NOW - 7, "0:A")
+    check("a newer version without field 10 clears them", alt.updated == NOW - 7 and alt.need == nil and alt.cap == nil and alt.weekly == nil)
+    altE(NOW - 6, "0:A", "")
+    check("a 9-field message works", alt.updated == NOW - 6 and alt.need == nil)
+    receive(table.concat({ "E", altID, NOW - 5, slotWhen + 3600, "0", "Alt raid", "" }, TAB))
+    check("...and an old 7-field one", alt.updated == NOW - 5 and alt.aud == nil and alt.need == nil)
+    altE(NOW - 4, "0:A", "", "T1H1D1")
+    check("...and field 10 again", alt.need ~= nil and alt.need.H == 1)
+
+    -- 3. Sign-ups.
+    ns.SetMyRoles({ H = true })
+    reopenEvents()
+    pickEvent("Raid slots")
+    clickAnswer("Y")
+    do
+        local sent = sentNow()
+        check("S5 S: Coming on a slotted event takes the role from your profile and the time you said Coming",
+            #sent == 1 and sent[1] == table.concat({ "S", slotID, "Tester-Stormrage,Y," .. NOW .. ",PALADIN;H;" .. SERVER_NOW .. ";" }, TAB)
+            and slotted.signups["Tester-Stormrage"].role == "H" and slotted.signups["Tester-Stormrage"].joined == SERVER_NOW, sent[1])
+    end
+    pickEvent("Plain")
+    clickAnswer("Y")
+    do
+        local sent = sentNow()
+        check("an unslotted event without a comment sends the sign-up exactly as before",
+            #sent == 1 and sent[1] == table.concat({ "S", plainID, "Tester-Stormrage,Y," .. NOW .. ",PALADIN" }, TAB), sent[1])
+    end
+    receive(table.concat({ "S", altID, "Altine-Stormrage,Y," .. (NOW + 2) .. ",MAGE;T;" .. (NOW - 10) .. ";15 min late; sorry",
+        "Borin-Stormrage,M," .. (NOW + 2) .. ",WARRIOR;X;;hi", "Cedric-Stormrage,N," .. (NOW + 2) .. ",ROGUE;;;a|cffff0000b",
+        "Dagny-Stormrage,Y," .. (NOW + 2) .. ",PRIEST" }, TAB))
+    do
+        local a, b, c, dg = alt.signups["Altine-Stormrage"], alt.signups["Borin-Stormrage"], alt.signups["Cedric-Stormrage"], alt.signups["Dagny-Stormrage"]
+        check("a received sign-up carries role, joined and a comment (which may hold ';')",
+            a.class == "MAGE" and a.role == "T" and a.joined == NOW - 10 and a.comment == "15 min late; sorry")
+        check("an unknown role is ignored; the class stays", b.class == "WARRIOR" and b.role == nil and b.comment == "hi")
+        check("'|' is cleaned out of a comment", c.class == "ROGUE" and c.comment ~= nil and not c.comment:find("|", 1, true), c.comment)
+        check("the old format still works", dg.class == "PRIEST" and dg.role == nil and dg.joined == nil and dg.comment == nil)
+    end
+    receive(table.concat({ "S", altID, "Eira-Stormrage,Y," .. (NOW + 2) .. ",MAGE;D;1;" }, TAB))
+    receive(table.concat({ "S", altID, "Frida-Stormrage,Y," .. (NOW + 2) .. ",MAGE;D;" .. (SERVER_NOW + 3600) .. ";" }, TAB))
+    check("a joined time from before the event was made, or far in the future, is dropped",
+        alt.signups["Eira-Stormrage"].joined == nil and alt.signups["Eira-Stormrage"].role == "D"
+        and alt.signups["Frida-Stormrage"].joined == nil and alt.signups["Frida-Stormrage"].role == "D")
+    flush()
+    sentNow()
+    receive("Q", "Nykommer-Stormrage")
+    flush()
+    do
+        local full = sentNow()
+        local original = evDB().events
+        evDB().events = {}
+        for _, message in ipairs(full) do receive(message, "Borin-Stormrage") end
+        local copy = evDB().events[altID]
+        local a = copy and copy.signups["Altine-Stormrage"]
+        local mine = evDB().events[slotID] and evDB().events[slotID].signups["Tester-Stormrage"]
+        check("a full sync into an empty client rebuilds role, joined and comment",
+            a ~= nil and a.role == "T" and a.joined == NOW - 10 and a.comment == "15 min late; sorry" and a.class == "MAGE"
+            and copy.need.T == 1 and mine ~= nil and mine.role == "H" and mine.joined == SERVER_NOW, table.concat(full, " ; "))
+        evDB().events = original
+        flush()
+        sentNow()
+    end
+
+    -- 4. Which role Coming fills in.
+    gv.newButton.scripts.OnClick(gv.newButton)
+    fillForm("Auto", "1", "", "1", "")
+    form.save.scripts.OnClick(form.save)
+    local autoID = lastID()
+    local auto = evDB().events[autoID]
+    ns.SetMyRoles({ T = true, D = true })
+    clickAnswer("Y")
+    check("with two roles, Coming picks the one the event lacks (a tie goes to the tank)", auto.signups["Tester-Stormrage"].role == "T")
+    receive(table.concat({ "S", autoID, "Altine-Stormrage,Y," .. (NOW + 3) .. ",MAGE;T;" .. NOW .. ";" }, TAB))
+    clickAnswer("N")
+    check("Not coming has no role", auto.signups["Tester-Stormrage"].role == nil)
+    clickAnswer("Y")
+    check("...and once the tanks are full it picks DPS", auto.signups["Tester-Stormrage"].role == "D")
+    ns.SetMyRoles({})
+    clickAnswer("N")
+    clearChat()
+    clickAnswer("Y")
+    check("with no role chosen anywhere, none is filled in, and you are asked to pick one",
+        auto.signups["Tester-Stormrage"].role == nil and has(ns.strings.nb.EV_PICK_ROLE), chatText())
+    statusEntry.roles = { H = true }
+    clickAnswer("N")
+    clickAnswer("Y")
+    check("without a profile role, the roles from the dungeon status are used", auto.signups["Tester-Stormrage"].role == "H")
+    statusEntry.roles = {}
+    ns.SetMyRoles({ H = true })
+    flush()
+    sentNow()
+
+    -- 5. Role chips and the comment.
+    reopenEvents()
+    pickEvent("Raid slots")
+    check("the role row shows for a slotted event you said Coming to, with your role selected",
+        detail.roleRow:IsShown() and detail.roleRow.label.text == "Din rolle:" and detail.roleRow.chips.H.selected and not detail.roleRow.chips.T.selected
+        and detail.roleRow.chips.T.label.text == icon("T", 14) .. " Tank" and detail.commentRow:IsShown() and detail.commentRow.label.text == "Kommentar:")
+    detail.roleRow.chips.T.scripts.OnClick(detail.roleRow.chips.T)
+    do
+        local sent = sentNow()
+        local mine = slotted.signups["Tester-Stormrage"]
+        check("a role chip sends a newer sign-up with the same answer and the same place in the queue",
+            #sent == 1 and sent[1] == table.concat({ "S", slotID, "Tester-Stormrage,Y," .. (NOW + 1) .. ",PALADIN;T;" .. SERVER_NOW .. ";" }, TAB)
+            and mine.role == "T" and mine.joined == SERVER_NOW and detail.roleRow.chips.T.selected, sent[1])
+    end
+    detail.commentRow.box:SetText("15 min late, sorry")
+    detail.commentRow.box.scripts.OnEnterPressed(detail.commentRow.box)
+    do
+        local sent = sentNow()
+        check("Enter saves the comment, commas made into ';', and sends it",
+            slotted.signups["Tester-Stormrage"].comment == "15 min late; sorry" and #sent == 1
+            and sent[1] == table.concat({ "S", slotID, "Tester-Stormrage,Y," .. (NOW + 2) .. ",PALADIN;T;" .. SERVER_NOW .. ";15 min late; sorry" }, TAB), sent[1])
+    end
+    check("the list shows role, name and the comment in grey",
+        detail.lists.Y.text == "Kommer: " .. icon("T", 12) .. "Tester |cffaaaaaa(15 min late; sorry)|r", detail.lists.Y.text)
+    detail.commentRow.box.scripts.OnEditFocusLost(detail.commentRow.box)
+    check("leaving the box without a change sends nothing", #sentNow() == 0)
+    detail.commentRow.box.scripts.OnEnter(detail.commentRow.box)
+    check("the comment box explains itself", GameTooltip:IsShown() and GameTooltip.lines[1] == ns.strings.nb.EV_COMMENT_HINT)
+    detail.commentRow.box.scripts.OnLeave(detail.commentRow.box)
+    clickAnswer("N")
+    check("the role row hides for Not coming; the comment stays", not detail.roleRow:IsShown() and detail.commentRow:IsShown()
+        and slotted.signups["Tester-Stormrage"].comment == "15 min late; sorry" and slotted.signups["Tester-Stormrage"].joined == nil)
+    pickEvent("Plain")
+    check("...and for an unslotted event", not detail.roleRow:IsShown() and detail.commentRow:IsShown() and detail.commentRow.box:GetText() == "")
+    pickEvent("Alt raid")
+    check("the comment row hides when you have not answered", not detail.commentRow:IsShown() and not detail.roleRow:IsShown())
+    sentNow()
+
+    -- 6. A max, and standby.
+    gv.newButton.scripts.OnClick(gv.newButton)
+    fillForm("Capped", "", "", "", "2")
+    form.save.scripts.OnClick(form.save)
+    local capID = lastID()
+    receive(table.concat({ "S", capID, "Altine-Stormrage,Y," .. (NOW + 3) .. ",MAGE;;" .. (NOW - 5) .. ";", "Borin-Stormrage,Y," .. (NOW + 3) .. ",WARRIOR;;" .. (NOW - 3) .. ";",
+        "Cedric-Stormrage,Y," .. (NOW + 3) .. ",ROGUE;;" .. (NOW - 1) .. ";" }, TAB))
+    check("with a max of 2, the first two by time are in and the third on standby",
+        detail.chips.Y.label.text == "Kommer (2/2)" and detail.lists.Y.text == "Kommer: Altine, Borin" and detail.lists.B:IsShown()
+        and detail.lists.B.text == "Standby: Cedric" and eventRow("Capped").sub.text == "DATE(" .. slotWhen .. ")   2/2 / 0 / 0", eventRow("Capped").sub.text)
+    receive(table.concat({ "S", capID, "Dagny-Stormrage,Y," .. (NOW + 1) .. ",PRIEST" }, TAB))
+    check("an answer from an older version (no time) comes after those with a time", detail.lists.B.text == "Standby: Cedric, Dagny", detail.lists.B.text)
+    receive(table.concat({ "S", capID, "Cedric-Stormrage,N," .. (NOW + 4) .. ",ROGUE", "Dagny-Stormrage,N," .. (NOW + 4) .. ",PRIEST" }, TAB))
+    check("the standby list hides when it is empty", not detail.lists.B:IsShown())
+    clearChat()
+    clickAnswer("Y")
+    check("saying Coming when it is full puts you on standby, and says so", has("Eventen er full. Du står på standby, nummer 1.") and not has("ledig"), chatText())
+    clearChat()
+    receive(table.concat({ "S", capID, "Altine-Stormrage,N," .. (NOW + 5) .. ",MAGE" }, TAB))
+    check("when someone drops out you move up, with a message", has("Det ble en plass ledig: du er nå med på Capped.") and detail.lists.Y.text == "Kommer: Borin, " .. icon("H", 12) .. "Tester", detail.lists.Y.text)
+    clearChat()
+    receive(table.concat({ "S", capID, "Eira-Stormrage,M," .. (NOW + 5) .. ",MAGE" }, TAB))
+    check("...only once", not has("ledig"), chatText())
+    sentNow()
+
+    -- 7. Roles and missing.
+    gv.newButton.scripts.OnClick(gv.newButton)
+    fillForm("Roles", "1", "2", "3", "")
+    form.save.scripts.OnClick(form.save)
+    local rolesID = lastID()
+    receive(table.concat({ "S", rolesID, "Altine-Stormrage,Y," .. (NOW + 3) .. ",MAGE;T;" .. NOW .. ";", "Borin-Stormrage,Y," .. (NOW + 3) .. ",WARRIOR;H;" .. NOW .. ";",
+        "Cedric-Stormrage,Y," .. (NOW + 3) .. ",ROGUE", "Dagny-Stormrage,M," .. (NOW + 3) .. ",PRIEST;H;;" }, TAB))
+    check("the roles line counts who is in per role, maybes in brackets, and players without a role",
+        detail.slots:IsShown() and detail.slots.text == "Roller: " .. icon("T", 12) .. "1/1  " .. icon("H", 12) .. "1/2 (+1)  " .. icon("D", 12) .. "0/3  ? 1", detail.slots.text)
+    check("what is missing is shown in orange", detail.missing:IsShown() and detail.missing.text == "Mangler: 1 Healer, 3 DPS" and colour(detail.missing.color, 1, 0.6, 0.2), detail.missing.text)
+    receive(table.concat({ "S", rolesID, "Eira-Stormrage,Y," .. (NOW + 3) .. ",MAGE;H;" .. NOW .. ";", "Frida-Stormrage,Y," .. (NOW + 3) .. ",MAGE;D;" .. NOW .. ";",
+        "Gunnar-Stormrage,Y," .. (NOW + 3) .. ",MAGE;D;" .. NOW .. ";", "Hilde-Stormrage,Y," .. (NOW + 3) .. ",MAGE;D;" .. NOW .. ";" }, TAB))
+    check("with every role filled it says so in green", detail.missing.text == ns.strings.nb.EV_ALL_FILLED and colour(detail.missing.color, 0.4, 1, 0.4), detail.missing.text)
+    pickEvent("Plain")
+    check("an unslotted event has neither line", not detail.slots:IsShown() and not detail.missing:IsShown())
+    pickEvent("Capped")
+    check("an event with only a max has the roles line but no missing line", detail.slots:IsShown() and not detail.missing:IsShown()
+        and detail.slots.text:find("2/2", 1, true) ~= nil, detail.slots.text)
+
+    -- 8. Layout: everything below the note is stacked, whatever the heights.
+    gv.newButton.scripts.OnClick(gv.newButton)
+    fillForm(string.rep("L", 60), "1", "1", "1", "")
+    form.noteBox:SetText(string.rep("n", 100))
+    form.save.scripts.OnClick(form.save)
+    clickAnswer("Y")
+    do
+        local function heightOf(region) return region.GetStringHeight and region:GetStringHeight() or region:GetHeight() end
+        local function topOf(region)
+            local _, rel, relPoint, _, y = region:GetPoint(1)
+            if rel == nil then return y end
+            assert(relPoint == "BOTTOMLEFT", "stacked under the bottom of the one above")
+            return topOf(rel) - heightOf(rel) + y
+        end
+        local function bottomOf(region) return topOf(region) - heightOf(region) end
+        check("S5 layout: a two-line title and note push everything down, each under the one above",
+            detail.title:GetStringHeight() == 24 and detail.note:GetStringHeight() == 24
+            and select(2, detail.slots:GetPoint(1)) == detail.note and select(2, detail.missing:GetPoint(1)) == detail.slots
+            and select(2, detail.chips.Y:GetPoint(1)) == detail.missing and select(2, detail.chips.N:GetPoint(1)) == detail.missing
+            and select(2, detail.roleRow:GetPoint(1)) == detail.chips.Y and select(2, detail.commentRow:GetPoint(1)) == detail.roleRow
+            and select(2, DragonworldEventSignupsScroll:GetPoint(1)) == detail.commentRow
+            and select(5, DragonworldEventSignupsScroll:GetPoint(2)) == 34)
+        check("...the missing line ends above the answer chips, and the chips above the role row",
+            bottomOf(detail.missing) > topOf(detail.chips.Y) and bottomOf(detail.chips.Y) > topOf(detail.roleRow)
+            and bottomOf(detail.roleRow) > topOf(detail.commentRow), bottomOf(detail.missing) .. " / " .. topOf(detail.chips.Y))
+        local content = DragonworldEventSignupsScroll.scrollChild
+        check("...and the sign-up lists scroll, as tall as their text",
+            content:GetHeight() == detail.lists.Y:GetStringHeight() + 8 + detail.lists.M:GetStringHeight() + 8 + detail.lists.N:GetStringHeight()
+            and detail.lists.Y:GetWidth() == DragonworldEventSignupsScroll:GetWidth())
+    end
+
+    -- 9. Posting it in guild chat says what is missing.
+    pickEvent("Raid slots")
+    guildChat = {}
+    clock = clock + 11
+    detail.share.scripts.OnClick(detail.share)
+    check("posting a slotted event in guild chat says which roles are missing, without icons",
+        guildChat[1] ~= nil and guildChat[1].text == "Guild-event: Raid slots - DATE(" .. slotWhen .. ") - Mangler: 1 Tank, 1 Healer, 3 DPS"
+        and not guildChat[1].text:find("|", 1, true), guildChat[1] and guildChat[1].text)
+    guildChat = {}
+
+    -- 10. DW.ShowEvent.
+    evPanel.tabs.calendar.scripts.OnClick(evPanel.tabs.calendar)
+    kbChip.scripts.OnClick(kbChip)
+    ns.ShowEvent(capID)
+    check("DW.ShowEvent opens Guild events on that event", evPanel:IsVisible() and gv:IsVisible() and detail:IsVisible() and detail.title.text == "Capped"
+        and eventRow("Capped").selected)
+
+    -- A deleted slotted event keeps field 10, and field 9 names who deleted it.
+    pickEvent("Raid slots")
+    sentNow()
+    detail.delete.scripts.OnClick(detail.delete)
+    do
+        local sent = sentNow()
+        check("deleting a slotted event sends field 9 = who and field 10",
+            #sent == 1 and sent[1] == table.concat({ "E", slotID, slotted.updated, slotWhen, "1", "Raid slots", "", "0:A", "Tester-Stormrage", "T1H1D3C5" }, TAB), sent[1])
+    end
+
+    -- Older versions pass an event on with only 8 fields at the same updated.
+    flush()
+    sentNow()
+    do
+        local function sentE(sent, id)
+            for _, message in ipairs(sent) do
+                if message:sub(1, 2 + #id) == "E" .. TAB .. id then return message end
+            end
+        end
+        local fullAlt = table.concat({ "E", altID, NOW - 4, slotWhen + 3600, "0", "Alt raid", "", "0:A", "", "T1H1D1" }, TAB)
+        receive("G" .. TAB .. altID, "Nykommer-Stormrage")
+        receive(table.concat({ "E", altID, NOW - 4, slotWhen + 3600, "0", "Alt raid", "", "0:A" }, TAB), "Gammel-Stormrage")
+        flush()
+        local sent = sentNow()
+        check("an 8-field copy of our version from an older client does not stop our full copy going out",
+            sentE(sent, altID) == fullAlt and alt.need ~= nil and alt.need.H == 1, table.concat(sent, " ; "))
+        receive("G" .. TAB .. altID, "Nykommer-Stormrage")
+        receive(fullAlt, "Borin-Stormrage")
+        flush()
+        check("...while a full copy from someone else does", sentE(sentNow(), altID) == nil)
+
+        local oldID = "Altine-Stormrage:" .. (NOW - 20) .. ":22"
+        local function oldE(...) receive(table.concat({ "E", oldID, NOW - 20, slotWhen + 7200, "0", "Old copy", "", ... }, TAB), "Gammel-Stormrage") end
+        oldE("0:A")
+        local old = evDB().events[oldID]
+        check("an 8-field copy is stored without slots", old ~= nil and old.need == nil and old.cap == nil)
+        oldE("0:A", "", "T1H2D3C8")
+        check("...and the full copy at the same updated fills them in",
+            old.updated == NOW - 20 and old.need ~= nil and old.need.T == 1 and old.need.H == 2 and old.need.D == 3 and old.cap == 8)
+        oldE("0:A")
+        check("...and a later 8-field copy at the same updated does not clear them", old.need ~= nil and old.cap == 8)
+        oldE("0:A", "", "T5")
+        check("...nor does a different field 10 at the same updated replace them", old.need.T == 1 and old.cap == 8)
+
+        -- A copy without the slots still passes on role and joined.
+        receive(table.concat({ "S", plainID, "Altine-Stormrage,Y," .. (NOW + 6) .. ",MAGE;T;" .. NOW .. ";" }, TAB))
+        flush()
+        sentNow()
+        receive("G" .. TAB .. plainID, "Nykommer-Stormrage")
+        flush()
+        local relayed = table.concat(sentNow(), " ; ")
+        check("sign-ups are passed on with the role and joined they carry, even for an event without slots",
+            relayed:find("Altine-Stormrage,Y," .. (NOW + 6) .. ",MAGE;T;" .. NOW .. ";", 1, true) ~= nil
+            and relayed:find("Tester-Stormrage,Y," .. NOW .. ",PALADIN", 1, true) ~= nil
+            and relayed:find("Tester-Stormrage,Y," .. NOW .. ",PALADIN;", 1, true) == nil, relayed)
+    end
+
+    -- Tidy up.
+    evDB().events = savedEvents
+    CLOCK_SHIFT = savedShift
+    statusEntry.roles = savedStatusRoles
+    ns.SetMyRoles(savedRoles)
+    flush()
+    sentNow()
+    sentNow("DragonworldPf")
+    clearChat()
+    reopenEvents()
+end)()
+
+-- ---- Event reminders, weekly events and Invite next (S6) ----
+;(function()
+    local savedEvents, savedShift = evDB().events, CLOCK_SHIFT
+    local savedSeries, savedReminded, savedRemind = evDB().series, evDB().reminded, evDB().remind
+    local savedChars = {}
+    for key, value in pairs(DragonworldDB.memberCharacters or {}) do savedChars[key] = value end
+    local savedGroup, savedParty = GROUP, C_PartyInfo.ConvertToRaid
+    local savedOnline = {}
+    for index, member in ipairs(ROSTER) do savedOnline[index] = member[9] end
+    local achDB = DragonworldDB.modules.achievements
+    local savedBannerBox = achDB.banner
+    GROUP = { members = {}, raid = false, leader = true, assistant = false, invites = {}, converted = 0, canInvite = nil }
+    -- Earlier sections played Altine, Borin and others on this account; here
+    -- the account has only Tester (and later an alt of our own).
+    DragonworldDB.memberCharacters = { ["Tester-Stormrage"] = NOW }
+    DrainBanners()
+    evDB().events, evDB().series, evDB().reminded, evDB().remind = {}, {}, {}, nil
+    CLOCK_SHIFT = 0
+    reopenEvents()
+    flush()
+    sentNow()
+    clearChat()
+
+    local DAY = 86400
+    local nb = ns.strings.nb
+    local function pickEvent(title) eventRow(title).scripts.OnClick(eventRow(title)) end
+    local function clickAnswer(status) detail.chips[status].scripts.OnClick(detail.chips[status]) end
+    local function banner() return DragonworldMilestoneBanner end
+    local function bannerShown() return banner() ~= nil and banner():IsShown() end
+    local function closeBanner() if bannerShown() then banner().close.scripts.OnClick(banner().close) end end
+    local function lastID() return "Tester-Stormrage:" .. NOW .. ":" .. evDB().seq end
+    local function at(seconds) CLOCK_SHIFT = seconds - NOW end   -- set the local clock to a moment
+    local function fieldsOf(message) local out = {}; for piece in (message .. TAB):gmatch("(.-)" .. TAB) do out[#out + 1] = piece end; return out end
+    local function altEvent(id, when, title, extra)
+        receive(table.concat({ "E", id, time() - 1, when, "0", title, "", "0:A", extra and "" or nil, extra }, TAB))
+    end
+    local function fillForm(title, dateText, timeText, weekly, need)
+        form.titleBox:SetText(title)
+        form.dateBox:SetText(dateText)
+        form.timeBox:SetText(timeText)
+        tick(form.calendarCheck, false)
+        form.needBoxes.T:SetText(need or "")
+        form.needBoxes.H:SetText("")
+        form.needBoxes.D:SetText("")
+        form.capBox:SetText("")
+        tick(form.weeklyCheck, weekly)
+    end
+
+    -- 6. DW.MyEventAnswers.
+    local futureID = "Altine-Stormrage:" .. (NOW - 60) .. ":30"
+    altEvent(futureID, NOW + 10 * DAY, "Fremtid")
+    pickEvent("Fremtid")
+    clickAnswer("M")
+    do
+        local answers = ns.MyEventAnswers()
+        check("S6 DW.MyEventAnswers lists the future events you answered",
+            #answers == 1 and answers[1].id == futureID and answers[1].title == "Fremtid" and answers[1].when == NOW + 10 * DAY and answers[1].status == "M")
+    end
+    evDB().events[futureID] = nil
+    sentNow()
+
+    -- 1. Reminders.
+    local r1 = "Altine-Stormrage:" .. (NOW - 50) .. ":31"
+    local r1When = NOW + DAY
+    altEvent(r1, r1When, "Kveldsraid")
+    reopenEvents()
+    pickEvent("Kveldsraid")
+    clickAnswer("Y")
+    sentNow()
+    clearChat()
+    local sounds = #SOUNDS_PLAYED
+    at(r1When - 600)
+    flush()
+    check("S6 reminder: 15 minutes before, a gold banner with the title, the minutes left and the ready-check sound",
+        bannerShown() and banner().title.text == nb.EV_REMIND_TITLE and banner().text.text == "Kveldsraid starter om 10 min."
+        and banner().button.label.text == nb.EV_REMIND_OPEN and #SOUNDS_PLAYED == sounds + 1 and SOUNDS_PLAYED[#SOUNDS_PLAYED] == 8960,
+        bannerShown() and banner().text.text)
+    check("...and a line in chat", has("Kveldsraid starter om 10 min."), chatText())
+    clearChat()
+    flush()
+    check("...only once", ns.BannerQueueLength() == 0 and #SOUNDS_PLAYED == sounds + 1 and not has("Kveldsraid"))
+    closeBanner()
+    flush()
+    check("...also after the banner is closed (remembered for the account)", not bannerShown() and evDB().reminded[r1].soon == true)
+    at(r1When + 60)
+    flush()
+    check("at the start: 'starts now'", bannerShown() and banner().text.text == "Kveldsraid starter nå!" and evDB().reminded[r1].start == true,
+        bannerShown() and banner().text.text)
+    closeBanner()
+
+    local r2, r3 = "Altine-Stormrage:" .. (NOW - 49) .. ":32", "Borin-Stormrage:" .. (NOW - 48) .. ":33"
+    local r2When = NOW + 2 * DAY
+    altEvent(r2, r2When, "Nei-event")
+    altEvent(r3, r2When + 600, "Ikke svart")
+    at(r1When + 120)
+    reopenEvents()
+    pickEvent("Nei-event")
+    clickAnswer("N")
+    sentNow()
+    at(r2When - 300)
+    flush()
+    check("no reminder for Not coming, or for an event you did not answer", not bannerShown() and evDB().reminded[r2] == nil and evDB().reminded[r3] == nil)
+    at(r1When + 31 * 60)
+    evDB().reminded[r1] = nil
+    flush()
+    check("none more than 30 minutes after the start", not bannerShown() and evDB().reminded[r1] == nil)
+
+    -- The organizer is reminded without answering, with what to do and what is missing.
+    at(NOW)
+    gv.newButton.scripts.OnClick(gv.newButton)
+    fillForm("Min raid", "23.11.2026", "20:00", false, "1")
+    form.save.scripts.OnClick(form.save)
+    local r4 = lastID()
+    local r4When = evDB().events[r4].when
+    receive(table.concat({ "S", r4, "Altine-Stormrage,Y," .. (NOW + 3) .. ",MAGE;D;" .. NOW .. ";" }, TAB))
+    sentNow()
+    at(r4When + 60)
+    flush()
+    check("the organizer gets the start reminder without answering, told to invite and what is missing",
+        bannerShown() and banner().text.text == "Min raid starter nå!\nMangler: 1 Tank\n" .. nb.EV_REMIND_ORGANIZER,
+        (tostring(bannerShown() and banner().text.text):gsub("\n", " // ")))
+    closeBanner()
+
+    -- An officer is not reminded of someone else's event without an answer.
+    do
+        local ro = "Altine-Stormrage:" .. (NOW - 43) .. ":38"
+        local roWhen = r4When + 3 * 3600
+        altEvent(ro, roWhen, "Offiser-event")
+        guild.rankIndex = 1
+        at(roWhen - 600)
+        flush()
+        at(roWhen + 60)
+        flush()
+        check("an officer gets no reminder for someone else's event they did not answer", not bannerShown() and evDB().reminded[ro] == nil)
+        guild.rankIndex = nil
+    end
+
+    -- The header checkbox turns reminders off for the account.
+    local r5 = "Altine-Stormrage:" .. (NOW - 47) .. ":34"
+    local r5When = NOW + 4 * DAY
+    at(NOW)
+    altEvent(r5, r5When, "Av og på")
+    reopenEvents()
+    check("the Events panel has a reminder box at the top right, ticked", evPanel.remindCheck.checked == true and evPanel.remindLabel.text == nb.EV_REMIND_SETTING
+        and select(1, evPanel.remindCheck:GetPoint(1)) == "TOPRIGHT" and select(4, evPanel.remindCheck:GetPoint(1)) == -14 and select(5, evPanel.remindCheck:GetPoint(1)) == -42)
+    pickEvent("Av og på")
+    clickAnswer("Y")
+    sentNow()
+    tick(evPanel.remindCheck, false)
+    check("unticking it saves 'off'", evDB().remind == false)
+    at(r5When - 600)
+    flush()
+    check("with reminders off there is none", not bannerShown() and evDB().reminded[r5] == nil)
+    tick(evPanel.remindCheck, true)
+    flush()
+    check("ticked again, a reminder that is still due comes", evDB().remind == nil and bannerShown() and banner().text.text:find("Av og på", 1, true) ~= nil)
+    closeBanner()
+
+    -- An answer given inside the last 15 minutes skips 'soon' but gets 'start'.
+    local r6 = "Altine-Stormrage:" .. (NOW - 46) .. ":35"
+    local r6When = NOW + 5 * DAY
+    at(NOW)
+    altEvent(r6, r6When, "Sent svar")
+    at(r6When - 600)
+    reopenEvents()
+    pickEvent("Sent svar")
+    clickAnswer("Y")
+    sentNow()
+    flush()
+    check("an answer inside the window gets no 'soon' reminder", not bannerShown() and evDB().reminded[r6].soon == true)
+    at(r6When + 60)
+    flush()
+    check("...but gets the start reminder", bannerShown() and banner().text.text == "Sent svar starter nå!")
+    closeBanner()
+
+    -- An answer on another character of the account; shown even with the banner box off.
+    local r7 = "Altine-Stormrage:" .. (NOW - 45) .. ":36"
+    local r7When = NOW + 6 * DAY
+    at(NOW)
+    altEvent(r7, r7When, "Alt-raid")
+    DragonworldDB.memberCharacters["Tveit-Stormrage"] = NOW
+    DragonworldDB.memberCharacters["Aalt-Stormrage"] = NOW
+    receive(table.concat({ "S", r7, "Tveit-Stormrage,M," .. (NOW + 1) .. ",PRIEST", "Aalt-Stormrage,N," .. (NOW + 1) .. ",MAGE" }, TAB))
+    achDB.banner = false
+    at(r7When - 600)
+    flush()
+    check("an answer on another character of the account counts (Coming or Maybe before Not coming), and says so; shown even with 'Show the banner' off",
+        bannerShown() and banner().text.text == "Alt-raid starter om 10 min.\nDu svarte med Tveit.", bannerShown() and banner().text.text)
+    kbChip.scripts.OnClick(kbChip)
+    banner().button.scripts.OnClick(banner().button)
+    check("the button opens Guild events on that event", evPanel:IsVisible() and detail:IsVisible() and detail.title.text == "Alt-raid" and not bannerShown())
+
+    -- An answer on an alt for an event that is not for the character played:
+    -- Open still shows that event, not another one.
+    local r8 = "Altine-Stormrage:" .. (NOW - 44) .. ":37"
+    local r8When = r7When + 7200
+    receive(table.concat({ "E", r8, time() - 1, r8When, "0", "Lavnivå", "", "0:L10-20" }, TAB))
+    receive(table.concat({ "S", r8, "Tveit-Stormrage,Y," .. (NOW + 1) .. ",PRIEST" }, TAB))
+    at(r8When - 600)
+    flush()
+    check("a reminder for an alt's answer on an event not for this character", bannerShown() and banner().text.text == "Lavnivå starter om 10 min.\nDu svarte med Tveit.",
+        bannerShown() and banner().text.text)
+    kbChip.scripts.OnClick(kbChip)
+    banner().button.scripts.OnClick(banner().button)
+    check("...its button shows that event, although it is not in the list", detail:IsVisible() and detail.title.text == "Lavnivå" and eventRow("Lavnivå") == nil,
+        detail.title.text)
+    pickEvent("Alt-raid")
+    check("...and picking another event leaves it", detail.title.text == "Alt-raid")
+    DragonworldDB.memberCharacters["Aalt-Stormrage"] = nil
+    achDB.banner = savedBannerBox
+
+    -- The sample.
+    evDB().remind = false
+    local remindedBefore = 0
+    for _ in pairs(evDB().reminded) do remindedBefore = remindedBefore + 1 end
+    clearChat()
+    dw("events test")
+    do
+        local after = 0
+        for _ in pairs(evDB().reminded) do after = after + 1 end
+        check("/dw events test shows a sample reminder for the first event, even with reminders off, and marks nothing",
+            bannerShown() and banner().title.text == nb.EV_REMIND_TITLE and banner().text.text == "Alt-raid starter om 15 min." and after == remindedBefore,
+            bannerShown() and banner().text.text)
+    end
+    evDB().remind = nil
+    DrainBanners()
+
+    -- 4. Purge.
+    evDB().reminded["Gone-Stormrage:1:1"] = { soon = true }
+    evDB().series["Bad-Stormrage:1"] = { creator = "Bad-Stormrage", lastWhen = NOW, seq = 1 }
+    ns.modules.events:OnLoad(evDB())
+    check("S6 purge: reminded marks for events that are gone are removed", evDB().reminded["Gone-Stormrage:1:1"] == nil and evDB().reminded[r7] ~= nil)
+    check("...and a saved series without a proper counter is dropped", evDB().series["Bad-Stormrage:1"] == nil)
+    DragonworldDB.memberCharacters["Tveit-Stormrage"] = nil
+
+    -- 2. Weekly events.
+    at(NOW)
+    evDB().events = {}
+    reopenEvents()
+    flush()
+    sentNow()
+    clearChat()
+    gv.newButton.scripts.OnClick(gv.newButton)
+    check("S6 form: a 'repeat every week' box at -272, unticked", form.weeklyCheck.checked ~= true and form.weeklyLabel.text == nb.EV_FORM_WEEKLY
+        and select(4, form.weeklyCheck:GetPoint(1)) == -4 and select(5, form.weeklyCheck:GetPoint(1)) == -272)
+    fillForm("Ukesraid", "22.11.2026", "20:00", true, "1")
+    form.save.scripts.OnClick(form.save)
+    local w0 = lastID()
+    local seq = evDB().seq
+    local seriesKey = "Tester-Stormrage:" .. seq
+    local wWhen = time({ year = 2026, month = 11, day = 22, hour = 20, min = 0 })
+    local function weekID(n) return "Tester-Stormrage:" .. (wWhen + n * 7 * DAY) .. ":" .. seq end
+    do
+        local sent = sentNow()
+        check("a weekly event is stored with a series, and its E carries W1",
+            evDB().events[w0].weekly == true and evDB().series[seriesKey] ~= nil and evDB().series[seriesKey].lastWhen == wWhen
+            and #sent == 1 and sent[1] == table.concat({ "E", w0, NOW, wWhen, "0", "Ukesraid", "", "0:A", "", "T1W1" }, TAB), sent[1])
+    end
+    check("the box is unticked again after saving, and the event says 'every week'", form.weeklyCheck.checked == false and detail.audience.text == "For alle - Hver uke",
+        detail.audience.text)
+    at(wWhen + 60)
+    flush()
+    do
+        local sent = sentNow()
+        local nextWeek = evDB().events[weekID(1)]
+        check("when it starts, next week's event is made and sent, with W1, the title, audience and slots",
+            nextWeek ~= nil and nextWeek.weekly == true and nextWeek.title == "Ukesraid" and nextWeek.aud == nil and nextWeek.need.T == 1
+            and nextWeek.when == wWhen + 7 * DAY and next(nextWeek.signups) == nil
+            and count(sent, "^E\t") == 1 and fieldsOf(sent[1])[2] == weekID(1) and fieldsOf(sent[1])[10] == "T1W1", table.concat(sent, " ; "))
+    end
+    flush()
+    check("...only once", count(sentNow(), "^E\t") == 0)
+    at(wWhen + 60 + 22 * DAY)
+    flush()
+    do
+        local after = {}
+        for id, event in pairs(evDB().events) do
+            if id:find(":" .. seq .. "$") and event.when > time() then after[#after + 1] = id end
+        end
+        local sent = sentNow()
+        check("22 days later exactly one week after now is made (no filling in of missed weeks)",
+            #after == 1 and after[1] == weekID(4) and count(sent, "^E\t") == 1 and evDB().events[weekID(2)] == nil and evDB().events[weekID(3)] == nil, table.concat(after, ","))
+    end
+    reopenEvents()
+    pickEvent("Ukesraid")
+    check("the weekly event is shown", detail.title.text == "Ukesraid" and eventRow("Ukesraid").eventID == weekID(4))
+    detail.delete:Fire("OnEnter")
+    check("Delete on a weekly event explains that it removes only this week", GameTooltip:IsShown() and GameTooltip.lines[1] == nb.EV_DELETE_WEEKLY_TIP)
+    detail.delete:Fire("OnLeave")
+    detail.delete.scripts.OnClick(detail.delete)
+    do
+        local sent = sentNow()
+        local f = sent[1] and fieldsOf(sent[1]) or {}
+        check("deleting one week keeps W1 on its tombstone", #sent == 1 and f[2] == weekID(4) and f[5] == "1" and f[9] == "Tester-Stormrage" and f[10] == "T1W1", sent[1])
+    end
+    at(wWhen + 28 * DAY + 60)
+    flush()
+    check("...so the week after still comes", evDB().events[weekID(5)] ~= nil and evDB().events[weekID(5)].weekly == true and evDB().series[seriesKey] ~= nil)
+    at(wWhen + 35 * DAY + 60)
+    flush()
+    check("and the week after that", evDB().events[weekID(6)] ~= nil)
+    DrainBanners()
+    sentNow()
+    clearChat()
+
+    -- Stop weekly: two clicks within 5 seconds.
+    reopenEvents()
+    pickEvent("Ukesraid")
+    local stop = detail.stopWeekly
+    check("the creator sees a red Stop weekly in the organizer row; the sign-up list ends above it",
+        eventRow("Ukesraid").eventID == weekID(5) and detail.organizer:IsShown() and stop:IsShown() and stop.label.text == "Stopp ukentlig" and stop.style == "red"
+        and select(5, DragonworldEventSignupsScroll:GetPoint(2)) == 62)
+    stop.scripts.OnClick(stop)
+    check("the first click asks 'Sikker?'", stop.label.text == "Sikker?" and #sentNow() == 0)
+    stop:Fire("OnLeave")
+    check("moving the mouse away resets it", stop.label.text == "Stopp ukentlig" and stop.armedAt == nil)
+    stop.scripts.OnClick(stop)
+    fire("GROUP_ROSTER_UPDATE")               -- a refresh of the panel
+    check("a refresh right after the first click keeps 'Sikker?'", stop.label.text == "Sikker?" and stop.armedAt ~= nil)
+    clock = clock + 6
+    stop.scripts.OnClick(stop)
+    check("a second click after more than 5 seconds only asks again", stop.label.text == "Sikker?" and #sentNow() == 0 and evDB().series[seriesKey] ~= nil)
+    clock = clock + 6
+    fire("GROUP_ROSTER_UPDATE")
+    check("a refresh after the 5 seconds resets it", stop.label.text == "Stopp ukentlig" and stop.armedAt == nil)
+    stop.scripts.OnClick(stop)
+    stop.scripts.OnClick(stop)
+    do
+        local sent = sentNow()
+        local f1 = sent[1] and fieldsOf(sent[1]) or {}
+        local f2 = sent[2] and fieldsOf(sent[2]) or {}
+        check("the second click sends this week without W1 and deletes the later weeks with tombstones without W1",
+            #sent == 2 and f1[2] == weekID(5) and f1[5] == "0" and f1[9] == "Tester-Stormrage" and f1[10] == "T1" and f2[2] == weekID(6) and f2[5] == "1" and f2[9] == "Tester-Stormrage" and f2[10] == "T1"
+            and evDB().events[weekID(6)].deleted == true and evDB().events[weekID(5)].weekly == nil, table.concat(sent, " ; "))
+        check("...the series is gone, and chat says so", evDB().series[seriesKey] == nil and has("Ukesraid gjentas ikke lenger."), chatText())
+    end
+    at(wWhen + 49 * DAY + 60)
+    flush()
+    check("no more weeks are made", count(sentNow(), "^E\t") == 0 and evDB().events[weekID(7)] == nil)
+    DrainBanners()
+
+    -- An officer stops it: deleting next week without W1 ...
+    at(NOW)
+    evDB().events = {}
+    reopenEvents()
+    gv.newButton.scripts.OnClick(gv.newButton)
+    fillForm("Ukesmøte", "22.11.2026", "21:00", true)
+    form.save.scripts.OnClick(form.save)
+    local mSeq = evDB().seq
+    local mKey = "Tester-Stormrage:" .. mSeq
+    local mWhen = time({ year = 2026, month = 11, day = 22, hour = 21, min = 0 })
+    local mNext = "Tester-Stormrage:" .. (mWhen + 7 * DAY) .. ":" .. mSeq
+    at(mWhen + 60)
+    flush()
+    check("(the officer case starts from a made next week)", evDB().events[mNext] ~= nil and evDB().series[mKey] ~= nil)
+    receive(table.concat({ "E", mNext, time() + 10, mWhen + 7 * DAY, "1", "Ukesmøte", "", "0:A", "Altine-Stormrage" }, TAB), "Altine-Stormrage")
+    flush()
+    check("an officer deleting next week without W1 makes the creator drop the series",
+        evDB().events[mNext].deleted == true and evDB().events[mNext].weekly == nil and evDB().series[mKey] == nil)
+    at(mWhen + 7 * DAY + 60)
+    flush()
+    check("...and nothing more is made", evDB().events["Tester-Stormrage:" .. (mWhen + 14 * DAY) .. ":" .. mSeq] == nil)
+    DrainBanners()
+
+    -- ... or clearing W on the latest week.
+    at(NOW)
+    gv.newButton.scripts.OnClick(gv.newButton)
+    fillForm("Ukesquiz", "22.11.2026", "22:00", true)
+    form.save.scripts.OnClick(form.save)
+    local q = lastID()
+    local qKey = "Tester-Stormrage:" .. evDB().seq
+    receive(table.concat({ "E", q, NOW + 5, evDB().events[q].when, "0", "Ukesquiz", "", "0:A" }, TAB), "Borin-Stormrage")
+    receive(table.concat({ "E", q, NOW + 6, evDB().events[q].when, "0", "Ukesquiz", "", "0:A", "Borin-Stormrage" }, TAB), "Borin-Stormrage")
+    receive(table.concat({ "E", q, NOW + 7, evDB().events[q].when, "0", "Ukesquiz", "", "0:A", "Altine-Stormrage" }, TAB), "Borin-Stormrage")
+    flush()
+    check("clearing W from a non-officer, or relayed by one, is held and the series goes on",
+        evDB().events[q].weekly == true and evDB().series[qKey] ~= nil and evDB().held[q] ~= nil)
+    receive(table.concat({ "E", q, NOW + 10, evDB().events[q].when, "0", "Ukesquiz", "", "0:A", "Altine-Stormrage" }, TAB), "Altine-Stormrage")
+    flush()
+    check("an E from an officer clearing W on the latest week drops the series", evDB().events[q].weekly == nil and evDB().series[qKey] == nil
+        and evDB().events[q].stoppedBy == "Altine-Stormrage")
+
+    -- Someone else's weekly event is never made by us.
+    local aw = "Altine-Stormrage:" .. (NOW - 30) .. ":41"
+    altEvent(aw, NOW + 3600, "Altines uke", "W1")
+    at(NOW + 3600 + 60)
+    flush()
+    do
+        local any = false
+        for key in pairs(evDB().series) do if key:find("^Altine") then any = true end end
+        check("a weekly event made by someone else never makes a series here", evDB().events[aw].weekly == true and not any
+            and evDB().events["Altine-Stormrage:" .. (NOW + 3600 + 7 * DAY) .. ":41"] == nil)
+    end
+    sentNow()
+
+    -- A lost series is built again at the hello, from a week this account sent.
+    at(NOW)
+    gv.newButton.scripts.OnClick(gv.newButton)
+    fillForm("Gjenoppretting", "24.11.2026", "20:00", true)
+    form.save.scripts.OnClick(form.save)
+    local gKey = "Tester-Stormrage:" .. evDB().seq
+    evDB().series[gKey] = nil
+    gv.newButton.scripts.OnClick(gv.newButton)
+    fillForm("Engangs", "24.11.2026", "21:00", false)
+    form.save.scripts.OnClick(form.save)
+    local oneOff = lastID()
+    local oneKey = "Tester-Stormrage:" .. evDB().seq
+    receive(table.concat({ "E", oneOff, evDB().events[oneOff].updated, evDB().events[oneOff].when, "0", "Engangs", "", "0:A", "", "W1" }, TAB), "Borin-Stormrage")
+    check("a W1 at the same time as my own one-off version is not taken (my copy is complete)", evDB().events[oneOff].weekly == nil)
+    receive(table.concat({ "E", oneOff, NOW + 20, evDB().events[oneOff].when, "0", "Engangs", "", "0:A", "", "W1" }, TAB), "Borin-Stormrage")
+    sentNow()
+    ns.RestartEventHello()
+    flush()
+    check("at the hello a lost series is built again from a week this account sent",
+        evDB().series[gKey] ~= nil and evDB().series[gKey].title == "Gjenoppretting" and evDB().series[gKey].creator == "Tester-Stormrage")
+    check("...but a W1 version of a one-off event received from someone else does not start one", evDB().events[oneOff].weekly == true and evDB().series[oneKey] == nil)
+    sentNow()
+
+    -- 3. Invite next.
+    at(NOW)
+    evDB().events, evDB().series = {}, {}
+    DrainBanners()
+    for _, member in ipairs(ROSTER) do
+        if member[1] == "Cedric-Stormrage" or member[1] == "Dagny-Stormrage" or member[1] == "Eira-Stormrage" then member[9] = true end
+    end
+    reopenEvents()
+    gv.newButton.scripts.OnClick(gv.newButton)
+    fillForm("Inviteraid", "20.11.2026", "21:00", false)
+    form.capBox:SetText("2")
+    form.save.scripts.OnClick(form.save)
+    local inv = lastID()
+    local invWhen = evDB().events[inv].when
+    receive(table.concat({ "S", inv, "Altine-Stormrage,Y," .. (NOW + 1) .. ",MAGE;T;" .. (NOW - 50) .. ";", "Borin-Stormrage,Y," .. (NOW + 1) .. ",WARRIOR;D;" .. (NOW - 40) .. ";",
+        "Cedric-Stormrage,Y," .. (NOW + 1) .. ",ROGUE;D;" .. (NOW - 30) .. ";", "Dagny-Stormrage,M," .. (NOW + 3) .. ",PRIEST", "Eira-Stormrage,M," .. (NOW + 2) .. ",HUNTER" }, TAB))
+    local altRaid = "Altine-Stormrage:" .. (NOW - 20) .. ":42"
+    altEvent(altRaid, invWhen - 300, "Altines raid")
+    receive(table.concat({ "S", altRaid, "Cedric-Stormrage,Y," .. (NOW + 1) .. ",ROGUE" }, TAB))
+    sentNow()
+    reopenEvents()
+    pickEvent("Inviteraid")
+    check("S6 Invite next: hidden more than an hour before the start", not detail.invite:IsShown() and not detail.organizer:IsShown()
+        and select(5, DragonworldEventSignupsScroll:GetPoint(2)) == 34)
+    at(invWhen - 3600 + 60)
+    flush()
+    local invite = detail.invite
+    check("...and there from an hour before, after the tick: the first online one in line",
+        invite:IsVisible() and invite.label.text == "Inviter neste: Altine" and invite:IsEnabled() and detail.organizer:IsShown()
+        and not detail.stopWeekly:IsShown() and select(5, DragonworldEventSignupsScroll:GetPoint(2)) == 62, invite.label.text)
+    invite:Fire("OnEnter")
+    do
+        local tl = GameTooltip.lines
+        local function endsWith(text, tail) return type(text) == "string" and text:sub(-#tail) == tail end
+        check("the tooltip: next in line in order (in, standby, maybe by answer time) with role icons, who is offline, and how to skip",
+            tl[1] == nb.EV_INVITE_TIP_HEAD and endsWith(tl[2], "Altine") and tl[2] ~= "Altine" and endsWith(tl[3], "Cedric")
+            and tl[4] == "Eira" and tl[5] == "Dagny" and tl[6] == "Ikke pålogget: Borin" and tl[7] == nb.EV_INVITE_SKIP_TIP and #tl == 7,
+            table.concat(tl, " / "))
+    end
+    invite:Fire("OnLeave")
+    clearChat()
+    GROUP.invites = {}
+    invite.scripts.OnClick(invite, "LeftButton")
+    check("a click invites that person, says 'invite sent', and the button moves on",
+        #GROUP.invites == 1 and GROUP.invites[1] == "Altine-Stormrage" and has("Invitasjon sendt til Altine.") and invite.label.text == "Inviter neste: Cedric",
+        chatText() .. " / " .. invite.label.text)
+    flush()
+    check("an invited person is out of line for two minutes", invite.label.text == "Inviter neste: Cedric")
+    flush()
+    check("...and back if not in the group by then", invite.label.text == "Inviter neste: Altine", invite.label.text)
+
+    -- Members already in the group are left out, by id and by name.
+    GROUP.members = { { name = "Altinex", guid = "Player-1-Altine", class = "MAGE" }, { name = "Cedric", guid = "Player-9-Other", class = "ROGUE" } }
+    fire("GROUP_ROSTER_UPDATE")
+    check("members in your group are left out (by id and by name)", invite.label.text == "Inviter neste: Eira", invite.label.text)
+
+    -- Waiting: a party that would be full with the open invites.
+    GROUP.members = {}
+    ROSTER[3][9] = true                       -- Borin online
+    fire("GROUP_ROSTER_UPDATE")
+    for _ = 1, 4 do invite.scripts.OnClick(invite, "LeftButton") end
+    check("with four invites open and nobody in the group yet, it waits", #GROUP.invites == 5 and invite.label.text == nb.EV_INVITE_WAIT and not invite:IsEnabled(),
+        invite.label.text)
+    invite.scripts.OnClick(invite, "LeftButton")
+    check("...and a click then does nothing", #GROUP.invites == 5)
+    ROSTER[3][9] = false
+    flush()
+    flush()
+
+    -- Right-click skips.
+    invite.scripts.OnClick(invite, "RightButton")
+    check("right-click skips the first in line", invite.label.text == "Inviter neste: Cedric" and #GROUP.invites == 5, invite.label.text)
+
+    -- A full party: convert to raid first.
+    GROUP.members = { { name = "Zed1", guid = "Player-9-Z1" }, { name = "Zed2", guid = "Player-9-Z2" }, { name = "Zed3", guid = "Player-9-Z3" }, { name = "Zed4", guid = "Player-9-Z4" } }
+    fire("GROUP_ROSTER_UPDATE")
+    check("a full party shows Convert to raid", invite.label.text == nb.EV_CONVERT_RAID and invite:IsEnabled(), invite.label.text)
+    clearChat()
+    invite.scripts.OnClick(invite, "LeftButton")
+    fire("GROUP_ROSTER_UPDATE")
+    check("the click converts the party to a raid; then inviting goes on", GROUP.converted == 1 and GROUP.raid == true and invite.label.text == "Inviter neste: Cedric", invite.label.text)
+    flush()
+    check("...and no failure is reported when it worked", not has(nb.EV_CONVERT_FAILED), chatText())
+    GROUP.raid = false
+    C_PartyInfo.ConvertToRaid = function() GROUP.converted = GROUP.converted + 1 end
+    fire("GROUP_ROSTER_UPDATE")
+    invite.scripts.OnClick(invite, "LeftButton")
+    check("a convert the game quietly blocks is checked a moment later", GROUP.converted == 2 and queued(2.2) == 1 and not has(nb.EV_CONVERT_FAILED))
+    flush()
+    check("...and reported in chat", has(nb.EV_CONVERT_FAILED), chatText())
+    clearChat()
+    C_PartyInfo.ConvertToRaid = function() error("blocked") end
+    invite.scripts.OnClick(invite, "LeftButton")
+    check("a convert that fails at once is reported at once", has(nb.EV_CONVERT_FAILED))
+    C_PartyInfo.ConvertToRaid = savedParty
+    GROUP.raid = true
+    fire("GROUP_ROSTER_UPDATE")
+    check("as a raid, inviting goes on", invite.label.text == "Inviter neste: Cedric", invite.label.text)
+    GROUP.leader = false
+    fire("GROUP_ROSTER_UPDATE")
+    check("not the leader: only the leader can invite", invite.label.text == nb.EV_INVITE_NOT_LEADER and not invite:IsEnabled(), invite.label.text)
+    GROUP.leader = true
+    for index = 5, 38 do GROUP.members[index] = { name = "Zed" .. index, guid = "Player-9-Z" .. index } end
+    fire("GROUP_ROSTER_UPDATE")
+    invite.scripts.OnClick(invite, "LeftButton")
+    check("a raid of 39 with one invite open waits", invite.label.text == nb.EV_INVITE_WAIT and not invite:IsEnabled(), invite.label.text)
+    GROUP.members[39] = { name = "Zed39", guid = "Player-9-Z39" }
+    fire("GROUP_ROSTER_UPDATE")
+    check("a raid of 40 is full", invite.label.text == nb.EV_INVITE_FULL and not invite:IsEnabled(), invite.label.text)
+    flush()
+    flush()
+    GROUP.members, GROUP.raid = {}, false
+    fire("GROUP_ROSTER_UPDATE")
+    invite.scripts.OnClick(invite, "RightButton")
+    invite.scripts.OnClick(invite, "RightButton")
+    invite.scripts.OnClick(invite, "RightButton")
+    check("when nobody is left in line: everyone is invited", invite.label.text == nb.EV_INVITE_DONE and not invite:IsEnabled(), invite.label.text)
+
+    -- Only organizers: the creator, or an officer.
+    pickEvent("Altines raid")
+    check("Invite next is not shown on someone else's event", not detail.invite:IsShown() and not detail.organizer:IsShown())
+    guild.rankIndex = 1
+    reopenEvents()
+    pickEvent("Altines raid")
+    check("...but an officer sees it there; skipping someone on another event does not skip them here",
+        detail.invite:IsShown() and detail.organizer:IsShown() and detail.invite.label.text == "Inviter neste: Cedric", detail.invite.label.text)
+    guild.rankIndex = nil
+
+    -- 5. Debug.
+    clearChat()
+    dw("debug")
+    check("S6 /dw debug tells about series and reminders", has("serier: 0 | påminnelser:") and has("ConvertToRaid: true"), chatText())
+
+    -- Tidy up.
+    DrainBanners()
+    evDB().events, evDB().series, evDB().reminded, evDB().remind = savedEvents, savedSeries, savedReminded, savedRemind
+    DragonworldDB.memberCharacters = savedChars
+    GROUP = savedGroup
+    C_PartyInfo.ConvertToRaid = savedParty
+    for index, member in ipairs(ROSTER) do member[9] = savedOnline[index] end
+    achDB.banner = savedBannerBox
+    CLOCK_SHIFT = savedShift
+    flush()
+    sentNow()
+    clearChat()
+    reopenEvents()
+end)()
+
 kbChip.scripts.OnClick(kbChip)
 
 -- ================================== Medlemmer ===================================
@@ -2926,6 +4047,7 @@ check("at login the addon tells the guild this character's professions, and asks
 check("...and remembers its own", roDB().professions["Player-1-Tester"] ~= nil and roDB().professions["Player-1-Tester"].list[3].name == "Mining"
     and roDB().professions["Player-1-Tester"].list[3].level == 225)
 
+ROSTER_REQUESTS_BEFORE = rosterRequests   -- global: the main chunk is out of locals
 roChip.scripts.OnClick(roChip)
 local roPanel = DragonworldRosterScroll.parent
 local function roRows()
@@ -2970,7 +4092,7 @@ local function roNames()
 end
 
 check("Medlemmer opens from its chip and asks the game for a fresh member list",
-    roPanel:IsVisible() and roChip.selected and roChip.label.text == "Medlemmer" and roChip.icon.texture == "Interface\\Icons\\INV_Banner_02" and rosterRequests == 1)
+    roPanel:IsVisible() and roChip.selected and roChip.label.text == "Medlemmer" and roChip.icon.texture == "Interface\\Icons\\INV_Banner_02" and rosterRequests == ROSTER_REQUESTS_BEFORE + 1)
 check("panel text is Norwegian",
     roPanel.title.text == "Guildmedlemmer" and roPanel.statusChips.all.label.text == "Alle" and roPanel.statusChips.online.label.text == "Pålogget"
     and roPanel.statusChips.active.label.text == "Aktive" and roPanel.statusChips.inactive.label.text == "Inaktive"
@@ -2979,8 +4101,10 @@ check("panel text is Norwegian",
 check("it opens showing who is online (the guild leader's choice)",
     roNames() == "Altine,Tester" and roPanel.statusChips.online.selected and not roPanel.statusChips.all.selected and roPanel.count.text == "Viser 2 av 6", roNames())
 roPanel.statusChips.all.scripts.OnClick(roPanel.statusChips.all)
+-- Officers have a badge in front of the rank: Altine (rank 1) the assistant
+-- icon. Tester's own rank comes from GetGuildInfo (3 here), so no badge.
 check("with All, every member is listed A-Z, online or not, with level, rank and how long since they were on",
-    roDescribe() == "Altine 58 Officer [] Pålogget | Borin 42 Member [] 3 d | Cedric 20 Member [] 2 mnd | Dagny 60 Initiate [] 1 år | Eira 35 Member [] 6 t"
+    roDescribe() == "Altine 58 |TInterface\\GroupFrame\\UI-Group-AssistantIcon:12:12|t Officer [] Pålogget | Borin 42 Member [] 3 d | Cedric 20 Member [] 2 mnd | Dagny 60 Initiate [] 1 år | Eira 35 Member [] 6 t"
     .. " | Tester 60 Guild Master [Cooking 150, Engineering 210, Mining 225] Pålogget", roDescribe())
 check("the count shows how many are listed out of the whole guild", roPanel.count.text == "Viser 6 av 6" and roPanel.statusChips.all.selected)
 check("names are in class colour, and 'online' is green",
@@ -3132,7 +4256,7 @@ do
     row.scripts.OnEnter(row)
     local text = table.concat(GameTooltip.lines, " / ")
     check("hover: name, level and rank, zone, professions with max, and when they were updated",
-        GameTooltip:IsShown() and GameTooltip.lines[1] == "Altine" and GameTooltip.lines[2] == "Level 58 - Officer" and GameTooltip.lines[3] == "Stormwind"
+        GameTooltip:IsShown() and GameTooltip.lines[1] == "Altine" and GameTooltip.lines[2] == "Level 58 - |TInterface\\GroupFrame\\UI-Group-AssistantIcon:12:12|t Officer" and GameTooltip.lines[3] == "Stormwind"
         and text:find("Alchemy 300/300", 1, true) and text:find("Herbalism 280/300", 1, true) and text:find("Professions oppdatert DATE(" .. NOW .. ")", 1, true), text)
     row.scripts.OnLeave(row)
     row = roRow("Borin")
@@ -4436,36 +5560,38 @@ end)()
             if row:IsShown() and row.id == id then return row end
         end
     end
-    local DEFAULT_ORDER = "roster,guildchat,dungeons,guildbank,events,achievements,professions,materialer,ryddesekk,keybinds,forslag,etter,kaputt"
+    local DEFAULT_ORDER = "home,roster,guildchat,dungeons,quest,guildbank,events,achievements,professions,materialer,ryddesekk,keybinds,forslag,etter,kaputt"
     check("Settings lists the tabs in the default order (the guild leader's), in the chosen language",
         settings.orderLabel.text == "Rekkefølgen på fanene til venstre (bruk pilene)" and orderNames() == DEFAULT_ORDER
-        and settings.orderRows[1].name.text == ns.ModuleTitle(ns.modules.roster) and settings.orderRows[1].icon.texture == ns.modules.roster.icon, orderNames())
+        and settings.orderRows[1].name.text == ns.ModuleTitle(ns.modules.home) and settings.orderRows[1].icon.texture == ns.modules.home.icon, orderNames())
     check("the top tab cannot move up, and the bottom one cannot move down",
         not settings.orderRows[1].up:IsEnabled() and settings.orderRows[1].down:IsEnabled()
-        and settings.orderRows[13].up:IsEnabled() and not settings.orderRows[13].down:IsEnabled())
+        and settings.orderRows[15].up:IsEnabled() and not settings.orderRows[15].down:IsEnabled())
     check("the arrows use the game's own arrow pictures", settings.orderRows[1].up.normalTexture == "Interface\\Buttons\\UI-ScrollBar-ScrollUpButton-Up"
         and settings.orderRows[1].down.disabledTexture == "Interface\\Buttons\\UI-ScrollBar-ScrollDownButton-Disabled")
 
     rowFor("roster").down.scripts.OnClick(rowFor("roster").down)
     check("moving Members down swaps it with Guild chat in the sidebar at once",
-        chipY("guildchat") == 0 and chipY("roster") == -29 and chipY("dungeons") == -58 and orderNames():find("^guildchat,roster,dungeons,") ~= nil, orderNames())
-    check("...and the order is saved", DragonworldDB.tabOrder[1] == "guildchat" and DragonworldDB.tabOrder[2] == "roster" and #DragonworldDB.tabOrder == 13)
-    for _ = 1, 10 do
-        local row = rowFor("forslag")
-        if row.up:IsEnabled() then row.up.scripts.OnClick(row.up) end
+        chipY("home") == 0 and chipY("guildchat") == -25 and chipY("roster") == -50 and chipY("dungeons") == -75 and orderNames():find("^home,guildchat,roster,dungeons,") ~= nil, orderNames())
+    check("...and the order is saved", DragonworldDB.tabOrder[1] == "home" and DragonworldDB.tabOrder[2] == "guildchat" and DragonworldDB.tabOrder[3] == "roster" and #DragonworldDB.tabOrder == 15)
+    -- Forslag is 13th of 15 now: click its up arrow for as long as it can move.
+    local row = rowFor("forslag")
+    while row.up:IsEnabled() do
+        row.up.scripts.OnClick(row.up)
+        row = rowFor("forslag")
     end
-    check("a tab can be moved all the way to the top", chipY("forslag") == 0 and orderNames():find("^forslag,guildchat,roster,") ~= nil, orderNames())
+    check("a tab can be moved all the way to the top", chipY("forslag") == 0 and orderNames():find("^forslag,home,guildchat,roster,") ~= nil, orderNames())
     check("moving past the top does nothing", ns.MoveModule("forslag", -1) == false and chipY("forslag") == 0)
 
     DragonworldDB.tabOrder = { "guildbank", "nothing-here", 42, "guildbank", "forslag" }
     ns.MoveModule("forslag", 1)
     check("a saved order with unknown or repeated names still works; tabs missing from it get their default place, others come last",
-        orderNames() == "roster,guildchat,dungeons,guildbank,events,achievements,professions,materialer,ryddesekk,keybinds,etter,forslag,kaputt"
-        and chipY("roster") == 0 and chipY("kaputt") == -12 * 29, orderNames())
+        orderNames() == "home,roster,guildchat,dungeons,quest,guildbank,events,achievements,professions,materialer,ryddesekk,keybinds,etter,forslag,kaputt"
+        and chipY("home") == 0 and chipY("roster") == -25 and chipY("kaputt") == -14 * 25, orderNames())
     DragonworldDB.tabOrder = { "forslag", "roster", "dungeons", "guildbank", "events", "professions", "materialer", "ryddesekk", "keybinds" }
     ns.MoveModule("etter", 1)
     check("a tab that is new since the order was saved lands right under the one before it by default (Guild chat under Members)",
-        orderNames():find("^forslag,roster,guildchat,dungeons,") ~= nil, orderNames())
+        orderNames():find("^home,forslag,roster,guildchat,dungeons,") ~= nil, orderNames())
 
     ns.SetLanguage("en", true)
     check("the list follows the language", settings.orderLabel.text == "Order of the tabs on the left (use the arrows)" and rowFor("forslag").name.text == "Suggestions")
@@ -4474,7 +5600,7 @@ end)()
     DragonworldDB.tabOrder = nil
     ns.MoveModule("materialer", -1)
     ns.MoveModule("materialer", 1)
-    check("back to the default order", orderNames() == DEFAULT_ORDER and chipY("roster") == 0, orderNames())
+    check("back to the default order", orderNames() == DEFAULT_ORDER and chipY("home") == 0 and chipY("roster") == -25, orderNames())
 
     -- Forslag ---------------------------------------------------------------------
     local SUG_PREFIX = "DragonworldSug"
@@ -4505,7 +5631,7 @@ end)()
 
     check("Forslag opens from its chip, in Norwegian, and explains itself when there is nothing yet",
         p:IsVisible() and sugChip.selected and sugChip.label.text == "Forslag" and sugChip.icon.texture == "Interface\\Icons\\INV_Misc_Note_01"
-        and p.title.text == "Forslag til addonen" and p.newButton.label.text == "Nytt forslag" and p.filters.all.selected
+        and p.modes.suggestions.label.text == "Forslag" and p.modes.suggestions.selected and p.newButton.label.text == "Nytt forslag" and p.filters.all.selected
         and p.filters.new.label.text == "Nye ting" and p.filters.improve.label.text == "Forbedringer"
         and p.empty:IsShown() and p.empty.text == ns.strings.nb.SUG_EMPTY and not form:IsShown() and not detail:IsShown())
 
@@ -4659,18 +5785,30 @@ end)()
     sugSent()
 
     -- Admin: log in with a code (only a fingerprint of it is in the addon).
+    -- The code is for Forslag only; officer ranks give no rights here.
     check("SHA-256 gives the standard answers",
         ns.Sha256("") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         and ns.Sha256("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         and ns.Sha256("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq") == "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
         ns.Sha256("abc"))
     check("the admin fingerprint is salted and repeated (same as computed outside the game)",
-        ns.AdminHash("test-code") == "53ad21b07189dae7b3b20b87546e653ffd92ad5ccb807c76d850b23d81ca4c70")
+        ns.AdminHash("test-code") == "53ad21b07189dae7b3b20b87546e653ffd92ad5ccb807c76d850b23d81ca4c70" and DragonworldAdminHash == ns.AdminHash)
+    check("the admin code is its own thing again: not the officer check, and no migration that clears it",
+        ns.IsAdmin ~= ns.IsOfficer and ns.MigrateAdmin == nil and ns.IsAdmin() == false)
     ns.ADMIN_HASH = ns.AdminHash("test-code") -- the tests use a code of their own
 
     for _, row in ipairs(sugRows()) do if row.label.text == "DKP-modul" then click(row) end end
-    check("not admin: no buttons for marking suggestions",
-        detail:IsShown() and not detail.done:IsShown() and not detail.reject:IsShown() and not detail.reopen:IsShown() and p.admin.label.text == "Admin")
+    check("not admin: no buttons for marking suggestions, and an Admin chip at the top right",
+        detail:IsShown() and not detail.done:IsShown() and not detail.reject:IsShown() and not detail.reopen:IsShown()
+        and p.admin:IsShown() and p.admin.label.text == "Admin" and p.admin:GetPoint(1) == "TOPRIGHT")
+    guild.rankIndex = 1                                  -- an officer by guild rank, not logged in with the code
+    fire("GUILD_ROSTER_UPDATE")
+    flush()
+    check("an officer by guild rank without the code gets no status buttons, and cannot delete someone else's suggestion",
+        ns.IsOfficer() and not ns.IsAdmin() and detail:IsShown() and not detail.done:IsShown() and not detail.reject:IsShown() and not detail.delete:IsShown())
+    guild.rankIndex = nil                                -- back to rank 3
+    fire("GUILD_ROSTER_UPDATE")
+    flush()
     click(p.admin)
     local login = DragonworldAdminLogin
     check("the Admin button opens a login box, with the code shown as dots",
@@ -4684,9 +5822,12 @@ end)()
     click(login.login)
     check("the right code logs in as admin, remembered on the account",
         not login:IsShown() and ns.IsAdmin() and DragonworldDB.admin.on == true and has("Du er logget inn som admin."), chatText())
-    check("as admin: Mark as done and Reject on an open suggestion",
-        detail.done:IsShown() and detail.reject:IsShown() and not detail.reopen:IsShown()
+    check("as admin: Mark as done and Reject on an open suggestion (but no delete on someone else's)",
+        detail.done:IsShown() and detail.reject:IsShown() and not detail.reopen:IsShown() and not detail.delete:IsShown()
         and detail.done.label.text == "Merk som utført" and detail.reject.label.text == "Avvis" and p.admin.label.text == "Logg ut admin")
+    fire("GUILD_ROSTER_UPDATE")
+    flush()
+    check("the login stays (nothing clears it any more)", ns.IsAdmin() and DragonworldDB.admin.on == true)
 
     local dkp = sugDB().items[borinID]
     sugSent()
@@ -4703,7 +5844,7 @@ end)()
     local rows = sugRows()
     check("the archive lists it, with its status", #rows == 1 and rows[1].label.text == "DKP-modul" and rows[1].sub.text:find("Utført", 1, true) ~= nil, sugDescribe())
     click(rows[1])
-    check("...and shows who marked it done and when, in green; as admin it can be reopened, and there is no voting",
+    check("...and shows who marked it done and when (no officer badge), in green; as admin it can be reopened, and there is no voting",
         detail.status:IsShown() and detail.status.text == "Utført av Tester, " .. date("%d.%m.%Y", SERVER_NOW) and detail.status.color[2] > 0.8
         and detail.reopen:IsShown() and detail.reopen.label.text == "Åpne igjen" and not detail.done:IsShown() and not detail.vote:IsShown(), detail.status.text)
     SERVER_NOW = SERVER_NOW + 10
@@ -4742,24 +5883,34 @@ end)()
     sent = sugSent()
     check("someone whose list lacks the status gets it", count(sent, "^S\t" .. cedricID:gsub("%-", "%%-") .. "\tR\t") == 1, all(sent))
 
-    -- Only the writer can delete a suggestion.
+    -- Only the writer can delete a suggestion; officers cannot.
     local deletion = table.concat({ "F", cedricID, tostring(cedric.updated + 100), "1", "N", "", "0", "" }, "\t")
     sugReceive(deletion, "Mallory-Stormrage")
+    sugReceive(deletion .. "\tAltine-Stormrage", "Altine-Stormrage")
     flush()
-    check("a deletion sent by someone other than the writer is ignored", not cedric.deleted and cedric.title == "Raid-kalender")
-    sugReceive(deletion, "Cedric-Stormrage")
+    check("a deletion sent by someone other than the writer is ignored, also from an officer naming herself in a 9th field (an old test build)",
+        not cedric.deleted and cedric.title == "Raid-kalender")
+    sugReceive(deletion .. "\tCedric-Stormrage", "Cedric-Stormrage")
     flush()
-    check("...from the writer it is taken in", cedric.deleted == true)
+    check("...from the writer it is taken in, a 9th field or not", cedric.deleted == true)
     sugSent()
 
     clearChat()
     click(p.admin)
-    check("Log out admin: no more admin buttons", not ns.IsAdmin() and DragonworldDB.admin == nil and p.admin.label.text == "Admin" and has("Du er logget ut som admin."), chatText())
+    check("Log out admin: no more admin buttons", not ns.IsAdmin() and DragonworldDB.admin == nil and p.admin.label.text == "Admin"
+        and has("Du er logget ut som admin."), chatText())
+    for _, row in ipairs(sugRows()) do if row.label.text == "DKP-modul" then click(row) end end
+    check("...and the DKP suggestion shows no status buttons", detail:IsShown() and not detail.done:IsShown() and not detail.reject:IsShown())
+    click(p.modes.polls)
+    check("the Admin chip is only on the suggestions", not p.admin:IsShown())
+    click(p.modes.suggestions)
+    check("...and back again", p.admin:IsShown())
     ns.ADMIN_HASH = nil
+    sugSent()
     clearChat()
 
     ns.SetLanguage("en", true)
-    check("Forslag follows the language", sugChip.label.text == "Suggestions" and p.title.text == "Suggestions for the addon"
+    check("Forslag follows the language", sugChip.label.text == "Suggestions" and p.modes.suggestions.label.text == "Suggestions" and p.modes.polls.label.text == "Polls (0)"
         and p.newButton.label.text == "New suggestion" and p.filters.improve.label.text == "Improvements")
     ns.SetLanguage("nb", true)
 
@@ -5065,6 +6216,1240 @@ end)()
     kbChip.scripts.OnClick(kbChip)
 end)()
 
+-- ======= leading a group (Modules\Dungeons.lua, F11) and the hour of "open for dungeons" =======
+;(function()
+    local GRP = "DragonworldGrp"
+    local nb = ns.strings.nb
+    local function all(list) return table.concat(list, " ; ") end
+    local function click(button) button.scripts.OnClick(button) end
+    local function grpReceive(text, sender) fire("CHAT_MSG_ADDON", GRP, text, "GUILD", sender or "Altine-Stormrage") end
+    local function stReceive(text, sender) fire("CHAT_MSG_ADDON", "DragonworldSt", text, "GUILD", sender or "Altine-Stormrage") end
+    local function grpSent() return sentNow(GRP) end
+    local function stSent() return sentNow("DragonworldSt") end
+    local function grpDB() return DragonworldDB.modules.dungeons end
+    local function P(key, created, updated, dungeon, have, need, size, note)
+        return table.concat({ "P", key, created, updated, dungeon, have, need, size, note or "" }, TAB)
+    end
+    local function beD(roles) ns.SetMyStatus("D", { dungeons = { [25] = true }, roles = roles }) end
+    local function roleIcon(code, size)
+        for _, role in ipairs(ns.ROLES) do if role.code == code then return ns.RoleIcon(role, size) end end
+    end
+    local dIcon = roleIcon("D")
+    local function pug(n) return { name = "Pug" .. n, realm = "Faraway", guid = "Player-2-Pug" .. n, class = "MAGE", level = 60 } end
+    local ALTINE = { name = "Altine", realm = "Stormrage", guid = "Player-1-Altine", class = "MAGE", level = 58 }
+    local savedInvites, savedConverted = { table.unpack(GROUP.invites) }, GROUP.converted
+    local realWhisper = ns.WhisperTo
+    local told
+    ns.WhisperTo = function(name) told = name end
+
+    local dgChip = chipByID.dungeons
+    local dg = DragonworldDungeonsScroll.parent
+    local area = dg.postArea
+    -- The member rows (the post area is also a child of the list, but has no member).
+    local function members()
+        local out = {}
+        for _, row in ipairs(DragonworldDungeonsScroll.scrollChild.children) do
+            if row:IsShown() and row.found then out[#out + 1] = row end
+        end
+        return out
+    end
+    local function postRows()
+        local out = {}
+        for _, row in ipairs(area.postRows) do if row:IsShown() then out[#out + 1] = row end end
+        return out
+    end
+    local function reqRows()
+        local out = {}
+        for _, row in ipairs(area.requestRows) do if row:IsShown() then out[#out + 1] = row end end
+        return out
+    end
+    local function rowOf(name)
+        for _, row in ipairs(postRows()) do if row.member and row.member.name == name then return row end end
+    end
+
+    -- 1. Login.
+    check("group posts: the message name is registered, and login asked once for the open posts",
+        prefixes[GRP] == true and #GROUP_LOGIN == 1 and GROUP_LOGIN[1] == "R", all(GROUP_LOGIN))
+
+    -- 2. The band and the list.
+    click(dgChip)
+    beD({ T = true })
+    stSent()
+    flush()
+    do
+        local _, _, _, sx, sy = DragonworldDungeonsScroll:GetPoint(1)
+        local rows = members()
+        local _, _, _, _, ry = rows[1]:GetPoint(1)
+        check("group posts: a band under the top row offers to lead a group, in the chosen language",
+            dg.lead:IsShown() and dg.lead.label.text == "Led en gruppe" and dg.leadText.text == nb.DG_LEAD_HINT and not dg.leadStop:IsShown()
+            and select(5, dg.lead:GetPoint(1)) == -72, dg.lead.label.text)
+        check("...the list starts lower (-102), with no post area while nobody leads a group; member rows start at the top",
+            sx == 10 and sy == -102 and not area:IsShown() and #rows == 1 and ry == 0)
+        check("...your own row offers 'Keep me listed' instead of Invite",
+            rows[1].keep:IsShown() and rows[1].keep.label.text == nb.DG_KEEP and not rows[1].invite:IsShown())
+        check("...and the pop-up setting sits at the bottom right, ticked, with the footer making room",
+            dg.toastCheck:GetChecked() and dg.toastLabel.text == nb.DG_TOAST_SETTING and select(4, dg.footer:GetPoint(2)) == -250)
+    end
+
+    -- 3. The form.
+    ns.SetMyStatus(nil)
+    stSent()
+    click(dg.lead)
+    local form = DragonworldGroupForm
+    check("group posts: the form opens from the band, over the main window",
+        form ~= nil and form:IsShown() and form.strata == "DIALOG" and form.title.text == nb.DG_FORM_TITLE and form.hint.text == nb.DG_FORM_HINT)
+    click(form.post)
+    check("...with no status there is no dungeon yet, and posting asks for one",
+        form.dungeonChip.label.text == nb.DG_FORM_DUNGEON:format(nb.DG_FORM_DUNGEON_NONE) and form.error.text == nb.DG_FORM_NEED_DUNGEON and form:IsShown())
+    lastMenu = nil
+    click(form.dungeonChip)
+    do
+        local menu, hall, brd = lastMenu, nil, nil
+        for _, radio in ipairs(menu.radios) do
+            if radio.text:find("Hall of Thanes", 1, true) then hall = radio end
+            if radio.text == "Blackrock Depths (52-60)" then brd = radio end
+        end
+        check("...the dungeon menu lists 'Other group' first and then every dungeon, those outside your level in grey",
+            menu.titles[1] == nb.DG_FILTER_TITLE and #menu.radios == 38 and menu.radios[1].text == nb.DG_OTHER_GROUP_MENU
+            and hall.text == "|cff808080Hall of Thanes (13-20)|r" and brd ~= nil, hall and hall.text)
+        brd.click()
+    end
+    for _, row in ipairs(form.needRows) do while row.minus:IsEnabled() do click(row.minus) end end
+    click(form.post)
+    check("...a dungeon but nothing needed asks what the group needs",
+        form.dungeonChip.label.text == nb.DG_FORM_DUNGEON:format("Blackrock Depths (52-60)") and form.error.text == nb.DG_FORM_NEED_ROLE and form:IsShown())
+    click(form.cancel)
+
+    ns.SetMyStatus("D", { dungeons = { [4] = true, [25] = true, [32] = true }, roles = { T = true } })
+    stSent()
+    ns.OpenDungeonPicker()
+    local picker = DragonworldDungeonPicker
+    click(dg.lead)
+    local pickerHidden = not picker:IsShown()
+    ns.OpenDungeonPicker()
+    local formHidden = not form:IsShown()
+    click(picker.cancel)
+    do
+        local altine
+        for _, member in ipairs(ns.ReadGuildRoster()) do if member.name == "Altine" then altine = member end end
+        ns.ShowMemberCard(altine)
+    end
+    click(dg.lead)
+    check("...opening it closes the dungeon picker and the member card, and the picker closes it",
+        pickerHidden and formHidden and form:IsShown() and not DragonworldMemberCard:IsShown())
+    local function counts() return form.needRows[1].count.text .. "," .. form.needRows[2].count.text .. "," .. form.needRows[3].count.text end
+    check("...a new post starts from your status: its first dungeon that fits, your one role as what the group has, a healer and 3 DPS needed",
+        form.dungeonChip.label.text == nb.DG_FORM_DUNGEON:format("Blackrock Depths (52-60)")
+        and form.haveChecks[1]:GetChecked() and not form.haveChecks[2]:GetChecked() and not form.haveChecks[3]:GetChecked()
+        and counts() == "0,1,3" and form.post.label.text == nb.DG_FORM_POST and not form.stop:IsShown()
+        and form.chatCheck:IsShown() and not form.chatCheck:GetChecked() and form.chatLabel.text == nb.DG_FORM_CHAT
+        and form.needRows[1].label.text == roleIcon("T", 16) .. " Tank" and form.haveLabel.text == nb.DG_FORM_HAVE and form.needLabel.text == nb.DG_FORM_NEED, counts())
+    check("...a solo group has room for 4 more: '+' is off at 4, and '-' at 0",
+        not form.needRows[1].plus:IsEnabled() and not form.needRows[3].plus:IsEnabled() and form.needRows[3].minus:IsEnabled() and not form.needRows[1].minus:IsEnabled())
+    click(form.needRows[3].minus)
+    local afterMinus = counts() .. " " .. tostring(form.needRows[1].plus:IsEnabled())
+    click(form.needRows[3].plus)
+    lastMenu = nil
+    click(form.dungeonChip)
+    for _, radio in ipairs(lastMenu.radios) do if radio.text == "Molten Core (raid, 60)" then radio.click() end end
+    local raidPlus = form.needRows[3].plus:IsEnabled()
+    for _ = 1, 3 do click(form.needRows[3].plus) end
+    local raidCounts = counts()
+    for _, radio in ipairs(lastMenu.radios) do if radio.text == "Blackrock Depths (52-60)" then radio.click() end end
+    check("...'-' and '+' move the counts within that; a raid has room for more, and going back to a dungeon trims DPS first",
+        afterMinus == "0,1,2 true" and raidPlus and raidCounts == "0,1,6" and counts() == "0,1,3", afterMinus .. " / " .. raidCounts .. " / " .. counts())
+
+    form.noteBox:TypeText("Rask |cffff0000run|r " .. string.rep("x", 100))
+    local typed = form.noteBox:GetText()
+    local note = (typed:gsub("[%c|]", " "))
+    note = (note:gsub("^%s+", ""))
+    note = (note:gsub("%s+$", ""))
+    form.chatCheck:SetChecked(true)
+    local chatBefore = #guildChat
+    local t = SERVER_NOW
+    click(form.post)
+    do
+        local sent, st = grpSent(), stSent()
+        local mine = grpDB().mine["Tester-Stormrage"]
+        check("group posts: Post sends the post at once: who, when, the dungeon, what it has and needs, the group size and the cleaned note (at most 80 bytes)",
+            #typed == 80 and #sent == 1 and sent[1] == P("Player-1-Tester", t, t, 25, "T", "0,1,3", 1, note) and not form:IsShown(), all(sent))
+        check("...turns your own 'open for dungeons' off, and saves the post",
+            #st == 1 and st[1]:find("^S\tPlayer%-1%-Tester\t%-\t") ~= nil and ns.GetMyStatus() == nil
+            and mine ~= nil and mine.dungeon == 25 and mine.need == "0,1,3" and mine.created == t, all(st))
+        local line = guildChat[#guildChat]
+        check("...and with the box ticked says it once in guild chat, without '|'",
+            #guildChat == chatBefore + 1 and line.chatType == "GUILD" and line.text == nb.DG_CHAT_LFM:format("Blackrock Depths", "1 Healer, 3 DPS"), line and line.text)
+    end
+    local needIcons = "1 " .. roleIcon("H", 16) .. " 3 " .. roleIcon("D", 16)
+    check("...the band now shows your group, with Change and Stop",
+        dg.lead.label.text == nb.DG_LEAD_EDIT and dg.leadStop:IsShown() and dg.leadStop.label.text == nb.DG_LEAD_STOP
+        and dg.leadText.text == nb.DG_LEAD_MINE:format("Blackrock Depths", needIcons, 60), dg.leadText.text)
+    do
+        local mineRow = postRows()[1]
+        check("...and your post heads the list, marked as you, with Change instead of Ask; the members follow under their own heading",
+            area:IsShown() and area.postsHeader.text == nb.DG_POSTS_HEADER:format(1) and mineRow.name.text == "Tester (deg)" and mineRow.edit:IsShown()
+            and mineRow.edit.label.text == nb.DG_LEAD_EDIT and not mineRow.ask:IsShown() and mineRow.needs.text == nb.DG_POST_NEEDS:format(needIcons)
+            and area.membersHeader.text == nb.DG_MEMBERS_HEADER:format(0) and #members() == 0 and dg.empty:IsShown()
+            and select(2, dg.empty:GetPoint(1)) == area, mineRow.name.text)
+    end
+    click(dg.lead)
+    check("...opening the form again loads the post: Update, Stop, and no guild chat box",
+        form.post.label.text == nb.DG_FORM_UPDATE and form.stop:IsShown() and not form.chatCheck:IsShown() and counts() == "0,1,3" and form.noteBox:GetText() == note)
+    form.chatCheck:SetChecked(true)
+    click(form.post)
+    do
+        local sent = grpSent()
+        check("...Update sends a newer version, and nothing in guild chat",
+            #sent == 1 and sent[1] == P("Player-1-Tester", t, t + 1, 25, "T", "0,1,3", 1, note) and #guildChat == chatBefore + 1, all(sent))
+    end
+
+    -- 4. Automatic changes are sent at most every 3.2 s.
+    for n = 1, 3 do
+        GROUP.members[n] = pug(n)
+        fire("GROUP_ROSTER_UPDATE")
+    end
+    do
+        local waiting, before = queued(3.2), grpSent()
+        flush()
+        local after = grpSent()
+        check("group posts: three people joining (roles unknown) give one P, 3.2 s later, with the new size",
+            waiting == 1 and #before == 0 and #after == 1 and after[1]:find("^P\tPlayer%-1%-Tester\t" .. t .. "\t%d+\t25\tT\t0,1,3\t4\t") ~= nil, all(after))
+        GROUP.members = {}
+        fire("GROUP_ROSTER_UPDATE")
+        flush()
+        after = grpSent()
+        check("...leaving the group does not close the post; the new size goes out",
+            grpDB().mine["Tester-Stormrage"] ~= nil and #after == 1 and after[1]:find("\t0,1,3\t1\t") ~= nil, all(after))
+    end
+
+    -- 5. Others' posts.
+    local now = SERVER_NOW
+    grpReceive(P("Player-1-Altine", now, now, 32, "D", "1,1,1", 3, "rask run"))
+    do
+        local rows = postRows()
+        local altRow = rows[2]
+        local three = "1 " .. roleIcon("T", 16) .. " 1 " .. roleIcon("H", 16) .. " 1 " .. roleIcon("D", 16)
+        check("group posts: Altine's post shows after yours, with name, needs, dungeon, has, size, note and age",
+            #rows == 2 and rows[1].post.mine and altRow.name.text == "Altine" and colour(altRow.name.color, 0.25, 0.78, 0.92)
+            and altRow.needs.text == nb.DG_POST_NEEDS:format(three)
+            and altRow.info.text == "|cffffd100Stratholme: Living|r - " .. nb.DG_POST_HAS:format(roleIcon("D")) .. " - " .. nb.DG_POST_SIZE:format(3, 5)
+                .. " - |cff999999\"rask run\"|r - " .. nb.DG_POST_AGO:format(0)
+            and altRow.ask:IsShown() and altRow.whisper:IsShown() and not altRow.edit:IsShown() and altRow.whisper.label.text == nb.DG_WHISPER
+            and area.postsHeader.text == nb.DG_POSTS_HEADER:format(2), altRow and altRow.info.text)
+        altRow:Fire("OnEnter")
+        check("...hovering it tells who, level, dungeon, has and needs, the note and when it closes",
+            GameTooltip.lines[1] == "Altine" and GameTooltip.lines[2] == "58" and GameTooltip.lines[3] == "Stratholme: Living (58-60)"
+            and GameTooltip.lines[4] == nb.DG_POST_HAS:format(dIcon .. " DPS")
+            and GameTooltip.lines[5] == nb.DG_POST_NEEDS:format("1 " .. roleIcon("T") .. " Tank, 1 " .. roleIcon("H") .. " Healer, 1 " .. dIcon .. " DPS")
+            and GameTooltip.lines[6] == "\"rask run\"" and GameTooltip.lines[7] == nb.DG_POST_CLOSES:format(60), table.concat(GameTooltip.lines, " / "))
+        altRow:Fire("OnLeave")
+    end
+    local function postOf(key)
+        for _, found in ipairs(ns.GroupPosts()) do if found.post.key == key then return found end end
+    end
+    clearChat()
+    grpReceive(P("Player-1-Altine", now, now + 10, 99, "D", "1,1,1", 3, ""))                  -- unknown dungeon
+    grpReceive(P("Player-1-Altine", now, now + 11, 32, "D", "0,0,0", 3, ""))                  -- needs nobody
+    grpReceive(P("Player-1-Altine", now, now + 12, 32, "D", "1,1,3", 3, ""))                  -- 5 for a dungeon
+    grpReceive(P("Player-1-Altine", now + 400, now + 400, 32, "D", "1,1,1", 3, ""))           -- from the future
+    grpReceive(P("Player-1-Altine", now - 3901, now + 13, 32, "D", "1,1,1", 3, ""))           -- made over an hour ago
+    grpReceive(P("Player-1-Altine", now - 10, now - 5, 32, "D", "1,1,1", 3, ""))              -- older than ours
+    grpReceive(P("Player-1-Altine", now, now + 14, 32, "D", "1,1,1", 3, ""), "Borin-Stormrage") -- someone else sends it
+    grpReceive(P("Player-1-Altine", now, now + 15, 32, "DX", "1,1,1", 3, ""))                 -- a role that does not exist
+    grpReceive("P\tgarbage")
+    grpReceive("garbage")
+    check("...broken, impossible, old and forged versions are ignored",
+        postOf("Player-1-Altine").post.updated == now and postOf("Player-1-Altine").post.need.T == 1 and #chat == 0, chatText())
+    grpReceive(P("Player-1-Borin", now, now, 25, "", "1,0,0", 2, ""), "Borin-Stormrage")
+    do
+        local borin = postOf("Player-1-Borin")
+        check("...a post from a leader the roster still shows as offline is taken (the message proves they are online), and counts as open",
+            borin ~= nil and borin.member.online == false and #postRows() == 3)
+    end
+    grpReceive("X\tPlayer-1-Borin\t" .. now .. "\t" .. (now + 1), "Borin-Stormrage")
+    local closedGone = postOf("Player-1-Borin") == nil and #postRows() == 2
+    grpReceive(P("Player-1-Borin", now, now + 1, 25, "", "1,0,0", 2, ""), "Borin-Stormrage")
+    check("...X closes it, and a version from before the X is ignored", closedGone and postOf("Player-1-Borin") == nil)
+
+    -- 6. The pop-up.
+    clearChat()
+    click(dg.leadStop)
+    do
+        local sent = grpSent()
+        check("group posts: Stop looking closes your post: X goes out quietly, and the band goes back",
+            #sent == 1 and sent[1] == "X\tPlayer-1-Tester\t" .. t .. "\t" .. SERVER_NOW and grpDB().mine["Tester-Stormrage"] == nil
+            and dg.lead.label.text == nb.DG_LEAD and not dg.leadStop:IsShown() and #chat == 0, all(sent))
+    end
+    beD({ D = true })
+    stSent()
+    SOUNDS_PLAYED = {}
+    grpReceive(P("Player-1-Altine", now, now + 20, 32, "D", "1,1,1", 3, "rask run"))
+    local toast = DragonworldGroupToast
+    do
+        local point, rel, relPoint, x, y = toast:GetPoint(1)
+        check("group posts: a post that fits you (role and level) pops up in green, with the invite sound",
+            toast:IsShown() and toast.strata == "HIGH" and toast.borderColor[2] == 1.00 and toast.title.text == nb.DG_TOAST_TITLE
+            and toast.text.text == nb.DG_TOAST_TEXT:format("Altine", "Stratholme: Living", "1 " .. roleIcon("T") .. " Tank, 1 " .. roleIcon("H") .. " Healer, 1 " .. dIcon .. " DPS")
+                .. "\n|cff999999\"rask run\"|r"
+            and toast.primary.label.text == nb.DG_ASK and toast.secondary.label.text == nb.DG_WHISPER and SOUNDS_PLAYED[#SOUNDS_PLAYED] == 880
+            and point == "TOP" and rel == UIParent and relPoint == "TOP" and x == 0 and y == -250, toast.text.text)
+    end
+    told = nil
+    click(toast.secondary)
+    check("...Whisper whispers the leader and closes it", told == "Altine-Stormrage" and not toast:IsShown())
+    grpReceive(P("Player-1-Altine", now, now + 21, 32, "D", "1,1,1", 3, "rask run"))
+    local twice = toast:IsShown()
+    grpReceive(P("Player-1-Altine", now + 30, now + 30, 32, "D", "1,1,1", 3, ""))
+    local repost = toast:IsShown()
+    dg.toastCheck:SetChecked(false)
+    click(dg.toastCheck)
+    local savedOff = grpDB().toast == false
+    grpReceive(P("Player-1-Borin", now, now + 2, 25, "", "0,0,2", 2, ""), "Borin-Stormrage")
+    local off = toast:IsShown()
+    dg.toastCheck:SetChecked(true)
+    click(dg.toastCheck)
+    ns.SetMyStatus("C")
+    grpReceive(P("Player-1-Dagny", now, now, 25, "", "0,0,2", 2, ""), "Dagny-Stormrage")
+    local busy = toast:IsShown()
+    beD({ D = true })
+    INSTANCE.inside, INSTANCE.type = true, "party"
+    grpReceive(P("Player-1-Eira", now, now, 25, "", "0,0,2", 2, ""), "Eira-Stormrage")
+    local inside = toast:IsShown()
+    INSTANCE.inside, INSTANCE.type = false, "none"
+    grpReceive(P("name:cedric", now - 901, now - 901, 25, "", "0,0,2", 2, ""), "Cedric-Stormrage")
+    local old = toast:IsShown()
+    check("...but not for the same post twice, a new post by the same leader within 10 minutes, with pop-ups off (saved), on Do not disturb, inside an instance, or older than 15 minutes",
+        not twice and not repost and savedOff and grpDB().toast == nil and not off and not busy and not inside and not old and ns.GroupToastQueueLength() == 0
+        and postOf("name:cedric") ~= nil)
+
+    clock = clock + 700                    -- ten minutes pass
+    inCombat = true
+    grpReceive(P("Player-1-Altine", now + 40, now + 40, 25, "", "0,0,2", 2, ""))
+    local held = not toast:IsShown() and ns.GroupToastQueueLength() == 1
+    inCombat = false
+    fire("PLAYER_REGEN_ENABLED")
+    check("...in combat it waits, and shows when the fight is over",
+        held and toast:IsShown() and toast.text.text == nb.DG_TOAST_TEXT:format("Altine", "Blackrock Depths", "2 " .. dIcon .. " DPS"), toast.text.text)
+    click(toast.close)
+    inCombat = true
+    grpReceive(P("Player-1-Borin", now + 40, now + 40, 25, "", "0,0,2", 2, ""), "Borin-Stormrage")
+    local queuedBorin = ns.GroupToastQueueLength() == 1
+    grpReceive("X\tPlayer-1-Borin\t" .. (now + 40) .. "\t" .. (now + 41), "Borin-Stormrage")
+    inCombat = false
+    fire("PLAYER_REGEN_ENABLED")
+    check("...a waiting pop-up for a post that has closed is dropped", queuedBorin and not toast:IsShown() and ns.GroupToastQueueLength() == 0)
+    clock = clock + 700
+    inCombat = true
+    grpReceive(P("Player-1-Altine", now + 50, now + 50, 25, "", "0,0,2", 2, ""))
+    grpReceive(P("Player-1-Dagny", now + 50, now + 50, 25, "", "0,0,2", 2, ""), "Dagny-Stormrage")
+    grpReceive(P("Player-1-Eira", now + 50, now + 50, 25, "", "0,0,2", 2, ""), "Eira-Stormrage")
+    grpReceive(P("name:cedric", now + 50, now + 50, 25, "", "0,0,2", 2, ""), "Cedric-Stormrage")
+    local waiting = ns.GroupToastQueueLength()
+    clock = clock + 700
+    grpReceive(P("Player-1-Altine", now + 60, now + 60, 32, "", "0,0,2", 2, ""))
+    local stillWaiting = ns.GroupToastQueueLength()
+    inCombat = false
+    fire("PLAYER_REGEN_ENABLED")
+    do
+        local first = toast.text.text
+        click(toast.close)
+        local second = toast.text.text
+        click(toast.close)
+        click(toast.close)
+        check("...at most 3 wait, first in first out, and the same leader replaces their waiting one",
+            waiting == 3 and stillWaiting == 3 and first:find("^Altine") ~= nil and first:find("Stratholme: Living", 1, true) ~= nil
+            and second:find("^Dagny") ~= nil and not toast:IsShown() and ns.GroupToastQueueLength() == 0, first .. " / " .. second)
+    end
+    -- Cedric's post above came while 3 were waiting, so it was dropped, not shown.
+    grpReceive(P("name:cedric", now + 50, now + 51, 25, "", "0,0,2", 2, ""), "Cedric-Stormrage")
+    check("...a pop-up dropped from a full queue does not count as shown: the post can still pop up once there is room",
+        toast:IsShown() and toast.text.text:find("Cedric", 1, true) ~= nil, toast.text.text)
+    click(toast.close)
+
+    -- 7. The blink. (The posts above were made up to a minute ahead of the clock.)
+    click(rsChip)
+    SERVER_NOW = now + 100
+    for _, alert in ipairs(ns.ALERTS) do ns.MarkAlertSeen(alert.kind) end
+    local quiet = not ns.IsBlinking()
+    SERVER_NOW = SERVER_NOW + 1
+    local n2 = SERVER_NOW
+    grpReceive(P("Player-1-Eira", n2, n2, 25, "", "1,0,0", 2, ""), "Eira-Stormrage")      -- needs a tank; you are DPS
+    grpReceive(P("Player-1-Dagny", n2, n2, 2, "", "0,0,2", 2, ""), "Dagny-Stormrage")     -- Ragefire Chasm: not for level 60
+    ns.RefreshAlerts()
+    local notFitting = not ns.IsBlinking()
+    grpReceive(P("Player-1-Altine", n2, n2, 25, "", "0,0,2", 2, ""))
+    ns.RefreshAlerts()
+    do
+        local items = ns.ALERTS[4].Items(ns.AlertSeenTime("dungeon"))
+        check("group posts: a post that fits you makes the buttons blink green, with a line in the list; posts for another role or level do not",
+            quiet and notFitting and ns.IsBlinking() and #items == 1 and items[1] == nb.AL_GROUP_ITEM:format("Altine", "Blackrock Depths", "2 " .. dIcon), all(items))
+    end
+    if toast:IsShown() then click(toast.close) end
+    ns.MarkAlertSeen("dungeon")
+
+    -- 8. Asking to join (as DPS).
+    click(dgChip)
+    clearChat()
+    click(rowOf("Altine").ask)
+    do
+        local sent = grpSent()
+        local altRow = rowOf("Altine")
+        check("group posts: Ask to join with one fitting role sends the request at once, says so in chat, and shows Asked",
+            #sent == 1 and sent[1] == "J\tPlayer-1-Altine\t" .. n2 .. "\tPlayer-1-Tester\tD\t60" and has(nb.DG_ASK_SENT:format("Altine", "DPS"))
+            and altRow.ask.label.text == "Spurte" and not altRow.ask:IsEnabled(), all(sent))
+    end
+    click(rowOf("Altine").ask)
+    local askedOnce = #grpSent() == 0
+    flush()
+    flush()
+    check("...a second click sends nothing, and after 2 minutes it offers to ask again",
+        askedOnce and rowOf("Altine").ask.label.text == nb.DG_ASK_AGAIN and rowOf("Altine").ask:IsEnabled())
+    ns.SetMyStatus("D", { dungeons = { [25] = true }, roles = { T = true, D = true } })
+    local later = SERVER_NOW + 100
+    grpReceive(P("Player-1-Borin", later, later, 25, "", "1,0,2", 2, ""), "Borin-Stormrage")
+    flushNow()
+    lastMenu = nil
+    click(rowOf("Borin").ask)
+    do
+        local menu = lastMenu
+        check("...with two fitting roles it asks which",
+            menu ~= nil and menu.titles[1] == nb.DG_ASK_PICK_ROLE and #menu.buttons == 2 and menu.buttons[1].text == roleIcon("T") .. " Tank"
+            and menu.buttons[2].text == dIcon .. " DPS" and #grpSent() == 0)
+        menu.buttons[2].click()
+        local sent = grpSent()
+        check("...and sends the one picked", #sent == 1 and sent[1] == "J\tPlayer-1-Borin\t" .. later .. "\tPlayer-1-Tester\tD\t60", all(sent))
+    end
+    ns.SetMyStatus("D", { dungeons = { [25] = true }, roles = {} })
+    grpReceive(P("Player-1-Dagny", n2, n2 + 1, 25, "", "1,1,1", 2, ""), "Dagny-Stormrage")
+    flushNow()
+    lastMenu = nil
+    click(rowOf("Dagny").ask)
+    check("...with no role chosen at all, the menu offers every role the group needs", lastMenu ~= nil and #lastMenu.buttons == 3 and #grpSent() == 0)
+    ns.SetMyStatus("D", { dungeons = { [25] = true }, roles = { H = true } })
+    flushNow()
+    do
+        local eiraRow = rowOf("Eira")
+        eiraRow.ask:Fire("OnEnter")
+        check("...with roles but none the group needs, Ask is greyed out and says why",
+            not eiraRow.ask:IsEnabled() and eiraRow.ask.label.text == nb.DG_ASK and GameTooltip:IsShown()
+            and GameTooltip.lines[1] == nb.DG_ASK_NO_ROLE:format(roleIcon("H") .. " Healer"), GameTooltip.lines[1])
+        eiraRow.ask:Fire("OnLeave")
+        lastMenu = nil
+        click(eiraRow.ask)
+        check("...and a click does nothing", lastMenu == nil and #grpSent() == 0)
+    end
+
+    -- 9. The leader's side.
+    ns.SetMyStatus("D", { dungeons = { [25] = true }, roles = { T = true } })
+    click(dg.lead)
+    form.noteBox:SetText("")
+    click(form.post)
+    local mineCreated = SERVER_NOW
+    grpSent()
+    stSent()
+    if toast:IsShown() then click(toast.close) end
+    local dText = dIcon .. " DPS"
+    grpReceive("J\tPlayer-1-Tester\t" .. mineCreated .. "\tPlayer-1-Altine\tD\t58")
+    do
+        local reqs = reqRows()
+        check("group posts: a request to join shows under your post, and pops up",
+            #reqs == 1 and reqs[1].text.text == nb.DG_REQ_LINE:format("Altine", 58, dText, 0) and reqs[1].invite.label.text == nb.DG_INVITE
+            and reqs[1].no.label.text == nb.DG_TOAST_NO and toast:IsShown() and toast.title.text == nb.DG_TOAST_REQ_TITLE
+            and toast.text.text == nb.DG_TOAST_REQ_TEXT:format("Altine", 58, dText) and toast.primary.label.text == nb.DG_INVITE
+            and toast.secondary.label.text == nb.DG_TOAST_NO, reqs[1] and reqs[1].text.text)
+        local invites = #GROUP.invites
+        click(reqs[1].invite)
+        reqs = reqRows()
+        check("...Invite invites Altine (an attempt), and the row and the pop-up say Invite sent",
+            #GROUP.invites == invites + 1 and GROUP.invites[#GROUP.invites] == "Altine-Stormrage" and reqs[1].invite.label.text == nb.DG_REQ_INVITED
+            and not reqs[1].invite:IsEnabled() and toast.primary.label.text == nb.DG_REQ_INVITED)
+    end
+    click(toast.close)
+    flush()
+    flush()
+    do
+        local reqs = reqRows()
+        check("...if she has not joined after 2 minutes, it can be sent again", #reqs == 1 and reqs[1].invite.label.text == nb.DG_INVITE and reqs[1].invite:IsEnabled())
+        click(reqs[1].no)
+        check("...No thanks hides the request and sends nothing", #reqRows() == 0 and #grpSent() == 0)
+    end
+    grpReceive("J\tPlayer-1-Tester\t" .. (mineCreated + 1) .. "\tPlayer-1-Altine\tD\t58")               -- another post
+    grpReceive("J\tPlayer-1-Tester\t" .. mineCreated .. "\tPlayer-1-Altine\tX\t58")                     -- no such role
+    grpReceive("J\tPlayer-1-Tester\t" .. mineCreated .. "\tPlayer-1-Altine\tD\t0")                      -- no such level
+    grpReceive("J\tPlayer-1-Tester\t" .. mineCreated .. "\tPlayer-1-Altine\tD\t58", "Borin-Stormrage")  -- forged
+    grpReceive("J\tPlayer-1-Altine\t" .. mineCreated .. "\tPlayer-1-Borin\tD\t42", "Borin-Stormrage")   -- for another leader
+    check("...requests for another post, with a bad role or level, forged, or for another leader are ignored", #reqRows() == 0 and not toast:IsShown())
+    grpReceive("J\tPlayer-1-Tester\t" .. mineCreated .. "\tPlayer-1-Altine\tD\t58")
+    if toast:IsShown() then click(toast.close) end
+    GROUP.members = { ALTINE }
+    fire("GROUP_ROSTER_UPDATE")
+    flush()
+    do
+        local sent = grpSent()
+        check("group posts: Altine joining as she asked lowers DPS by one, and the debounced P carries the new size",
+            grpDB().mine["Tester-Stormrage"].need == "0,1,2" and #sent == 1 and sent[1]:find("\t25\tT\t0,1,2\t2\t") ~= nil and #reqRows() == 0, all(sent))
+    end
+    stReceive("S\tPlayer-1-Eira\tD\t" .. SERVER_NOW .. "\t25\t\tHD", "Eira-Stormrage")
+    GROUP.members[2] = { name = "Eira", realm = "Stormrage", guid = "Player-1-Eira", class = "HUNTER", level = 35 }
+    fire("GROUP_ROSTER_UPDATE")
+    local ambiguous = grpDB().mine["Tester-Stormrage"].need
+    stReceive("S\tPlayer-1-Dagny\tD\t" .. SERVER_NOW .. "\t25\t\tH", "Dagny-Stormrage")
+    GROUP.members[3] = { name = "Dagny", realm = "Stormrage", guid = "Player-1-Dagny", class = "PRIEST", level = 60 }
+    fire("GROUP_ROSTER_UPDATE")
+    flush()
+    grpSent()
+    check("...someone joining without a request lowers the one needed role they have; two possible roles change nothing",
+        ambiguous == "0,1,2" and grpDB().mine["Tester-Stormrage"].need == "0,0,2", ambiguous .. " / " .. grpDB().mine["Tester-Stormrage"].need)
+    clearChat()
+    GROUP.members[4] = pug(9)
+    fire("GROUP_ROSTER_UPDATE")
+    do
+        local sent = grpSent()
+        check("...a full group (5) closes the post: X goes out, and chat says why",
+            grpDB().mine["Tester-Stormrage"] == nil and #sent == 1 and sent[1]:find("^X\tPlayer%-1%-Tester\t" .. mineCreated .. "\t") ~= nil
+            and has(nb.DG_POST_CLOSED_FULL), all(sent))
+    end
+    GROUP.members = {}
+    fire("GROUP_ROSTER_UPDATE")
+    beD({ T = true })
+    click(dg.lead)
+    for _, row in ipairs(form.needRows) do while row.minus:IsEnabled() do click(row.minus) end end
+    click(form.needRows[3].plus)
+    click(form.post)
+    grpSent()
+    stSent()
+    clearChat()
+    grpReceive("J\tPlayer-1-Tester\t" .. SERVER_NOW .. "\tPlayer-1-Altine\tD\t58")
+    if toast:IsShown() then click(toast.close) end
+    GROUP.members = { ALTINE }
+    fire("GROUP_ROSTER_UPDATE")
+    do
+        local sent = grpSent()
+        check("...and so does a group that no longer needs anyone",
+            grpDB().mine["Tester-Stormrage"] == nil and #sent == 1 and sent[1]:find("^X\t") ~= nil and has(nb.DG_POST_CLOSED_FULL), all(sent))
+    end
+
+    -- 10. A raid post.
+    GROUP.members = { pug(1), pug(2), pug(3), pug(4) }
+    fire("GROUP_ROSTER_UPDATE")
+    click(dg.lead)
+    lastMenu = nil
+    click(form.dungeonChip)
+    for _, radio in ipairs(lastMenu.radios) do if radio.text == "Molten Core (raid, 60)" then radio.click() end end
+    click(form.needRows[3].plus)
+    click(form.needRows[3].plus)
+    click(form.post)
+    do
+        local raidCreated = SERVER_NOW
+        local sent = grpSent()
+        grpReceive("J\tPlayer-1-Tester\t" .. raidCreated .. "\tPlayer-1-Altine\tD\t58")
+        local reqs = reqRows()
+        local converted, invites = GROUP.converted, #GROUP.invites
+        local label, toastLabel = reqs[1] and reqs[1].invite.label.text, toast.primary.label.text
+        click(reqs[1].invite)
+        check("group posts: a raid post with a full party offers Make raid first; the click makes the raid and invites nobody",
+            #sent == 1 and sent[1]:find("\t101\t") ~= nil and label == nb.DG_MAKE_RAID and toastLabel == nb.DG_MAKE_RAID
+            and GROUP.converted == converted + 1 and #GROUP.invites == invites, tostring(label) .. " " .. all(sent))
+        fire("GROUP_ROSTER_UPDATE")
+        reqs = reqRows()
+        check("...once the game reports a raid, the button reads Invite again", reqs[1].invite.label.text == nb.DG_INVITE and toast.primary.label.text == nb.DG_INVITE
+            and grpDB().mine["Tester-Stormrage"] ~= nil)
+    end
+    click(toast.close)
+    click(dg.leadStop)
+    GROUP.members, GROUP.raid = {}, false
+    fire("GROUP_ROSTER_UPDATE")
+    grpSent()
+
+    -- 10b. Nobody lowers a need twice.
+    do
+        beD({ T = true })
+        click(dg.lead)
+        click(form.post)                    -- 0,1,3 from the status
+        local created = SERVER_NOW
+        grpSent()
+        stSent()
+        grpReceive("J\tPlayer-1-Tester\t" .. created .. "\tPlayer-1-Altine\tD\t58")
+        if toast:IsShown() then click(toast.close) end
+        local function need() local mine = grpDB().mine["Tester-Stormrage"]; return mine and mine.need or "closed" end
+        GROUP.members = { ALTINE }
+        fire("GROUP_ROSTER_UPDATE")
+        local joined = need()
+        GROUP.members = { { name = "Altine", realm = "Stormrage", class = "MAGE", level = 58 } }   -- her GUID cannot be read
+        fire("GROUP_ROSTER_UPDATE")
+        GROUP.members = { ALTINE }
+        fire("GROUP_ROSTER_UPDATE")
+        local hidden = need()
+        GROUP.members = {}
+        fire("GROUP_ROSTER_UPDATE")
+        GROUP.members = { ALTINE }
+        fire("GROUP_ROSTER_UPDATE")
+        check("group posts: someone counted once does not lower the need again, after a GUID that could not be read or after leaving and coming back",
+            joined == "0,1,2" and hidden == "0,1,2" and need() == "0,1,2", joined .. " / " .. hidden .. " / " .. need())
+        click(dg.leadStop)
+        GROUP.members = {}
+        fire("GROUP_ROSTER_UPDATE")
+        flush()
+        grpSent()
+        stSent()
+    end
+
+    -- 11. Closing by itself.
+    local function postDefault()
+        beD({ T = true })                   -- the form takes its dungeon from the status
+        click(dg.lead)
+        click(form.post)
+        grpSent()
+        stSent()
+    end
+    postDefault()
+    clearChat()
+    SERVER_NOW = SERVER_NOW + 3601
+    flush()
+    do
+        local sent = grpSent()
+        check("group posts: after an hour the post closes by itself",
+            grpDB().mine["Tester-Stormrage"] == nil and #sent == 1 and sent[1]:find("^X\t") ~= nil and has(nb.DG_POST_CLOSED_TIME), all(sent))
+    end
+    postDefault()
+    clearChat()
+    INSTANCE.inside, INSTANCE.type = true, "party"
+    fire("ZONE_CHANGED_NEW_AREA")
+    do
+        local sent = grpSent()
+        check("...and when you go into the dungeon",
+            grpDB().mine["Tester-Stormrage"] == nil and #sent == 1 and sent[1]:find("^X\t") ~= nil and has(nb.DG_POST_CLOSED_INSTANCE), all(sent))
+    end
+    INSTANCE.inside, INSTANCE.type = false, "none"
+    fire("ZONE_CHANGED_NEW_AREA")
+    postDefault()
+    INSTANCE.inside, INSTANCE.type = true, "party"
+    fire("PLAYER_ENTERING_WORLD", false, true)
+    flush()
+    check("...but a /reload while already inside changes nothing", grpDB().mine["Tester-Stormrage"] ~= nil)
+    INSTANCE.inside, INSTANCE.type = false, "none"
+    fire("ZONE_CHANGED_NEW_AREA")
+    flush()
+    for _, prefix in ipairs({ "DragonworldSt", "DragonworldPf", "DragonworldAch", "DragonworldEv", "DragonworldPr" }) do sentNow(prefix) end
+
+    -- 12. Someone logs in.
+    grpSent()
+    grpReceive("R", "Nykommer-Stormrage")
+    do
+        local waitingR = queued(3.5)
+        flush()
+        local sent = grpSent()
+        check("group posts: someone logging in (R) gets our open post, after a little while",
+            waitingR >= 1 and #sent == 1 and sent[1]:find("^P\tPlayer%-1%-Tester\t") ~= nil, all(sent))
+    end
+    click(dg.leadStop)
+    grpSent()
+    grpReceive("R", "Nykommer-Stormrage")
+    flush()
+    check("...with no post we stay quiet", #grpSent() == 0)
+
+    -- 13. After a /reload.
+    do
+        local db = grpDB()
+        local n3 = SERVER_NOW
+        db.mine["Tester-Stormrage"] = { created = n3 - 100, updated = n3 - 50, dungeon = 25, have = "", need = "0,1,3", size = 1, note = "" }
+        db.mine["Gammel-Stormrage"] = { created = n3 - 4000, updated = n3 - 4000, dungeon = 25, have = "", need = "0,1,3", size = 1, note = "" }
+        db.mine["Rot-Stormrage"] = { created = "i går", dungeon = 25, need = "0,1,3" }
+        db.mine["Feil-Stormrage"] = { created = n3, updated = n3, dungeon = 999, need = "0,1,3" }
+        ns.modules.dungeons:OnLoad(db)
+        local afterLoad = db.mine["Rot-Stormrage"] == nil and db.mine["Feil-Stormrage"] == nil and db.mine["Gammel-Stormrage"] ~= nil
+        ns.RestartGroupHello()
+        flush()
+        local sent = grpSent()
+        check("group posts: after a /reload a saved post under an hour old is sent again at the hello; broken ones go at load, old ones at the hello",
+            afterLoad and db.mine["Gammel-Stormrage"] == nil and #sent == 2 and sent[1] == "R"
+            and sent[2] == P("Player-1-Tester", n3 - 100, n3 - 50, 25, "", "0,1,3", 1, "") and dg.leadStop:IsShown(), all(sent))
+    end
+    click(dg.leadStop)
+    grpSent()
+    do
+        -- A saved post from hours ago, before the hello has removed it.
+        local db = grpDB()
+        local n3 = SERVER_NOW
+        db.mine["Tester-Stormrage"] = { created = n3 - 7200, updated = n3 - 7200, dungeon = 25, have = "", need = "0,0,1", size = 1, note = "",
+                                        known = {}, counted = {} }
+        clearChat()
+        GROUP.members = { ALTINE }
+        fire("GROUP_ROSTER_UPDATE")
+        local sent, waitingP = grpSent(), queued(3.2)
+        check("...a saved post older than an hour counts as closed even before the hello: no band, and joining a group sends nothing for it",
+            not dg.leadStop:IsShown() and dg.lead.label.text == nb.DG_LEAD and #sent == 0 and waitingP == 0 and not has(nb.DG_POST_CLOSED_FULL)
+            and db.mine["Tester-Stormrage"].need == "0,0,1", all(sent))
+        db.mine["Tester-Stormrage"] = nil
+        GROUP.members = {}
+        fire("GROUP_ROSTER_UPDATE")
+        flush()
+        grpSent()
+    end
+
+    -- 14. "Open for dungeons" for an hour at a time.
+    clearChat()
+    beD({ D = true })
+    stSent()
+    -- (Several changes within the same second each move the status time on by one.)
+    SERVER_NOW = select(2, ns.GetMyStatus()).time + 3600
+    flush()
+    local notYet = ns.GetMyStatus() == "D" and #stSent() == 0
+    SERVER_NOW = SERVER_NOW + 1
+    flush()
+    do
+        local st = stSent()
+        check("'open for dungeons' turns itself off after an hour, tells the guild, and says so in chat",
+            notYet and ns.GetMyStatus() == nil and #st == 1 and st[1]:find("^S\tPlayer%-1%-Tester\t%-\t") ~= nil and has(nb.ST_EXPIRED), all(st))
+    end
+    beD({ D = true })
+    stSent()
+    SERVER_NOW = SERVER_NOW + 600
+    flush()
+    do
+        local myRow
+        for _, row in ipairs(members()) do if row.found.me then myRow = row end end
+        local left = ns.MyStatusTimeLeft()
+        myRow.keep:Fire("OnEnter")
+        local tip = GameTooltip.lines[1]
+        myRow.keep:Fire("OnLeave")
+        click(myRow.keep)
+        local st = stSent()
+        check("'Keep me listed' on your own row starts the hour again: one S, and an hour left",
+            left > 2990 and left < 3010 and tip == nb.DG_KEEP_TIP:format(math.ceil(left / 60)) and #st == 1 and st[1]:find("^S\tPlayer%-1%-Tester\tD\t" .. SERVER_NOW .. "\t") ~= nil
+            and ns.MyStatusTimeLeft() == 3600, tostring(tip) .. " / " .. all(st))
+    end
+    clearChat()
+    INSTANCE.inside, INSTANCE.type = true, "party"
+    fire("ZONE_CHANGED_NEW_AREA")
+    check("going into a dungeon turns 'open for dungeons' off, and says so", ns.GetMyStatus() == nil and has(nb.ST_EXPIRED_INSTANCE))
+    beD({ D = true })
+    fire("ZONE_CHANGED_NEW_AREA")
+    local survives = ns.GetMyStatus() == "D"
+    INSTANCE.inside, INSTANCE.type = false, "none"
+    fire("ZONE_CHANGED_NEW_AREA")
+    survives = survives and ns.GetMyStatus() == "D"
+    INSTANCE.inside, INSTANCE.type = true, "raid"
+    fire("ZONE_CHANGED_NEW_AREA")
+    check("...turned on again inside, it lasts until the next time you go in (a raid counts too)", survives and ns.GetMyStatus() == nil)
+    INSTANCE.inside, INSTANCE.type = false, "none"
+    fire("ZONE_CHANGED_NEW_AREA")
+    stSent()
+    local function rosterRow(name)
+        for _, row in ipairs(DragonworldRosterScroll.scrollChild.children) do
+            if row:IsShown() and row.member and row.member.name == name then return row end
+        end
+    end
+    local function listed(name)
+        for _, found in ipairs(ns.MembersWithStatus("D")) do if found.member.name == name then return true end end
+        return false
+    end
+    local function dungeonRow(name)
+        for _, row in ipairs(members()) do if row.found.member.name == name then return true end end
+        return false
+    end
+    stReceive("S\tPlayer-1-Altine\tD\t" .. (SERVER_NOW - 100) .. "\t25\tL\tD")
+    flush()
+    local freshListed, freshRow = listed("Altine"), dungeonRow("Altine")
+    SERVER_NOW = SERVER_NOW + 3600
+    flush()
+    local staleListed = listed("Altine")
+    click(roChip)
+    flush()
+    local icon = rosterRow("Altine").statusIcon:IsShown()
+    click(dgChip)
+    local staleRow = dungeonRow("Altine")
+    check("another member's 'open for dungeons' older than an hour is gone everywhere: the list, the Dungeons tab and the roster icon",
+        freshListed and freshRow and not staleListed and not staleRow and not icon)
+    do
+        local function wishes() return #ns.ALERTS[4].Items(ns.AlertSeenTime("dungeon")) end
+        click(roChip)                       -- (an open Dungeons tab marks what is new as seen)
+        SERVER_NOW = SERVER_NOW + 1
+        stReceive("S\tPlayer-1-Altine\tD\t" .. SERVER_NOW .. "\t25\t\tD")
+        local fresh = wishes()
+        ns.MarkAlertSeen("dungeon")
+        SERVER_NOW = SERVER_NOW + 600
+        stReceive("S\tPlayer-1-Altine\tD\t" .. SERVER_NOW .. "\t25\t\tD")      -- "Keep me listed"
+        local renewed = wishes()
+        local stillListed = listed("Altine")
+        SERVER_NOW = SERVER_NOW + 1
+        stReceive("S\tPlayer-1-Altine\tD\t" .. SERVER_NOW .. "\t25,32\t\tD")   -- another dungeon
+        local changed = wishes()
+        check("...a renewed hour ('Keep me listed') with nothing else changed is not new again; a change is",
+            fresh == 1 and renewed == 0 and stillListed and changed == 1, fresh .. " / " .. renewed .. " / " .. changed)
+        stReceive("S\tPlayer-1-Altine\t-\t" .. (SERVER_NOW + 1) .. "\t\t")
+        ns.MarkAlertSeen("dungeon")
+        click(dgChip)
+    end
+
+    -- 15. Filters.
+    local n4 = SERVER_NOW
+    grpReceive(P("Player-1-Altine", n4, n4, 25, "", "0,0,2", 2, ""))
+    grpReceive(P("Player-1-Borin", n4, n4, 32, "T", "0,1,0", 2, ""), "Borin-Stormrage")
+    if toast:IsShown() then click(toast.close) end
+    lastMenu = nil
+    click(dg.filter)
+    do
+        local strat, names = nil, {}
+        for _, radio in ipairs(lastMenu.radios) do
+            names[#names + 1] = radio.text
+            if radio.text == "Stratholme: Living" then strat = radio end
+        end
+        check("group posts: the dungeon filter also offers the dungeons of the posts", strat ~= nil, all(names))
+        strat.click()
+        local onlyBorin = #postRows() == 1 and postRows()[1].member.name == "Borin"
+        lastMenu.radios[1].click()
+        lastMenu = nil
+        click(dg.roleFilter)
+        local roleMenu = lastMenu
+        roleMenu.radios[3].click()
+        local healer = #postRows() == 1 and postRows()[1].member.name == "Borin"
+        roleMenu.radios[2].click()
+        local tank = not area:IsShown()
+        roleMenu.radios[1].click()
+        check("...the filters apply to posts: the dungeon, and a role the group needs", onlyBorin and healer and tank and #postRows() == 2)
+        -- Your own post needs a healer and DPS, not a tank.
+        beD({ T = true })
+        click(dg.lead)
+        click(form.post)
+        grpSent()
+        stSent()
+        grpReceive("J\tPlayer-1-Tester\t" .. SERVER_NOW .. "\tPlayer-1-Altine\tD\t58")
+        if toast:IsShown() then click(toast.close) end
+        roleMenu.radios[2].click()
+        local rows = postRows()
+        check("...but not to your own post: with a Tank filter it still shows, with the request to join under it",
+            area:IsShown() and #rows == 1 and rows[1].post.mine and #reqRows() == 1)
+        roleMenu.radios[1].click()
+        click(dg.leadStop)
+        grpSent()
+    end
+
+    -- 16. Language, debug and the example.
+    ns.SetLanguage("en", true)
+    check("group posts: switching language rewrites the band and the posts",
+        dg.lead.label.text == "Lead a group" and dg.leadText.text == ns.strings.en.DG_LEAD_HINT and area.postsHeader.text == "Groups looking for players (2)"
+        and rowOf("Altine").whisper.label.text == "Whisper")
+    ns.SetLanguage("nb", true)
+    clearChat()
+    dw("debug")
+    check("...and /dw debug has a [grupper] part", has("[grupper]") and has("andres poster:") and has("dungeon-tid igjen:"), chatText())
+    clearChat()
+    ns.ShowGroupToastSample()
+    check("...an example pop-up can be shown", toast:IsShown() and toast.title.text == nb.DG_TOAST_TITLE and toast.text.text:find("^Tester") ~= nil, toast.text.text)
+    click(toast.primary)
+    check("...and its buttons only close it", not toast:IsShown() and #grpSent() == 0)
+
+    -- Leave things as the remaining tests expect.
+    for _, leader in ipairs({ { "Player-1-Altine", "Altine-Stormrage" }, { "Player-1-Borin", "Borin-Stormrage" }, { "Player-1-Dagny", "Dagny-Stormrage" },
+                              { "Player-1-Eira", "Eira-Stormrage" }, { "name:cedric", "Cedric-Stormrage" } }) do
+        grpReceive("X\t" .. leader[1] .. "\t" .. (SERVER_NOW + 200) .. "\t" .. (SERVER_NOW + 200), leader[2])
+    end
+    stReceive("S\tPlayer-1-Altine\t-\t" .. SERVER_NOW .. "\t\t")
+    stReceive("S\tPlayer-1-Eira\t-\t" .. SERVER_NOW .. "\t\t", "Eira-Stormrage")
+    stReceive("S\tPlayer-1-Dagny\t-\t" .. SERVER_NOW .. "\t\t", "Dagny-Stormrage")
+    ns.SetMyStatus(nil)
+    GROUP.members, GROUP.raid, GROUP.invites, GROUP.converted = {}, false, savedInvites, savedConverted
+    INSTANCE.inside, INSTANCE.type, INSTANCE.name, INSTANCE.map = false, "none", "", 0
+    ns.WhisperTo = realWhisper
+    flush()
+    check("group posts: (tidied up: no posts left)", #ns.GroupPosts() == 0 and not area:IsShown())
+    grpSent()
+    stSent()
+    sentNow("DragonworldPf")
+    clearChat()
+    kbChip.scripts.OnClick(kbChip)
+end)()
+
+-- ===== group size (Modules\Dungeons.lua): a dungeon's or raid's own size, other sizes, "Other group", counts for "We have" =====
+;(function()
+    local GRP = "DragonworldGrp"
+    local nb = ns.strings.nb
+    local function all(list) return table.concat(list, " ; ") end
+    local function click(button) button.scripts.OnClick(button) end
+    local function press(button, times) for _ = 1, times do click(button) end end
+    local function grpReceive(text, sender) fire("CHAT_MSG_ADDON", GRP, text, "GUILD", sender or "Altine-Stormrage") end
+    local function grpSent() return sentNow(GRP) end
+    local function grpDB() return DragonworldDB.modules.dungeons end
+    local function P(...) return table.concat({ "P", ... }, TAB) end
+    local function roleIcon(code, size)
+        for _, role in ipairs(ns.ROLES) do if role.code == code then return ns.RoleIcon(role, size) end end
+    end
+    local function pug(n) return { name = "Pug" .. n, realm = "Faraway", guid = "Player-2-Pug" .. n, class = "MAGE", level = 60 } end
+    local ALTINE = { name = "Altine", realm = "Stormrage", guid = "Player-1-Altine", class = "MAGE", level = 58 }
+    local savedInvites, savedConverted = { table.unpack(GROUP.invites) }, GROUP.converted
+    -- What the first version of group posts (before the group size) makes of
+    -- a P message: its G.OnPost without the sender and time checks. nil = ignored.
+    local OLD_KIND = { [101] = "raid", [102] = "raid" }
+    for id = 1, 35 do OLD_KIND[id] = "dungeon" end
+    local function oldParse(text)
+        local fields = {}
+        for field in (text .. TAB):gmatch("(.-)" .. TAB) do fields[#fields + 1] = field end
+        local kind = OLD_KIND[tonumber(fields[5]) or -1]
+        local t, h, d = (fields[7] or ""):match("^(%d+),(%d+),(%d+)$")
+        t, h, d = tonumber(t), tonumber(h), tonumber(d)
+        local size, have = tonumber(fields[8]), fields[6] or ""
+        if fields[1] ~= "P" or not kind or not (t and h and d and size) or t > 39 or h > 39 or d > 39 then return nil end
+        local sum = t + h + d
+        if sum < 1 or (kind ~= "raid" and sum > 4) or size < 1 or size > 40 or not have:find("^[THD]*$") or #have > 3 then return nil end
+        return { dungeon = tonumber(fields[5]), have = have, need = fields[7], size = size, note = fields[9] or "" }
+    end
+
+    -- Clear of the X messages and pop-ups of the section above.
+    SERVER_NOW = SERVER_NOW + 301
+    clock = clock + 700
+    click(chipByID.dungeons)
+    local dg = DragonworldDungeonsScroll.parent
+    local area = dg.postArea
+    local form = DragonworldGroupForm
+    local toast = DragonworldGroupToast
+    local function postRows()
+        local out = {}
+        for _, row in ipairs(area.postRows) do if row:IsShown() then out[#out + 1] = row end end
+        return out
+    end
+    local function reqRows()
+        local out = {}
+        for _, row in ipairs(area.requestRows) do if row:IsShown() then out[#out + 1] = row end end
+        return out
+    end
+    local function rowOf(name)
+        for _, row in ipairs(postRows()) do if row.member and row.member.name == name then return row end end
+    end
+    local function postOf(key)
+        for _, found in ipairs(ns.GroupPosts()) do if found.post.key == key then return found.post end end
+    end
+    local function closeToast() if toast:IsShown() then click(toast.close) end end
+    local function chosenSize()
+        local chosen = {}
+        for _, chip in ipairs(form.sizeChips) do if chip.selected then chosen[#chosen + 1] = chip.size end end
+        return #chosen == 1 and chosen[1] or nil
+    end
+    local function sizeChip(n) for _, chip in ipairs(form.sizeChips) do if chip.size == n then return chip end end end
+    local function pick(text)
+        lastMenu = nil
+        click(form.dungeonChip)
+        for _, radio in ipairs(lastMenu.radios) do
+            if radio.text == text then radio.click() return end
+        end
+        error("not in the dungeon menu: " .. text)
+    end
+    local function nums(rows) return rows[1].count.text .. "," .. rows[2].count.text .. "," .. rows[3].count.text end
+    local function setCounts(rows, t, h, d)
+        for _, row in ipairs(rows) do while row.minus:IsEnabled() do click(row.minus) end end
+        press(rows[1].plus, t)
+        press(rows[2].plus, h)
+        press(rows[3].plus, d)
+    end
+    local function ticksShown() return form.haveChecks[1]:IsShown() and form.haveChecks[2]:IsShown() and form.haveChecks[3]:IsShown() end
+    -- Every part of the three "We have" counts shown (want = true) or hidden.
+    local function countsShown(want)
+        for _, row in ipairs(form.haveRows) do
+            for _, part in ipairs({ row.label, row.minus, row.count, row.plus }) do
+                if (part:IsShown() and true or false) ~= want then return false end
+            end
+        end
+        return true
+    end
+
+    -- 1. The form: the size control, a dungeon's and a raid's own size.
+    ns.SetMyStatus("D", { dungeons = { [25] = true }, roles = { T = true } })
+    sentNow("DragonworldSt")
+    click(dg.lead)
+    do
+        local _, rel, relPoint, x = form.sizeLabel:GetPoint(1)
+        check("group size: 'Group size' sits right of the dungeon, with a chip each for 5, 10, 20, 25 and 40; a dungeon starts at 5",
+            form.sizeLabel.text == nb.DG_FORM_SIZE and rel == form.dungeonChip and relPoint == "RIGHT" and x == 20
+            and #form.sizeChips == 5 and form.sizeChips[1].label.text == "5" and form.sizeChips[5].label.text == "40"
+            and select(2, form.sizeChips[1]:GetPoint(1)) == form.sizeLabel and select(2, form.sizeChips[2]:GetPoint(1)) == form.sizeChips[1]
+            and chosenSize() == 5, tostring(chosenSize()))
+        check("...a group of 5 keeps the three ticks for 'We have', with no counts and no hint",
+            ticksShown() and countsShown(false) and not form.haveHint:IsShown() and form.haveChecks[1]:GetChecked())
+    end
+    pick("Molten Core (raid, 60)")
+    local mc = chosenSize()
+    pick("Onyxia's Lair (raid, 60)")
+    local ony = chosenSize()
+    check("...a raid starts at its own size (Molten Core and Onyxia's Lair: 40), with a count per role for 'We have' (not counting you) instead of the ticks",
+        mc == 40 and ony == 40 and not ticksShown() and countsShown(true) and nums(form.haveRows) == "0,0,0"
+        and form.haveHint:IsShown() and form.haveHint.text == nb.DG_FORM_HAVE_HINT and form.haveRows[1].label.text == roleIcon("T", 16) .. " Tank"
+        and not form.haveRows[1].minus:IsEnabled() and form.haveRows[1].plus:IsEnabled() and nums(form.needRows) == "0,1,3", tostring(mc) .. " " .. tostring(ony))
+
+    -- 2. Another size, and have + need + you within it.
+    pick("Molten Core (raid, 60)")
+    click(sizeChip(10))
+    press(form.haveRows[3].plus, 7)
+    do
+        local full = nums(form.haveRows) .. " " .. tostring(form.haveRows[1].plus:IsEnabled()) .. " " .. tostring(form.needRows[3].plus:IsEnabled())
+        click(form.needRows[3].minus)
+        local freed = form.haveRows[1].plus:IsEnabled() and form.needRows[3].plus:IsEnabled()
+        check("group size: another size can be chosen; have + need + you never pass it: in 10, 4 needed and you leave room for 5 had, and then '+' is off on both",
+            chosenSize() == 10 and full == "0,0,5 false false" and freed and nums(form.needRows) == "0,1,2", full)
+    end
+    click(sizeChip(40))
+    press(form.haveRows[1].plus, 3)
+    press(form.haveRows[2].plus, 4)
+    press(form.needRows[3].plus, 20)
+    do
+        local big = nums(form.haveRows) .. " / " .. nums(form.needRows)
+        click(sizeChip(10))
+        check("...a smaller size trims: 'We have' first to the size less you (DPS first), then what is needed to the room left",
+            big == "3,4,5 / 0,1,22" and nums(form.haveRows) == "3,4,2" and nums(form.needRows) == "0,0,0",
+            big .. " -> " .. nums(form.haveRows) .. " / " .. nums(form.needRows))
+    end
+    pick("Blackrock Depths (52-60)")
+    local brd = tostring(chosenSize()) .. " " .. tostring(ticksShown() and countsShown(false))
+    pick("Molten Core (raid, 60)")
+    local back = chosenSize()
+    click(sizeChip(5))
+    check("...picking a dungeon goes back to its own size (Blackrock Depths 5, Molten Core 40); 5 shows the ticks again, also for a raid",
+        brd == "5 true" and back == 40 and chosenSize() == 5 and ticksShown() and countsShown(false) and not form.haveHint:IsShown(), brd)
+
+    -- 3. The new texts fit in every language (the fake draws each byte 6 wide).
+    do
+        local problems = {}
+        for _, language in ipairs(ns.LANGUAGES) do
+            local s = ns.strings[language.code]
+            ns.SetLanguage(language.code, true)
+            pick(s.DG_RAID_LABEL:format("Molten Core", "60"))
+            local chipsEnd = 16 + 300 + 20 + form.sizeLabel:GetStringWidth() + 8 + 5 * 42 + 4 * 4
+            if form.sizeLabel.text ~= s.DG_FORM_SIZE or chipsEnd > form:GetWidth() - 16 then problems[#problems + 1] = language.code .. " size" end
+            if form.haveHint.text ~= s.DG_FORM_HAVE_HINT or form.haveHint:GetStringWidth() > form.haveHint:GetWidth() then problems[#problems + 1] = language.code .. " hint" end
+            pick(s.DG_OTHER_GROUP_MENU)
+            if form.dungeonChip.label.text ~= s.DG_FORM_DUNGEON:format(s.DG_OTHER_GROUP) or form.dungeonChip.label:GetStringWidth() > 300 - 24 then
+                problems[#problems + 1] = language.code .. " chip"
+            end
+        end
+        ns.SetLanguage("nb", true)
+        check("group size: 'Group size', its chips, the hint and 'Other group' fit in the form in all 7 languages (German and French too)",
+            #problems == 0 and form:GetWidth() == 812, all(problems))
+    end
+    click(form.cancel)
+
+    -- 4. A raid post with counts: what goes out, and what an older version reads.
+    click(dg.lead)
+    pick("Molten Core (raid, 60)")
+    setCounts(form.haveRows, 2, 3, 10)
+    setCounts(form.needRows, 1, 2, 15)
+    local note80 = string.rep("x", 80)
+    form.noteBox:SetText(note80)
+    local t = SERVER_NOW
+    click(form.post)
+    local raidMsg = grpSent()
+    sentNow("DragonworldSt")
+    check("group size: a raid post with counts sends the size and the counts after the note, under 255 bytes",
+        #raidMsg == 1 and raidMsg[1] == P("Player-1-Tester", t, t, 101, "THD", "1,2,15", 1, note80, 40, "2,3,10") and #raidMsg[1] <= 255, all(raidMsg))
+    do
+        local old = oldParse(raidMsg[1])
+        check("...a version from before the group size still takes it, and reads the same dungeon, needs, size and note",
+            old ~= nil and old.dungeon == 101 and old.need == "1,2,15" and old.size == 1 and old.note == note80 and old.have == "THD")
+        local mine = postRows()[1]
+        local has = "2 " .. roleIcon("T") .. " 3 " .. roleIcon("H") .. " 10 " .. roleIcon("D")
+        local start = "|cffffd100Molten Core|r - " .. nb.DG_POST_HAS:format(has) .. " - " .. nb.DG_POST_SIZE:format(1, 40) .. " - "
+        mine:Fire("OnEnter")
+        local tip = GameTooltip.lines[4]
+        mine:Fire("OnLeave")
+        check("...your post shows the counts it has and the size, also when you hold the mouse over it",
+            mine.post.mine and mine.info.text:sub(1, #start) == start
+            and tip == nb.DG_POST_HAS:format("2 " .. roleIcon("T") .. " Tank, 3 " .. roleIcon("H") .. " Healer, 10 " .. roleIcon("D") .. " DPS"), mine.info.text)
+    end
+    click(dg.lead)
+    check("...opening the form again loads the size and the counts",
+        chosenSize() == 40 and countsShown(true) and nums(form.haveRows) == "2,3,10" and nums(form.needRows) == "1,2,15")
+    click(form.cancel)
+    click(dg.leadStop)
+    grpSent()
+
+    -- 5. "Other group" from the leader's side.
+    click(dg.lead)
+    pick(nb.DG_OTHER_GROUP_MENU)
+    local otherStart = form.dungeonChip.label.text == nb.DG_FORM_DUNGEON:format(nb.DG_OTHER_GROUP) and chosenSize() == 5 and ticksShown()
+    click(sizeChip(10))
+    setCounts(form.needRows, 1, 1, 3)
+    form.noteBox:SetText("")
+    form.chatCheck:SetChecked(true)
+    local chatBefore = #guildChat
+    local t3 = SERVER_NOW
+    click(form.post)
+    local other = nb.DG_OTHER_GROUP .. " (10)"
+    do
+        local sent = grpSent()
+        local line = guildChat[#guildChat]
+        local icons = "1 " .. roleIcon("T", 16) .. " 1 " .. roleIcon("H", 16) .. " 3 " .. roleIcon("D", 16)
+        check("group size: 'Other group' in the form starts at 5 with the ticks; posted as 10 it says 'Other group (10)' in guild chat and the band",
+            otherStart and #sent == 1 and sent[1] == P("Player-1-Tester", t3, t3, 0, "", "1,1,3", 1, "", 10, "0,0,0")
+            and #guildChat == chatBefore + 1 and line.text == nb.DG_CHAT_LFM:format(other, "1 Tank, 1 Healer, 3 DPS")
+            and dg.leadText.text == nb.DG_LEAD_MINE:format(other, icons, 60), all(sent) .. " / " .. tostring(line and line.text))
+        check("...a version from before the group size ignores it (it does not know dungeon 0)", oldParse(sent[1]) == nil)
+        local db = grpDB()
+        ns.modules.dungeons:OnLoad(db)
+        local kept = db.mine["Tester-Stormrage"] ~= nil and db.mine["Tester-Stormrage"].max == 10
+        ns.RestartGroupHello()
+        flush()
+        local again = grpSent()
+        check("...and after a /reload it is kept and sent again the same way",
+            kept and #again == 2 and again[1] == "R" and again[2] == sent[1], all(again))
+    end
+    sentNow("DragonworldSt")
+    click(dg.leadStop)
+    grpSent()
+
+    -- 6. "Make raid" follows the size, not the dungeon.
+    GROUP.members = { pug(1), pug(2), pug(3), pug(4) }
+    fire("GROUP_ROSTER_UPDATE")
+    click(dg.lead)
+    pick("Blackrock Depths (52-60)")
+    click(sizeChip(10))
+    setCounts(form.needRows, 0, 0, 2)
+    local t4 = SERVER_NOW
+    click(form.post)
+    do
+        local sent = grpSent()
+        grpReceive("J\tPlayer-1-Tester\t" .. t4 .. "\tPlayer-1-Altine\tD\t58")
+        local req = reqRows()[1]
+        local label = req and req.invite.label.text
+        local converted, invites = GROUP.converted, #GROUP.invites
+        click(req.invite)
+        check("group size: a dungeon posted as a group of 10 with a full party offers Make raid, and the click makes the raid and invites nobody",
+            #sent == 1 and sent[1] == P("Player-1-Tester", t4, t4, 25, "", "0,0,2", 5, "", 10, "0,0,0") and label == nb.DG_MAKE_RAID
+            and GROUP.converted == converted + 1 and #GROUP.invites == invites, tostring(label) .. " " .. all(sent))
+        local old = oldParse(sent[1])
+        check("...a version from before the group size still takes it (it needs 4 or less)", old ~= nil and old.dungeon == 25 and old.need == "0,0,2")
+    end
+    closeToast()
+    GROUP.raid = true
+    GROUP.members[5] = ALTINE
+    fire("GROUP_ROSTER_UPDATE")
+    flush()
+    do
+        local sent = grpSent()
+        check("...Altine joining as DPS moves one DPS from needed to had: the counts and the roles had go out with the new size",
+            #sent == 1 and sent[1]:find("\t25\tD\t0,0,1\t6\t\t10\t0,0,1$") ~= nil and grpDB().mine["Tester-Stormrage"].haveCount == "0,0,1", all(sent))
+    end
+    click(dg.leadStop)
+    GROUP.members, GROUP.raid = { pug(1), pug(2), pug(3) }, false
+    fire("GROUP_ROSTER_UPDATE")
+    grpSent()
+    click(dg.lead)
+    pick("Molten Core (raid, 60)")
+    click(sizeChip(5))
+    setCounts(form.needRows, 0, 0, 1)
+    local t5 = SERVER_NOW
+    click(form.post)
+    do
+        local sent = grpSent()
+        grpReceive("J\tPlayer-1-Tester\t" .. t5 .. "\tPlayer-1-Altine\tD\t58")
+        local req = reqRows()[1]
+        local label = req and req.invite.label.text
+        closeToast()
+        clearChat()
+        GROUP.members[4] = pug(4)
+        fire("GROUP_ROSTER_UPDATE")
+        local closed = grpSent()
+        check("...while a raid posted as a group of 5 offers Invite, not Make raid, and a full party closes it",
+            #sent == 1 and sent[1]:find("\t101\t[THD]*\t0,0,1\t4\t\t5$") ~= nil and label == nb.DG_INVITE
+            and grpDB().mine["Tester-Stormrage"] == nil and #closed == 1 and closed[1]:find("^X\t") ~= nil and has(nb.DG_POST_CLOSED_FULL), all(sent))
+    end
+    GROUP.members = {}
+    fire("GROUP_ROSTER_UPDATE")
+    grpSent()
+
+    -- 7. Others' posts: old ones, new ones, "Other group", broken ones.
+    ns.SetMyStatus("D", { dungeons = { [25] = true }, roles = { D = true } })
+    sentNow("DragonworldSt")
+    clock = clock + 700
+    local n = SERVER_NOW
+    grpReceive(P("Player-1-Altine", n, n, 101, "T", "1,2,20", 10, "raid"))
+    do
+        local row = rowOf("Altine")
+        check("group size: a raid post from a version before the group size counts as its raid's size (10/40), and pops up for a needed role",
+            row ~= nil and postOf("Player-1-Altine").max == 40 and postOf("Player-1-Altine").haveCount == nil
+            and row.info.text == "|cffffd100Molten Core|r - " .. nb.DG_POST_HAS:format(roleIcon("T")) .. " - " .. nb.DG_POST_SIZE:format(10, 40)
+                .. " - |cff999999\"raid\"|r - " .. nb.DG_POST_AGO:format(0)
+            and toast:IsShown() and toast.text.text == nb.DG_TOAST_TEXT:format("Altine", "Molten Core",
+                "1 " .. roleIcon("T") .. " Tank, 2 " .. roleIcon("H") .. " Healer, 20 " .. roleIcon("D") .. " DPS") .. "\n|cff999999\"raid\"|r",
+            (row and row.info.text or "-") .. " / " .. tostring(toast.text.text))
+    end
+    closeToast()
+    grpReceive(P("Player-1-Dagny", n, n, 0, "D", "1,1,5", 3, "world boss", 10, "0,0,2"), "Dagny-Stormrage")
+    do
+        local row = rowOf("Dagny")
+        local needNames = "1 " .. roleIcon("T") .. " Tank, 1 " .. roleIcon("H") .. " Healer, 5 " .. roleIcon("D") .. " DPS"
+        check("group size: an 'Other group' post shows as 'Other group (10)' with its counts and size, and pops up for a needed role within 5 levels of the leader (60 and 60)",
+            row ~= nil and row.info.text == "|cffffd100" .. other .. "|r - " .. nb.DG_POST_HAS:format("2 " .. roleIcon("D")) .. " - " .. nb.DG_POST_SIZE:format(3, 10)
+                .. " - |cff999999\"world boss\"|r - " .. nb.DG_POST_AGO:format(0)
+            and toast:IsShown() and toast.text.text == nb.DG_TOAST_TEXT:format("Dagny", other, needNames) .. "\n|cff999999\"world boss\"|r",
+            (row and row.info.text or "-") .. " / " .. tostring(toast.text.text))
+        row:Fire("OnEnter")
+        local lines = GameTooltip.lines
+        local tipOK = lines[3] == other and lines[4] == nb.DG_POST_HAS:format("2 " .. roleIcon("D") .. " DPS")
+        row:Fire("OnLeave")
+        local items = {}
+        for _, alert in ipairs(ns.ALERTS) do
+            if alert.kind == "dungeon" then items = alert.Items(0) end
+        end
+        local listed = false
+        for _, item in ipairs(items) do
+            if item == nb.AL_GROUP_ITEM:format("Dagny", other, "1 " .. roleIcon("T") .. " 1 " .. roleIcon("H") .. " 5 " .. roleIcon("D")) then listed = true end
+        end
+        check("...its tooltip and its line at the blinking button say 'Other group (10)' too", tipOK and listed, all(items))
+    end
+    closeToast()
+    grpReceive(P("Player-1-Borin", n, n, 0, "", "0,0,2", 1, ""), "Borin-Stormrage")
+    do
+        local row = rowOf("Borin")
+        check("...one from a leader more than 5 levels away (42) shows, and you can ask to join, but it does not pop up",
+            row ~= nil and row.info.text:find("|cffffd100" .. nb.DG_OTHER_GROUP .. " (5)|r", 1, true) == 1 and row.ask:IsEnabled()
+            and not toast:IsShown() and ns.GroupToastQueueLength() == 0, row and row.info.text)
+    end
+    lastMenu = nil
+    click(dg.filter)
+    do
+        local otherRadio
+        for _, radio in ipairs(lastMenu.radios) do if radio.text == nb.DG_OTHER_GROUP then otherRadio = radio end end
+        otherRadio.click()
+        local rows = postRows()
+        local onlyOther = #rows == 2 and rows[1].post.dungeon == 0 and rows[2].post.dungeon == 0
+            and dg.filter.label.text == nb.DG_FILTER:format(nb.DG_OTHER_GROUP)
+        lastMenu.radios[1].click()
+        check("...the dungeon filter offers 'Other group' when there are such posts, and shows only them",
+            onlyOther and #postRows() == 3, dg.filter.label.text)
+    end
+    grpReceive(P("Player-1-Eira", n, n, 25, "", "0,0,2", 1, "", 41), "Eira-Stormrage")               -- a size over 40
+    grpReceive(P("Player-1-Eira", n, n, 25, "", "0,0,1", 1, "", 1), "Eira-Stormrage")                -- a size of 1
+    grpReceive(P("Player-1-Eira", n, n, 25, "", "0,0,2", 1, "", "ti"), "Eira-Stormrage")             -- not a number
+    grpReceive(P("Player-1-Eira", n, n, 0, "", "3,3,4", 1, "", 10), "Eira-Stormrage")                -- 10 needed in a group of 10
+    grpReceive(P("Player-1-Eira", n, n, 101, "", "1,1,1", 1, "", 10, "1,2"), "Eira-Stormrage")       -- broken counts
+    grpReceive(P("Player-1-Eira", n, n, 101, "TH", "1,1,1", 1, "", 10, "3,3,1"), "Eira-Stormrage")   -- 7 had + 3 needed + the leader = 11
+    grpReceive(P("Player-1-Eira", n, n, 25, "", "0,2,3", 1, ""), "Eira-Stormrage")                   -- 5 needed in a dungeon of 5
+    check("group size: posts with a size outside 2..40, more needed than the size has room for, or broken counts are ignored",
+        postOf("Player-1-Eira") == nil)
+    grpReceive(P("Player-1-Eira", n, n, 25, "", "0,2,6", 1, "", 10, "0,0,0"), "Eira-Stormrage")
+    do
+        local post, row = postOf("Player-1-Eira"), rowOf("Eira")
+        check("...but a dungeon posted as a group of 10 may need 8: 'Blackrock Depths (10)', 1/10",
+            post ~= nil and post.max == 10 and row.info.text == "|cffffd100Blackrock Depths (10)|r - " .. nb.DG_POST_SIZE:format(1, 10) .. " - " .. nb.DG_POST_AGO:format(0),
+            row and row.info.text)
+    end
+    closeToast()
+
+    -- Leave things as the remaining tests expect.
+    for _, leader in ipairs({ { "Player-1-Altine", "Altine-Stormrage" }, { "Player-1-Borin", "Borin-Stormrage" },
+                              { "Player-1-Dagny", "Dagny-Stormrage" }, { "Player-1-Eira", "Eira-Stormrage" } }) do
+        grpReceive("X\t" .. leader[1] .. "\t" .. (SERVER_NOW + 200) .. "\t" .. (SERVER_NOW + 200), leader[2])
+    end
+    closeToast()
+    ns.SetMyStatus(nil)
+    GROUP.members, GROUP.raid, GROUP.invites, GROUP.converted = {}, false, savedInvites, savedConverted
+    flush()
+    check("group size: (tidied up: no posts left)", #ns.GroupPosts() == 0 and not area:IsShown())
+    grpSent()
+    sentNow("DragonworldSt")
+    sentNow("DragonworldPf")
+    clearChat()
+    kbChip.scripts.OnClick(kbChip)
+end)()
+
 -- ====================== shared profile and the member card ======================
 ;(function()
     local function all(list) return table.concat(list, " ; ") end
@@ -5159,7 +7544,7 @@ end)()
     roRow("Altine").scripts.OnMouseUp(roRow("Altine"), "LeftButton")
     local card = DragonworldMemberCard
     check("the card shows who it is, where, and the legacy points",
-        card:IsVisible() and card.strata == "DIALOG" and card.name.text == "Altine" and card.info.text == "Level 58  -  Officer"
+        card:IsVisible() and card.strata == "DIALOG" and card.name.text == "Altine" and card.info.text == "Level 58  -  |TInterface\\GroupFrame\\UI-Group-AssistantIcon:12:12|t Officer"
         and card.seen.text == "Pålogget, i Stormwind" and card.legacy.text == "Legacy-poeng: 41 / 65", card.legacy.text)
     check("talents: points in each tree", card.talentsLabel.text == "Talenter (hold over for å se alle)" and card.talents.text == "Arcane 31  /  Fire 0  /  Frost 20", card.talents.text)
     card.talentsHover:Fire("OnEnter")
@@ -5184,13 +7569,13 @@ end)()
     check("inspecting someone who is not targeted or in the group explains why it cannot", has("Altine må være target eller i gruppen din"), chatText())
     do
         local inspected
-        local realGUID = UnitGUID
+        local realGUID, realExists = UnitGUID, UnitExists
         UnitExists = function(unit) return unit == "target" end
         UnitGUID = function(unit) if unit == "target" then return "Player-1-Altine" end return realGUID(unit) end
         InspectUnit = function(unit) inspected = unit end
         click(card.inspect)
         check("...and with Altine as target, the game's inspect window opens", inspected == "target")
-        UnitExists, InspectUnit, UnitGUID = nil, nil, realGUID
+        UnitExists, InspectUnit, UnitGUID = realExists, nil, realGUID
     end
     do
         local told, invited
@@ -5689,6 +8074,30 @@ guild.name = "Dragonworld"
 flush()                                   -- no guild event arrives; only the scheduled re-check runs
 check("the scheduled re-check unlocks once the name is there", ns.IsMember() and mm:IsShown())
 flush()
+;(function()
+    -- The login's PLAYER_ENTERING_WORLD came before the guild name: the
+    -- unlock records where you are, so walking into a dungeon still counts.
+    guild.name = nil
+    guild.inGuild = false
+    fire("PLAYER_GUILD_UPDATE", "player")
+    fire("PLAYER_ENTERING_WORLD", true, false)
+    guild.inGuild = true
+    guild.name = "Dragonworld"
+    fire("PLAYER_GUILD_UPDATE", "player")
+    flush()
+    ns.SetMyStatus("D", { dungeons = { [25] = true } })
+    clearChat()
+    INSTANCE.inside, INSTANCE.type = true, "party"
+    fire("ZONE_CHANGED_NEW_AREA")
+    check("...and after an unlock like that, going into a dungeon still turns 'open for dungeons' off",
+        ns.IsMember() and ns.GetMyStatus() == nil and has(ns.strings.nb.ST_EXPIRED_INSTANCE), chatText())
+    INSTANCE.inside, INSTANCE.type = false, "none"
+    fire("ZONE_CHANGED_NEW_AREA")
+    ns.SetMyStatus(nil)
+    flush()
+    for _, prefix in ipairs({ "DragonworldSt", "DragonworldGrp", "DragonworldPf", "DragonworldAch", "DragonworldEv", "DragonworldPr" }) do sentNow(prefix) end
+    clearChat()
+end)()
 
 setGuild(nil)
 clearChat()
@@ -6391,9 +8800,10 @@ end)()
     local dungeonsChip = chipByID.dungeons
 
     for _, alert in ipairs(ns.ALERTS) do ns.MarkAlertSeen(alert.kind) end
-    check("four things can blink: a new event (gold), a whisper, a guild chat message, and someone wanting a dungeon (green)",
-        #ns.ALERTS == 4 and ns.ALERTS[1].kind == "event" and ns.ALERTS[2].kind == "whisper" and ns.ALERTS[3].kind == "guildchat"
-        and ns.ALERTS[4].kind == "dungeon" and ns.ALERTS[1].module == "events" and ns.ALERTS[2].module == "guildchat" and ns.ALERTS[4].module == "dungeons")
+    check("five things can blink: a new event (gold), a whisper, a guild chat message, someone wanting a dungeon (green) and someone in your zone with the same quest (violet)",
+        #ns.ALERTS == 5 and ns.ALERTS[1].kind == "event" and ns.ALERTS[2].kind == "whisper" and ns.ALERTS[3].kind == "guildchat"
+        and ns.ALERTS[4].kind == "dungeon" and ns.ALERTS[1].module == "events" and ns.ALERTS[2].module == "guildchat" and ns.ALERTS[4].module == "dungeons"
+        and ns.ALERTS[5].kind == "quest" and ns.ALERTS[5].module == "quest" and ns.ALERTS[5].labelKey == "AL_QUEST")
     check("nothing new: nothing blinks", not ns.IsBlinking() and pulse.scripts.OnUpdate == nil and not mm.glow:IsShown())
     check("the minimap glow is the round ring itself lit up (a grey copy on top of it, coloured), with a soft halo around the button",
         mm.glow.blend == "ADD" and mm.glow.desaturated and mm.glow.texture == "Interface\\Minimap\\MiniMap-TrackingBorder" and mm.glow.layer == "OVERLAY"
@@ -6697,7 +9107,7 @@ end)()
     clearChat()
     dw("blink")
     check("/dw blink shows all the colours for a while, so you can see how it looks",
-        ns.IsBlinking() and #ns.ActiveAlerts() == 4 and has(ns.strings.nb.BLINK_TEST), chatText())
+        ns.IsBlinking() and #ns.ActiveAlerts() == 5 and has(ns.strings.nb.BLINK_TEST), chatText())
     flush()
     check("...and then stops by itself", not ns.IsBlinking() and not mm.glow:IsShown())
     clearChat()
@@ -7000,7 +9410,7 @@ end)()
 
     -- Guild achievements worked out from the roster and the shared professions.
     check("a guild achievement already reached the first time the addon looked counts as reached before the addon, with no banner",
-        state("lvl60_1").done and state("lvl60_1").done.before == true and state("lvl60_1").value == 2 and DragonworldMilestoneBanner == nil)
+        state("lvl60_1").done and state("lvl60_1").done.before == true and state("lvl60_1").value == 2 and (DragonworldMilestoneBanner == nil or not DragonworldMilestoneBanner:IsShown()))
     check("one not reached yet shows how far the guild has come (Tester and Dagny are 60)",
         not state("lvl60_5").done and state("lvl60_5").value == 2 and state("lvl60_5").goal == 5, state("lvl60_5").value)
     check("Altine's Alchemy at 300 (shared in the roster) makes the guild's first master crafter, and counts towards the six crafts",
@@ -7162,7 +9572,15 @@ end)()
     table.insert(ROSTER, anna)
     fire("GUILD_ROSTER_UPDATE")
     flush()
-    check("a new member is just remembered", not banner:IsShown() and achDB().levels["name:annaberg"] == 32)
+    -- Anna is re-inserted without her GUID on purpose (the Roster section gave
+    -- her one, but this module never read her then): she is a member never
+    -- seen, so she joins the list under her name and gets the welcome banner.
+    check("a new member is remembered with no milestone, as a join (seen in the roster, so not exact) with the welcome banner",
+        achDB().levels["name:annaberg"] == 32 and achDB().feed["name:annaberg:L40"] == nil and achDB().feed["name:annaberg:J"] ~= nil
+        and achDB().feed["name:annaberg:J"].exact == false and achDB().feed["Player-1-AnnaBerg:J"] == nil
+        and banner:IsShown() and banner.title.text == nb.WEL_BANNER and banner.text.text == nb.WEL_BANNER_TEXT:format("|cfff58cbaAnna Berg|r"), banner.text.text)
+    click(banner.close)
+    flush()
     local cedricLevel = ROSTER[4][4]
     anna[4] = 41
     fire("GUILD_ROSTER_UPDATE")
@@ -7180,8 +9598,11 @@ end)()
     table.insert(ROSTER, { "Nyfrelst-Stormrage", "Initiate", 4, 60, "Mage", "Orgrimmar", "", "", true, 0, "MAGE", guid = "Player-1-Nyfrelst" })
     fire("GUILD_ROSTER_UPDATE")
     flush()
-    check("someone new in the guild at level 60 has passed no milestone with us", not banner:IsShown() and achDB().feed["Player-1-Nyfrelst:L60"] == nil
-        and achDB().levels["Player-1-Nyfrelst"] == 60)
+    check("someone new in the guild at level 60 has passed no milestone with us (but joined: a welcome banner)", achDB().feed["Player-1-Nyfrelst:L60"] == nil
+        and achDB().levels["Player-1-Nyfrelst"] == 60 and achDB().feed["Player-1-Nyfrelst:J"] ~= nil
+        and banner:IsShown() and banner.text.text:find("Nyfrelst", 1, true) ~= nil and banner.title.text == nb.WEL_BANNER, banner.text.text)
+    click(banner.close)
+    flush()
 
     -- The tab.
     click(chipByID.achievements)
@@ -7272,9 +9693,13 @@ end)()
     check("nothing newer than asked for, nothing sent", #achSent() == 0)
 
     ns.SetLanguage("en", true)
-    click(panel.sample)
-    check("the banner and the tab follow the language", banner.title.text == "GUILD MILESTONE!" and banner.text.text:find("reached", 1, true)
+    click(panel.sample)          -- the second click on the example shows the welcome banner
+    check("the banner and the tab follow the language", banner.title.text == "NEW MEMBER!" and banner.text.text:find("Welcome to Dragonworld", 1, true)
         and panel.title.text == "Milestones and guild achievements" and guildRow("lvl60_10").status.text == "6 / 10")
+    click(banner.close)
+    flush()
+    dw("achievements test")
+    check("...the milestone banner too", banner.title.text == "GUILD MILESTONE!" and banner.text.text:find("reached", 1, true))
     click(banner.close)
     ns.SetLanguage("nb", true)
 
@@ -7297,6 +9722,884 @@ end)()
     sentNow("DragonworldPf")
     achSent()
     C_TradeSkillUI = savedTradeSkill
+    click(rsChip)
+end)()
+
+-- ============ welcome new members (Modules\Achievements.lua, F5) ================
+;(function()
+    local nb = ns.strings.nb
+    local PAGE = "github.com/Samuron39/Dragonworld"
+    local function click(button) button.scripts.OnClick(button) end
+    local function achDB() return DragonworldDB.modules.achievements end
+    local function sys(text) fire("CHAT_MSG_SYSTEM", text) end
+    local function rosterRead() fire("GUILD_ROSTER_UPDATE"); flush() end
+    local function joins()
+        local n = 0
+        for _, entry in pairs(achDB().feed) do if entry.kind == "J" then n = n + 1 end end
+        return n
+    end
+    local function lastChat() return guildChat[#guildChat] or {} end
+    local added = {}
+    local function addMember(row) ROSTER[#ROSTER + 1] = row; added[#added + 1] = row[1] end
+    ns.SetLanguage("nb", true)
+    DrainBanners()
+    local banner = DragonworldMilestoneBanner
+    local savedBannerBox, savedWelcome = achDB().banner, achDB().welcome
+    local savedServerNow = SERVER_NOW
+    -- The list as it was: put back at the end, so the joins made here
+    -- (some of them in the future) do not reach later sections.
+    local savedFeed = {}
+    for id, entry in pairs(achDB().feed) do savedFeed[id] = entry end
+
+    -- 1. Someone joins: the game's system message.
+    local requestsBefore = rosterRequests
+    sys("Nykomling has joined the guild.")
+    local nyEntry = achDB().feed["name:nykomling:J"]
+    check("a join in the system message gives the gold banner: NEW MEMBER!, the welcome and a Welcome! button, no second button",
+        banner:IsShown() and banner.title.text == nb.WEL_BANNER and banner.text.text == nb.WEL_BANNER_TEXT:format("Nykomling")
+        and banner.button.label.text == nb.WEL_BUTTON and banner.button:IsEnabled() and not banner.button2:IsShown(), banner.text.text)
+    check("...it goes into the list as an exact join, and a fresh roster is asked for",
+        nyEntry ~= nil and nyEntry.kind == "J" and nyEntry.exact == true and nyEntry.name == "Nykomling" and rosterRequests > requestsBefore)
+
+    -- 2. Welcome! greets in guild chat, once.
+    local chatBefore = #guildChat
+    click(banner.button)
+    check("Welcome! greets them in guild chat (one of three greetings, in your language) and closes the banner",
+        #guildChat == chatBefore + 1 and lastChat().text == nb.WEL_CHAT_2:format("Nykomling") and lastChat().chatType == "GUILD"
+        and not banner:IsShown() and nyEntry.gratz == true, lastChat().text)
+
+    -- 3. The same message again.
+    local joinsBefore = joins()
+    sys("Nykomling has joined the guild.")
+    flush()
+    check("the same join again gives no new banner and no new line", not banner:IsShown() and joins() == joinsBefore)
+
+    -- 4. The roster shows them: the line moves to their permanent ID.
+    addMember({ "Nykomling-Stormrage", "Member", 3, 1, "Rogue", "", "", "", true, 0, "ROGUE", guid = "Player-1-Nykomling" })
+    rosterRead()
+    local moved = achDB().feed["Player-1-Nykomling:J"]
+    check("once the roster shows the new member, the line moves to their ID and gets the class, still welcomed, no new banner",
+        moved == nyEntry and moved.id == "Player-1-Nykomling:J" and moved.class == "ROGUE" and moved.gratz == true
+        and achDB().feed["name:nykomling:J"] == nil and joins() == joinsBefore and not banner:IsShown())
+
+    -- ...and a banner still shown gets the class colour when the roster comes.
+    sys("Fargelos has joined the guild.")
+    addMember({ "Fargelos-Stormrage", "Member", 3, 1, "Mage", "", "", "", true, 0, "MAGE", guid = "Player-1-Fargelos" })
+    rosterRead()
+    check("a welcome banner still up is written again in the class colour once the roster knows the class",
+        banner:IsShown() and banner.text.text == nb.WEL_BANNER_TEXT:format("|cff40c7ebFargelos|r") and achDB().feed["Player-1-Fargelos:J"] ~= nil, banner.text.text)
+    click(banner.close)
+    flush()
+
+    -- 5. You invited them: the addon link too.
+    C_GuildInfo.Invite("Rekrutt")
+    check("an invite through C_GuildInfo.Invite is remembered (the game's call still happens)",
+        guildInvites[#guildInvites] == "Rekrutt" and achDB().invites.rekrutt == SERVER_NOW)
+    sys("Rekrutt has joined the guild.")
+    check("the inviter's banner says so and has a second button to send the addon link",
+        banner:IsShown() and banner.text.text == nb.WEL_BANNER_TEXT:format("Rekrutt") .. "\n" .. nb.WEL_BANNER_INVITER
+        and banner.button2:IsShown() and banner.button2.label.text == nb.WEL_SEND_LINK and banner.button2:IsEnabled()
+        and achDB().feed["name:rekrutt:J"].invited == true and achDB().invites.rekrutt == nil, banner.text.text)
+    chatBefore = #guildChat
+    click(banner.button2)
+    check("Send addon link whispers the short address, then reads Link sent and greys out, and the banner stays",
+        #guildChat == chatBefore + 1 and lastChat().chatType == "WHISPER" and lastChat().target == "Rekrutt"
+        and lastChat().text == nb.WEL_LINK_WHISPER:format(PAGE) and banner:IsShown()
+        and banner.button2.label.text == nb.WEL_LINK_SENT and not banner.button2:IsEnabled() and achDB().feed["name:rekrutt:J"].linkSent == true, lastChat().text)
+    click(banner.button)
+    check("...and Welcome! then greets and closes it", not banner:IsShown() and lastChat().text == nb.WEL_CHAT_2:format("Rekrutt") and lastChat().chatType == "GUILD")
+
+    -- 6. An invite seen only in the system message, a name with a space.
+    sys("You have invited Rekrutt To to join your guild.")
+    check("the game's 'You have invited' message is remembered as your invite", achDB().invites.rekruttto == SERVER_NOW)
+    sys("Rekrutt To has joined the guild.")
+    check("...so the join of a name with a space gives the inviter's banner",
+        banner:IsShown() and banner.button2:IsShown() and achDB().feed["name:rekruttto:J"] ~= nil and achDB().feed["name:rekruttto:J"].name == "Rekrutt To")
+    click(banner.button)
+    check("Welcome! first: the banner stays (the link is not sent yet), the button greys out",
+        banner:IsShown() and not banner.button:IsEnabled() and banner.button2:IsEnabled() and lastChat().text == nb.WEL_CHAT_2:format("Rekrutt To"))
+    click(banner.button2)
+    check("...and the link then closes it, whispered to the name with the space", not banner:IsShown() and lastChat().chatType == "WHISPER" and lastChat().target == "Rekrutt To")
+
+    -- 7. An invite more than an hour old does not count.
+    achDB().invites.gammel = SERVER_NOW - 3601
+    sys("Gammel has joined the guild.")
+    check("an invite older than an hour does not count (and is used up)",
+        banner:IsShown() and not banner.button2:IsShown() and achDB().feed["name:gammel:J"].invited == nil and achDB().invites.gammel == nil)
+    click(banner.close)
+    flush()
+
+    -- 8. The name as a player link with a colour.
+    sys("|cffffffff|Hplayer:Anna Lind-Stormrage|h[Anna Lind]|h|r has joined the guild.")
+    sys("|Hplayer:Bo Lund-Stormrage:42|h[|cff40c7ebBo Lund|r]|h has joined the guild.")
+    check("a name inside a player link with colour codes is read whole",
+        achDB().feed["name:annalind:J"] ~= nil and achDB().feed["name:annalind:J"].name == "Anna Lind"
+        and achDB().feed["name:bolund:J"] ~= nil and achDB().feed["name:bolund:J"].name == "Bo Lund")
+    DrainBanners()
+
+    -- 9. Your own name.
+    joinsBefore = joins()
+    sys("Tester has joined the guild.")
+    flush()
+    check("your own join gives nothing", joins() == joinsBefore and not banner:IsShown())
+
+    -- 10. The roster as a fallback.
+    addMember({ "Rosterny-Stormrage", "Member", 3, 12, "Hunter", "", "", "", true, 0, "HUNTER", guid = "Player-1-Rosterny" })
+    rosterRead()
+    check("a new member seen online in the roster (no system message) gets a banner and a line that is not exact",
+        banner:IsShown() and banner.text.text:find("Rosterny", 1, true) ~= nil and achDB().feed["Player-1-Rosterny:J"] ~= nil
+        and achDB().feed["Player-1-Rosterny:J"].exact == false, banner.text.text)
+    click(banner.close)
+    flush()
+    addMember({ "Borte-Stormrage", "Member", 3, 14, "Priest", "", "", "", false, 0, "PRIEST", guid = "Player-1-Borte", last = { 0, 0, 1, 0 } })
+    rosterRead()
+    check("...an offline one only gets the line, marked as bannered",
+        not banner:IsShown() and achDB().feed["Player-1-Borte:J"] ~= nil and achDB().feed["Player-1-Borte:J"].bannered == true)
+
+    -- 11. The first read after the update records nothing.
+    achDB().joinInit = nil
+    addMember({ "Uinit-Stormrage", "Member", 3, 15, "Warrior", "", "", "", true, 0, "WARRIOR", guid = "Player-1-Uinit" })
+    rosterRead()
+    check("the first roster read after the update records no joins, and remembers it has looked",
+        achDB().feed["Player-1-Uinit:J"] == nil and achDB().joinInit == true and achDB().levels["Player-1-Uinit"] == 15 and not banner:IsShown())
+
+    -- 12. The welcome box off, and all banners off.
+    achDB().welcome = false
+    sys("Stille has joined the guild.")
+    check("with the welcome box off, a join only goes into the list", achDB().feed["name:stille:J"] ~= nil and not banner:IsShown())
+    clearChat()
+    C_GuildInfo.Invite("Inviterte")
+    sys("Inviterte has joined the guild.")
+    check("...and the inviter is told in chat where the link button is",
+        not banner:IsShown() and has(nb.WEL_CHAT_INVITER:format("Inviterte", nb.ACH_TITLE, nb.ACH_VIEW_FEED)), chatText())
+    clearChat()
+    achDB().welcome = nil
+    achDB().banner = false
+    sys("Ingenbanner has joined the guild.")
+    check("with 'Show the banner' off there is no welcome banner either", achDB().feed["name:ingenbanner:J"] ~= nil and not banner:IsShown())
+    achDB().banner = savedBannerBox
+
+    -- 13. The lines in the tab.
+    click(chipByID.achievements)
+    local panel = DragonworldAchievementsScroll.parent
+    if not panel.feedChip.selected then click(panel.feedChip) end
+    local function feedRow(id)
+        for _, row in ipairs(DragonworldAchievementsScroll.scrollChild.children) do
+            if row:IsShown() and row.entry and row.entry.id == id then return row end
+        end
+    end
+    local nyRow, gammelRow, inviterRow = feedRow("Player-1-Nykomling:J"), feedRow("name:gammel:J"), feedRow("name:inviterte:J")
+    check("a join line has the guild shield, '<name> joined the guild' in the class colour, and the Welcome! label",
+        nyRow ~= nil and nyRow.icon.texture == ns.ICON and nyRow.text.text == nb.WEL_ROW:format("|cfffff569Nykomling|r")
+        and gammelRow ~= nil and gammelRow.gratz.label.text == nb.WEL_BUTTON, nyRow and nyRow.text.text)
+    check("Welcome! shows on a recent join not welcomed yet, not on one already welcomed",
+        gammelRow.gratz:IsShown() and not nyRow.gratz:IsShown())
+    chatBefore = #guildChat
+    click(gammelRow.gratz)
+    check("...and greets in guild chat when clicked, then hides",
+        #guildChat == chatBefore + 1 and lastChat().text == nb.WEL_CHAT_2:format("Gammel") and not feedRow("name:gammel:J").gratz:IsShown())
+    check("the Addon link button shows only on a join you invited and have not sent the link for, with the time moved left",
+        inviterRow.link:IsShown() and inviterRow.link.label.text == nb.WEL_LINK_BUTTON and select(4, inviterRow.when:GetPoint(1)) == -196
+        and not feedRow("name:rekrutt:J").link:IsShown() and not gammelRow.link:IsShown() and select(4, gammelRow.when:GetPoint(1)) == -100)
+    chatBefore = #guildChat
+    click(inviterRow.link)
+    inviterRow = feedRow("name:inviterte:J")
+    check("...it whispers the address, then hides",
+        #guildChat == chatBefore + 1 and lastChat().chatType == "WHISPER" and lastChat().target == "Inviterte" and lastChat().text == nb.WEL_LINK_WHISPER:format(PAGE)
+        and not inviterRow.link:IsShown())
+    check("a join seen only in the roster has Welcome! only while the member is online",
+        feedRow("Player-1-Rosterny:J").gratz:IsShown() and not feedRow("Player-1-Borte:J").gratz:IsShown())
+    inviterRow:Fire("OnEnter")
+    local tip = table.concat(GameTooltip.lines, "\n")
+    check("the tooltip says you invited them and sent the link",
+        GameTooltip.lines[1] == nb.WEL_ROW:format("Inviterte") and tip:find(nb.WEL_TIP_INVITED, 1, true) ~= nil and tip:find(nb.WEL_TIP_LINK_SENT, 1, true) ~= nil
+        and tip:find(nb.WEL_TIP_WELCOMED, 1, true) == nil, tip)
+    inviterRow:Fire("OnLeave")
+    check("the welcome box in the tab is on by default, with its label",
+        panel.welcomeCheck.checked and panel.welcomeCheck.label.text == nb.WEL_SHOW_BANNER)
+    panel.welcomeCheck:SetChecked(false)
+    click(panel.welcomeCheck)
+    check("...and unticking it turns the welcome banner off", achDB().welcome == false)
+    panel.welcomeCheck:SetChecked(true)
+    click(panel.welcomeCheck)
+
+    -- 14. Rejoining after more than a day.
+    SERVER_NOW = SERVER_NOW + 90000
+    sys("Gammel has joined the guild.")
+    check("someone who joins again after more than a day gets a new banner, and can be welcomed again",
+        banner:IsShown() and banner.text.text == nb.WEL_BANNER_TEXT:format("Gammel") and achDB().feed["name:gammel:J"].gratz == nil
+        and achDB().feed["name:gammel:J"].time == SERVER_NOW)
+    SERVER_NOW = savedServerNow
+    click(banner.close)
+    flush()
+
+    -- 14b. Leaving and coming back within a day: the join under the ID still counts.
+    local nyBefore = achDB().feed["Player-1-Nykomling:J"]
+    for index = #ROSTER, 1, -1 do if ROSTER[index][1] == "Nykomling-Stormrage" then table.remove(ROSTER, index) end end
+    rosterRead()
+    joinsBefore = joins()
+    sys("Nykomling has joined the guild.")
+    flush()
+    check("someone who leaves and is invited back within a day gets no new banner and no second line",
+        not banner:IsShown() and joins() == joinsBefore and achDB().feed["name:nykomling:J"] == nil and achDB().feed["Player-1-Nykomling:J"] == nyBefore)
+    addMember({ "Nykomling-Stormrage", "Member", 3, 1, "Rogue", "", "", "", true, 0, "ROGUE", guid = "Player-1-Nykomling" })
+    rosterRead()
+    check("...and when the roster shows them again there is still one line", joins() == joinsBefore and not banner:IsShown())
+
+    -- 14c. The same join under the name and under the ID: the two become one.
+    achDB().feed["Player-1-Dobbel:J"] = { id = "Player-1-Dobbel:J", who = "Player-1-Dobbel", name = "Dobbel", class = "", kind = "J", value = 0,
+        time = SERVER_NOW - 100, exact = false, bannered = true }
+    achDB().feed["name:dobbel:J"] = { id = "name:dobbel:J", who = "name:dobbel", name = "Dobbel", class = "", kind = "J", value = 0,
+        time = SERVER_NOW, exact = true, bannered = true, gratz = true, invited = true }
+    joinsBefore = joins()
+    addMember({ "Dobbel-Stormrage", "Member", 3, 9, "Paladin", "", "", "", true, 0, "PALADIN", guid = "Player-1-Dobbel" })
+    rosterRead()
+    local dobbel = achDB().feed["Player-1-Dobbel:J"]
+    check("a join saved both under the name and the ID becomes one line under the ID, keeping the greeting, the invite and the exact time",
+        achDB().feed["name:dobbel:J"] == nil and joins() == joinsBefore - 1 and dobbel.gratz == true and dobbel.invited == true
+        and dobbel.exact == true and dobbel.time == SERVER_NOW and dobbel.class == "PALADIN" and not banner:IsShown())
+
+    -- 15. The examples.
+    chatBefore = #guildChat
+    dw("achievements welcome")
+    check("/dw achievements welcome shows the inviter's banner with your name and both buttons",
+        banner:IsShown() and banner.text.text == nb.WEL_BANNER_TEXT:format("|cfff58cbaTester|r") .. "\n" .. nb.WEL_BANNER_INVITER and banner.button2:IsShown(), banner.text.text)
+    click(banner.button)
+    click(banner.button2)
+    check("...whose buttons send nothing", not banner:IsShown() and #guildChat == chatBefore)
+    flush()
+    dw("achievements velkommen")
+    check("/dw achievements velkommen does the same", banner:IsShown() and banner.title.text == nb.WEL_BANNER and banner.button2:IsShown())
+    click(banner.close)
+    flush()
+    click(panel.sample)
+    local firstTitle = banner.title.text
+    click(banner.close)
+    flush()
+    click(panel.sample)
+    check("the tab's example button takes turns: a milestone, then a welcome", firstTitle == nb.ACH_BANNER and banner.title.text == nb.WEL_BANNER, firstTitle)
+    click(banner.close)
+    flush()
+
+    -- 16. Every language fits in a chat message.
+    local fits, bad = true, {}
+    for _, language in ipairs(ns.LANGUAGES) do
+        local s = ns.strings[language.code]
+        local whisper = s.WEL_LINK_WHISPER:format(PAGE)
+        if #whisper > 255 or whisper:find("|", 1, true) then fits = false; bad[#bad + 1] = language.code .. " whisper " .. #whisper end
+        for n = 1, 3 do
+            local greeting = s["WEL_CHAT_" .. n]:format(("x"):rep(40))
+            if #greeting > 255 or greeting:find("|", 1, true) then fits = false; bad[#bad + 1] = language.code .. " greeting " .. n end
+        end
+    end
+    check("in every language the link whisper and the greetings fit in one chat message, without '|'", fits, table.concat(bad, ", "))
+
+    -- 18. /dw debug, someone outside the guild, secret text.
+    clearChat()
+    dw("debug")
+    check("/dw debug tells about the welcome", has("velkomst: ERR_GUILD_JOIN_S=%s has joined the guild.") and has("Invite-krok=true") and has("joinInit=true"), chatText())
+    clearChat()
+    local realIsMember = ns.IsMember
+    ns.IsMember = function() return false end
+    C_GuildInfo.Invite("Utenfor")
+    sys("Utenfor has joined the guild.")
+    ns.IsMember = realIsMember
+    fire("CHAT_MSG_SYSTEM", SECRET)
+    fire("CHAT_MSG_SYSTEM", nil)
+    check("outside the guild joins and invites are ignored, and secret text is skipped",
+        achDB().feed["name:utenfor:J"] == nil and achDB().invites.utenfor == nil and not banner:IsShown())
+
+    -- 19. For other tabs.
+    local recent = ns.RecentJoins(savedServerNow - 10)
+    local newestFirst = true
+    for index = 2, #recent do if recent[index].time > recent[index - 1].time then newestFirst = false end end
+    check("RecentJoins lists the joins after a time, newest first", #recent >= 10 and newestFirst and recent[1].time == savedServerNow + 90000
+        and recent[1].name == "Gammel" and recent[1].who == "name:gammel" and recent[1].exact == true, #recent)
+    local rows = {}
+    for _, member in ipairs(ns.ReadGuildRoster()) do rows[member.key] = member end
+    local rostButton = ns.WelcomeButtonFor(rows["Rosterny-Stormrage"])
+    check("WelcomeButtonFor gives no button once welcomed, and a Welcome! button for an online member not welcomed yet",
+        ns.WelcomeButtonFor(rows["Nykomling-Stormrage"]) == nil and rostButton ~= nil and rostButton.text == nb.WEL_BUTTON)
+    chatBefore = #guildChat
+    rostButton.onClick()
+    check("...which greets in guild chat", #guildChat == chatBefore + 1 and lastChat().text == nb.WEL_CHAT_2:format("Rosterny") and ns.WelcomeButtonFor(rows["Rosterny-Stormrage"]) == nil)
+
+    -- 17. Only the newest 50 joins are kept, and the milestones have their own 300.
+    local aBefore = 0
+    for _, entry in pairs(achDB().feed) do if entry.kind == "A" then aBefore = aBefore + 1 end end
+    achDB().welcome = false
+    for n = 1, 60 do
+        SERVER_NOW = savedServerNow + 100000 + n
+        sys("Prune" .. n .. " has joined the guild.")
+    end
+    local aAfter = 0
+    for _, entry in pairs(achDB().feed) do if entry.kind == "A" then aAfter = aAfter + 1 end end
+    check("of 60 joins only the newest 50 are kept, and legacy challenges are not dropped",
+        joins() == 50 and achDB().feed["name:prune60:J"] ~= nil and achDB().feed["name:prune11:J"] ~= nil and achDB().feed["name:prune10:J"] == nil
+        and aAfter == aBefore and aBefore > 0, joins())
+    local function others()
+        local n, older = 0, 0
+        for _, entry in pairs(achDB().feed) do
+            if entry.kind ~= "J" then
+                n = n + 1
+                if (entry.time or 0) < 1 then older = older + 1 end
+            end
+        end
+        return n, older
+    end
+    local othersBefore, older = others()
+    local synthetic = 300 - othersBefore + 5   -- old milestones that fill the list past its 300
+    for n = 1, synthetic do
+        local who = "name:fyll" .. n
+        achDB().feed[who .. ":L20"] = { id = who .. ":L20", who = who, name = "Fyll" .. n, class = "", kind = "L", value = 20, time = 1, exact = false, bannered = true }
+    end
+    SERVER_NOW = SERVER_NOW + 1
+    sys("Prune61 has joined the guild.")
+    local kept = 0
+    for n = 1, synthetic do if achDB().feed["name:fyll" .. n .. ":L20"] then kept = kept + 1 end end
+    aAfter = 0
+    for _, entry in pairs(achDB().feed) do if entry.kind == "A" then aAfter = aAfter + 1 end end
+    check("with 300 milestones and more, the oldest milestones go and the joins stay: a new join is kept",
+        others() == 300 and kept == synthetic - math.max(0, 5 - older) and joins() == 50 and achDB().feed["name:prune61:J"] ~= nil
+        and aAfter == aBefore, others() .. " " .. kept .. " " .. joins())
+    for n = 1, synthetic do achDB().feed["name:fyll" .. n .. ":L20"] = nil end
+
+    -- Put things back.
+    for id in pairs(achDB().feed) do achDB().feed[id] = nil end
+    for id, entry in pairs(savedFeed) do achDB().feed[id] = entry end
+    SERVER_NOW = savedServerNow
+    achDB().welcome = savedWelcome
+    achDB().banner = savedBannerBox
+    achDB().invites = {}
+    for _, key in ipairs(added) do
+        for index = #ROSTER, 1, -1 do if ROSTER[index][1] == key then table.remove(ROSTER, index) end end
+    end
+    rosterRead()
+    DrainBanners()
+    clearChat()
+    click(rsChip)
+end)()
+
+-- ============ guild firsts (Modules\Achievements.lua, F12) ================
+;(function()
+    local ACH = "DragonworldAch"
+    local nb, en = ns.strings.nb, ns.strings.en
+    local GOLD = "|cffffd100"
+    local SKULL, DRAGON = "Interface\\Icons\\INV_Misc_Bone_HumanSkull_01", "Interface\\Icons\\INV_Misc_Head_Dragon_Black"
+    local ALTINE, BORIN, DAGNY, TESTER = "|cff40c7ebAltine|r", "|cffc79c6eBorin|r", "|cffffffffDagny|r", "|cfff58cbaTester|r"
+    local function click(button) button.scripts.OnClick(button) end
+    local function achDB() return DragonworldDB.modules.achievements end
+    local function ach(text, sender) fire("CHAT_MSG_ADDON", ACH, text, "GUILD", sender or "Altine-Stormrage") end
+    local function onlyF(list)
+        local out = {}
+        for _, message in ipairs(list) do if message:sub(1, 2) == "F\t" then out[#out + 1] = message end end
+        return out
+    end
+    local function sentF() return onlyF(sentNow(ACH)) end
+    local function F(key, t, kind, enc, map, n, boss, instance, names)
+        return table.concat({ "F", key, tostring(t), kind, tostring(enc), tostring(map), tostring(n), boss, instance, names }, "\t")
+    end
+    local function firstsCount()
+        local n = 0
+        for _ in pairs(achDB().firsts) do n = n + 1 end
+        return n
+    end
+    local function same(list, expected)
+        if type(list) ~= "table" or #list ~= #expected then return false end
+        for index, value in ipairs(expected) do if list[index] ~= value then return false end end
+        return true
+    end
+    local function lastChat() return guildChat[#guildChat] or {} end
+    local function plainGroup()
+        GROUP.members = { { name = "Altine", realm = "Stormrage", guid = "Player-1-Altine", class = "MAGE" },
+                          { name = "Pug", realm = "Other", guid = "Player-2-Pug", class = "ROGUE" } }
+    end
+    local function place(inside, kind, name, map) INSTANCE.inside, INSTANCE.type, INSTANCE.name, INSTANCE.map = inside, kind, name, map end
+
+    ns.SetLanguage("nb", true)
+    DrainBanners()
+    sentNow(ACH)
+    local banner = DragonworldMilestoneBanner
+    -- Put back at the end.
+    local savedEpoch, savedServerNow = ns.FIRSTS_EPOCH, SERVER_NOW
+    local savedMembers, savedRaid = GROUP.members, GROUP.raid
+    local savedPlace = { INSTANCE.inside, INSTANCE.type, INSTANCE.name, INSTANCE.map }
+    local savedBannerBox, savedWelcome, savedRaidSeen = achDB().banner, achDB().welcome, achDB().raidEventSeen
+    local savedFirsts, savedLog = achDB().firsts, achDB().bossLog
+    local savedFeed, savedLevels = {}, {}
+    for id, entry in pairs(achDB().feed) do savedFeed[id] = entry end
+    for key, level in pairs(achDB().levels) do savedLevels[key] = level end
+    achDB().firsts, achDB().bossLog = {}, {}
+    achDB().welcome = false
+    -- The harness clock is far before the real day guild firsts came; move the rule's start.
+    ns.FIRSTS_EPOCH = SERVER_NOW - 30 * 86400
+    check("the guild-first start time is the day it was added (2026-11-22 00:00 UTC)", savedEpoch == 1795305600, savedEpoch)
+    local t = SERVER_NOW
+
+    -- 1. The group kills the last boss of The Deadmines.
+    place(true, "party", "The Deadmines", 36)
+    plainGroup()
+    fire("ENCOUNTER_END", 2747, "Edwin VanCleef", 1, 5, 1)
+    fire("BOSS_KILL", 2747, "Edwin VanCleef")
+    check("a last-boss kill is not claimed at once: the names in the group are read a moment later",
+        achDB().firsts.d4 == nil and not banner:IsShown())
+    flush()
+    local d4 = achDB().firsts.d4
+    check("...then the gold banner comes: FØRST I GUILDEN!, your group's text with the boss in gold, Hurra! and the skull",
+        banner:IsShown() and banner.title.text == "FØRST I GUILDEN!"
+        and banner.text.text == nb.ACH_FIRST_YOU:format(GOLD .. "Edwin VanCleef|r", "The Deadmines")
+        and banner.text.text:find("Gruppen din beseiret", 1, true) == 1 and banner.button.label.text == "Hurra!" and banner.shield.texture == SKULL,
+        banner.text.text)
+    check("...and it is saved: the guild members in the group in name order (not the pug), how many, and that you were there",
+        d4 ~= nil and d4.type == "D" and d4.kind == "F" and same(d4.names, { "Altine", "Tester" }) and d4.count == 2 and d4.mine == true
+        and d4.time == t and d4.boss == "Edwin VanCleef" and d4.instance == "The Deadmines" and d4.enc == 2747 and d4.map == 36 and d4.id == "F:d4")
+    check("ENCOUNTER_END and BOSS_KILL for the same kill count once", achDB().bossLog[2747] ~= nil and achDB().bossLog[2747].n == 1
+        and achDB().bossLog[2747].result == "d4", achDB().bossLog[2747] and achDB().bossLog[2747].n)
+    local chatBefore = #guildChat
+    click(banner.button)
+    flush()
+    local sent = sentF()
+    check("...and one group member tells the guild, once (Hurra! posts nothing)",
+        #sent == 1 and sent[1] == "F\td4\t" .. t .. "\tD\t2747\t36\t2\tEdwin VanCleef\tThe Deadmines\tAltine,Tester"
+        and #guildChat == chatBefore and not banner:IsShown() and d4.sent == true, table.concat(sent, " ; "))
+
+    -- 3. The same boss again later.
+    fire("ENCOUNTER_END", 2747, "Edwin VanCleef", 1, 5, 1)
+    flush()
+    flush()
+    check("killing it again later gives nothing", not banner:IsShown() and #sentF() == 0 and achDB().bossLog[2747].n == 2)
+
+    -- 2. A kill during the fight waits for its end.
+    place(true, "party", "Wailing Caverns", 43)
+    inCombat = true
+    fire("ENCOUNTER_END", 592, "Mutanus the Devourer", 1, 5, 1)
+    flush()
+    check("a kill while still in combat is not claimed yet", achDB().firsts.d5 == nil and not banner:IsShown())
+    GROUP.members = { { name = SECRET, realm = SECRET, guid = SECRET, class = "MAGE" }, { name = SECRET, realm = SECRET, guid = SECRET, class = "ROGUE" } }
+    inCombat = false
+    fire("PLAYER_REGEN_ENABLED")
+    local d5 = achDB().firsts.d5
+    check("...when combat ends it is; names the game still hides leave only you, counted as the whole group",
+        d5 ~= nil and same(d5.names, { "Tester" }) and d5.count == 3 and banner:IsShown() and banner.text.text:find("Mutanus the Devourer", 1, true) ~= nil)
+    plainGroup()
+    flush()
+    sent = sentF()
+    check("...sent by you as the first in the list", #sent == 1 and sent[1] == "F\td5\t" .. t .. "\tD\t592\t43\t3\tMutanus the Devourer\tWailing Caverns\tTester",
+        table.concat(sent, " ; "))
+    DrainBanners()
+
+    -- 2b. The fight starts again before the 2.2 s read: it waits for the end of that fight.
+    place(true, "party", "Razorfen Kraul", 47)
+    local deferredBefore = 0
+    clearChat()
+    dw("debug")
+    deferredBefore = tonumber(chatText():match("utsatt (%d+)")) or -1
+    clearChat()
+    fire("ENCOUNTER_END", 443, "Charlga Razorflank", 1, 5, 1)
+    inCombat = true
+    flush()
+    check("a kill whose names would be read during the next fight waits", achDB().firsts.d12 == nil and not banner:IsShown())
+    inCombat = false
+    fire("PLAYER_REGEN_ENABLED")
+    dw("debug")
+    check("...and is claimed when that fight ends (counted as waiting once)",
+        achDB().firsts.d12 ~= nil and same(achDB().firsts.d12.names, { "Altine", "Tester" }) and achDB().firsts.d12.deferred == nil
+        and banner:IsShown() and has(("utsatt %d,"):format(deferredBefore + 1)), chatText())
+    clearChat()
+    flush()
+    sentF()
+    achDB().firsts.d12 = nil
+    DrainBanners()
+
+    -- 2c. A pug whose first and last name start like a member's is not that member.
+    place(true, "party", "Razorfen Kraul", 47)
+    GROUP.members = { { name = "Altine", realm = "Berg", guid = "Player-3-Pug", class = "MAGE" } }
+    fire("ENCOUNTER_END", 443, "Charlga Razorflank", 1, 5, 1)
+    flush()
+    check("a pug 'Altine Berg' is not counted as the member Altine",
+        achDB().firsts.d12 ~= nil and same(achDB().firsts.d12.names, { "Tester" }) and achDB().firsts.d12.count == 1)
+    flush()
+    sentF()
+    achDB().firsts.d12 = nil
+    plainGroup()
+    DrainBanners()
+
+    -- 4. A wipe, and a boss that is not the last one.
+    place(true, "party", "The Deadmines", 36)
+    local before = firstsCount()
+    fire("ENCOUNTER_END", 2745, "Mr. Smite", 1, 5, 0)
+    check("a wipe counts for nothing", achDB().bossLog[2745] == nil)
+    fire("ENCOUNTER_END", 2745, "Mr. Smite", 1, 5, 1)
+    flush()
+    check("a boss that is not the dungeon's last gives no first, but is in the boss log as 'none'",
+        firstsCount() == before and not banner:IsShown() and achDB().bossLog[2745] ~= nil and achDB().bossLog[2745].result == "none")
+
+    -- 5. An encounter number the list does not know, with the name of a last boss.
+    place(true, "party", "Uldaman", 70)
+    fire("ENCOUNTER_END", 99001, "Archaedas", 1, 5, 1)
+    flush()
+    check("an unknown number with the English name of a last boss counts by the name (Uldaman)",
+        achDB().firsts.d20 ~= nil and achDB().firsts.d20.boss == "Archaedas" and achDB().firsts.d20.instance == "Uldaman")
+    DrainBanners()
+    sentF()
+
+    -- 6. Someone else in the group sends it first.
+    place(true, "party", "Shadowfang Keep", 33)
+    fire("ENCOUNTER_END", 2755, "Archmage Arugal", 1, 5, 1)
+    flush()
+    check("Arugal: our banner is up", banner:IsShown() and achDB().firsts.d6 ~= nil)
+    ach(F("d6", t, "D", 2755, 33, 2, "Archmage Arugal", "Shadowfang Keep", "Altine,Tester"))
+    flush()
+    check("when Altine sends it before our turn, we send nothing and show no second banner",
+        #sentF() == 0 and achDB().firsts.d6.heard == true and not achDB().firsts.d6.sent and ns.BannerQueueLength() == 0
+        and banner.text.text == nb.ACH_FIRST_YOU:format(GOLD .. "Archmage Arugal|r", "Shadowfang Keep"))
+    DrainBanners()
+
+    -- 7. A first from another group.
+    ach(F("d7", t, "D", 2910, 48, 3, "Aku'mai", "Blackfathom Deeps", "Altine,Borin,Dagny"))
+    check("a first from another group: the names in their class colours, the boss in gold, and Gratz!",
+        banner:IsShown() and banner.title.text == "FØRST I GUILDEN!"
+        and banner.text.text == ALTINE .. ", " .. BORIN .. ", " .. DAGNY .. " beseiret |cffffd100Aku'mai|r i Blackfathom Deeps!"
+        and banner.button.label.text == "Gratz!" and achDB().firsts.d7 ~= nil and not achDB().firsts.d7.mine, banner.text.text)
+    chatBefore = #guildChat
+    click(banner.button)
+    check("...Gratz! congratulates in guild chat once",
+        #guildChat == chatBefore + 1 and lastChat().text == "Gratz med guildens første kill av Aku'mai, Altine, Borin, Dagny!"
+        and lastChat().chatType == "GUILD" and achDB().firsts.d7.gratz == true, lastChat().text)
+
+    -- 8. A live message from someone who was not there.
+    ach(F("d8", t, "D", 2760, 34, 2, "Bazil Thredd", "The Stockade", "Altine,Borin"), "Eira-Stormrage")
+    check("a fresh first sent by someone not in its list of names (a catch-up answer) is stored without a banner",
+        achDB().firsts.d8 ~= nil and achDB().firsts.d8.time == t and same(achDB().firsts.d8.names, { "Altine", "Borin" })
+        and not banner:IsShown() and ns.BannerQueueLength() == 0)
+
+    -- 9. An old one (a catch-up answer).
+    ach(F("d9", t - 3600, "D", 3482, 0, 1, "Relic Guardian", "Excavation Site: Wetlands", "Borin"), "Eira-Stormrage")
+    check("a first older than 15 minutes, from anyone, is stored without a banner",
+        achDB().firsts.d9 ~= nil and achDB().firsts.d9.time == t - 3600 and achDB().firsts.d9.bannered == true and not banner:IsShown())
+
+    -- 10. Earlier and later times.
+    ach(F("d9", t - 7200, "D", 3482, 0, 2, "Relic Guardian", "Excavation Site: Wetlands", "Dagny,Eira"), "Eira-Stormrage")
+    check("an older answer with an earlier time replaces it quietly", achDB().firsts.d9.time == t - 7200 and same(achDB().firsts.d9.names, { "Dagny", "Eira" })
+        and achDB().firsts.d9.count == 2 and not banner:IsShown())
+    ach(F("d9", t - 1800, "D", 3482, 0, 1, "Relic Guardian", "Excavation Site: Wetlands", "Borin"), "Borin-Stormrage")
+    check("...a later time changes nothing", achDB().firsts.d9.time == t - 7200 and same(achDB().firsts.d9.names, { "Dagny", "Eira" }))
+    ach(F("d7", t - 60, "D", 2910, 48, 2, "Aku'mai", "Blackfathom Deeps", "Altine,Eira"))
+    check("...and a fresh message never moves a first we have, even with an earlier time",
+        achDB().firsts.d7.time == t and #achDB().firsts.d7.names == 3 and not banner:IsShown())
+
+    -- 11. Broken messages.
+    before = firstsCount()
+    ach(F("d101", t - 3600, "D", 663, 409, 1, "Lucifron", "Molten Core", "Altine"))
+    ach(F("e1234", t - 3600, "D", 1234, 0, 1, "Boss", "Place", "Altine"))
+    ach(F("d12", t + 601, "D", 443, 47, 1, "Charlga Razorflank", "Razorfen Kraul", "Altine"))
+    ach(F("d12", ns.FIRSTS_EPOCH - 1, "D", 443, 47, 1, "Charlga Razorflank", "Razorfen Kraul", "Altine"))
+    ach(F("d12", t - 3600, "D", 443, 47, 0, "Charlga Razorflank", "Razorfen Kraul", "Altine"))
+    ach(F("d12", t - 3600, "D", 443, 47, 41, "Charlga Razorflank", "Razorfen Kraul", "Altine"))
+    ach(F("d12", t - 3600, "D", 443, 47, 1, "", "Razorfen Kraul", "Altine"))
+    ach(F("d12", t - 3600, "D", 443, 47, 1, "Charlga Razorflank", "", "Altine"))
+    ach(F("x12", t - 3600, "D", 443, 47, 1, "Charlga Razorflank", "Razorfen Kraul", "Altine"))
+    ach(F("e0", t - 3600, "R", 0, 409, 1, "Boss", "Molten Core", "Altine"))
+    ach(F("L12", t - 3600, "R", 0, 409, 1, "Boss", "Molten Core", "Altine"))
+    ach(F("L1.2", t - 3600, "D", 0, 409, 1, "Boss", "Molten Core", "Altine"))
+    ach("F\td12")
+    flush()
+    check("broken firsts are ignored: a raid as a dungeon, a raid key as a dungeon, a future time, a time before the start, a bad count, no boss or place, a bad key",
+        firstsCount() == before and achDB().firsts.d12 == nil and achDB().firsts.d101 == nil and achDB().firsts.e1234 == nil and not banner:IsShown())
+
+    -- 12. A raid boss.
+    place(true, "raid", "Molten Core", 409)
+    achDB().raidEventSeen = nil
+    fire("ENCOUNTER_END", 663, "Lucifron", 9, 20, 1)
+    flush()
+    local e663 = achDB().firsts.e663
+    check("a raid boss kill is a first too: e663 in Molten Core, with the dragon, and the raid event is remembered",
+        e663 ~= nil and e663.type == "R" and e663.instance == "Molten Core" and e663.boss == "Lucifron" and achDB().raidEventSeen == true
+        and banner:IsShown() and banner.shield.texture == DRAGON)
+    flush()
+    sent = sentF()
+    check("...and is sent", #sent == 1 and sent[1] == "F\te663\t" .. t .. "\tR\t663\t409\t2\tLucifron\tMolten Core\tAltine,Tester", table.concat(sent, " ; "))
+    DrainBanners()
+
+    -- 13. The raid lockout fallback.
+    FAKE_LOCKS = { { "Lucifron", "", false, false }, { "Magmadar", "", false, false } }
+    RAIDINFO_REQUESTS = 0
+    function GetInstanceLockTimeRemaining() return 0, false, #FAKE_LOCKS, 0 end
+    function GetInstanceLockTimeRemainingEncounter(index) return table.unpack(FAKE_LOCKS[index]) end
+    function RequestRaidInfo() RAIDINFO_REQUESTS = RAIDINFO_REQUESTS + 1 end
+    achDB().raidEventSeen = nil
+    place(true, "raid", "Testing Halls", 999)
+    fire("PLAYER_ENTERING_WORLD")
+    check("entering a raid with no raid events seen yet looks at the lockout after 3.2 s", queued(3.2) == 1, queued(3.2))
+    flush()
+    FAKE_LOCKS[2][3] = true
+    local requests = RAIDINFO_REQUESTS
+    fire("PLAYER_REGEN_ENABLED")
+    check("...after a fight it asks the game for fresh lockout info", RAIDINFO_REQUESTS == requests + 1)
+    flush()
+    local lock = achDB().firsts["L999.2"]
+    check("...and a boss that has become killed in the lockout is a first (L999.2, Magmadar)",
+        lock ~= nil and lock.type == "R" and lock.boss == "Magmadar" and lock.instance == "Testing Halls" and lock.enc == 0 and lock.map == 999
+        and banner:IsShown() and banner.text.text == nb.ACH_FIRST_YOU:format(GOLD .. "Magmadar|r", "Testing Halls"))
+    DrainBanners()
+    FAKE_LOCKS[1][3] = true
+    requests = RAIDINFO_REQUESTS
+    fire("UPDATE_INSTANCE_INFO")
+    flush()
+    check("...also when the game sends new lockout info by itself, without asking again (no loop)",
+        achDB().firsts["L999.1"] ~= nil and achDB().firsts["L999.1"].boss == "Lucifron" and RAIDINFO_REQUESTS == requests)
+    DrainBanners()
+    sentF()
+    achDB().raidEventSeen = true
+    FAKE_LOCKS[3] = { "Gehennas", "", true, false }
+    requests = RAIDINFO_REQUESTS
+    fire("PLAYER_ENTERING_WORLD")
+    local snapshots = queued(3.2)
+    fire("PLAYER_REGEN_ENABLED")
+    flush()
+    check("once a raid event has been seen, the lockout is no longer watched", snapshots == 0 and RAIDINFO_REQUESTS == requests and achDB().firsts["L999.3"] == nil)
+    achDB().raidEventSeen = nil
+    local realIsMember = ns.IsMember
+    ns.IsMember = function() return false end
+    fire("ZONE_CHANGED_NEW_AREA")
+    snapshots = queued(3.2)
+    ns.IsMember = realIsMember
+    check("...and outside the guild nothing is planned at all", snapshots == 0)
+    FAKE_LOCKS[3] = { "Garr", "", false, false }
+    fire("UPDATE_INSTANCE_INFO")         -- the lockout now has 3 bosses: read again from here
+    flush()
+    fire("ENCOUNTER_END", 666, "Garr", 9, 20, 1)
+    achDB().raidEventSeen = nil          -- as if the flag were not set yet
+    FAKE_LOCKS[3][3] = true
+    fire("PLAYER_REGEN_ENABLED")
+    flush()
+    clearChat()
+    dw("debug")
+    check("a lockout change right after the game reported that boss is not claimed a second time",
+        achDB().firsts.e666 ~= nil and achDB().firsts["L999.3"] == nil and has("lås-reserve 2 |"), chatText())
+    clearChat()
+    DrainBanners()
+    sentF()
+    -- The lockout was read before the game had it (or with another number of bosses).
+    FAKE_LOCKS[4] = { "Shazzrah", "", true, false }
+    fire("UPDATE_INSTANCE_INFO")
+    flush()
+    check("a lockout that suddenly has more bosses, one of them killed, gives no first", achDB().firsts["L999.4"] == nil and not banner:IsShown())
+    place(true, "raid", "Other Halls", 998)
+    FAKE_LOCKS = {}
+    fire("PLAYER_ENTERING_WORLD")
+    flush()
+    FAKE_LOCKS = { { "Lucifron", "", true, false }, { "Magmadar", "", true, false }, { "Gehennas", "", false, false } }
+    fire("PLAYER_REGEN_ENABLED")
+    flush()
+    check("joining a raid in progress: bosses killed before you came are no firsts, even right after a fight",
+        achDB().firsts["L998.1"] == nil and achDB().firsts["L998.2"] == nil and not banner:IsShown())
+    FAKE_LOCKS = {}
+    fire("PLAYER_ENTERING_WORLD")
+    flush()
+    FAKE_LOCKS = { { "Lucifron", "", true, false }, { "Magmadar", "", false, false } }
+    fire("INSTANCE_LOCK_START")
+    flush()
+    check("...nor is one killed boss in the lockout you join, with no fight of yours", achDB().firsts["L998.1"] == nil and not banner:IsShown())
+    FAKE_LOCKS = {}
+    fire("PLAYER_ENTERING_WORLD")
+    flush()
+    FAKE_LOCKS = { { "Lucifron", "", true, false }, { "Magmadar", "", false, false } }
+    fire("PLAYER_REGEN_ENABLED")
+    flush()
+    check("...but the one boss that saves a new lockout, right after your fight, is a first",
+        achDB().firsts["L998.1"] ~= nil and achDB().firsts["L998.1"].boss == "Lucifron" and banner:IsShown())
+    flush()
+    DrainBanners()
+    sentF()
+    achDB().firsts["L998.1"] = nil
+    FAKE_LOCKS, RAIDINFO_REQUESTS = nil, nil
+    GetInstanceLockTimeRemaining, GetInstanceLockTimeRemainingEncounter, RequestRaidInfo = nil, nil, nil
+
+    -- 14. A full raid with long names.
+    place(true, "raid", "Molten Core", 409)
+    local rosterSize = #ROSTER
+    GROUP.members = {}
+    for n = 1, 39 do
+        local name = ("Medlemmedsvaertlangtnavn%02d"):format(n)
+        ROSTER[#ROSTER + 1] = { name .. "-Stormrage", "Member", 3, 60, "Warrior", "", "", "", false, 0, "WARRIOR", guid = "Player-1-Lang" .. n, last = { 0, 0, 1, 0 } }
+        GROUP.members[n] = { name = name, realm = "Stormrage", guid = "Player-1-Lang" .. n, class = "WARRIOR" }
+    end
+    GROUP.raid = true
+    fire("ENCOUNTER_END", 664, "Magmadar", 9, 40, 1)
+    flush()
+    flush()
+    sent = sentF()
+    local fields = {}
+    for field in ((sent[1] or "") .. "\t"):gmatch("(.-)\t") do fields[#fields + 1] = field end
+    local listed = 0
+    for _ in (fields[10] or ""):gmatch("[^,]+") do listed = listed + 1 end
+    check("a 40-man raid: the message stays within 255 bytes, says 40, and lists as many names as fit",
+        #sent == 1 and #sent[1] <= 255 and fields[2] == "e664" and fields[7] == "40" and listed > 0 and listed < 40
+        and achDB().firsts.e664.count == 40 and #achDB().firsts.e664.names == 40, sent[1])
+    local senderListed = false
+    for name in (fields[10] or ""):gmatch("[^,]+") do senderListed = senderListed or name == "Tester" end
+    check("...and the sender, last in name order, is still among the names", senderListed
+        and (fields[10] or ""):find("^Medlemmedsvaertlangtnavn01,") ~= nil and (fields[10] or ""):sub(-7) == ",Tester", fields[10])
+    -- What another member's addon makes of it (the sender must be in the names for the banner).
+    local e664 = achDB().firsts.e664
+    achDB().firsts.e664 = nil
+    DrainBanners()
+    local realIsMe = ns.IsMe
+    ns.IsMe = function() return false end
+    fire("CHAT_MSG_ADDON", ACH, sent[1] or "", "GUILD", "Tester-Stormrage")
+    ns.IsMe = realIsMe
+    check("...so other members accept it as a fresh first with the banner",
+        achDB().firsts.e664 ~= nil and achDB().firsts.e664.heard == true and achDB().firsts.e664.count == 40 and banner:IsShown())
+    achDB().firsts.e664 = e664
+    for index = #ROSTER, rosterSize + 1, -1 do table.remove(ROSTER, index) end
+    GROUP.raid = false
+    plainGroup()
+    DrainBanners()
+
+    -- 15. Answers to someone who logs in.
+    for _, rec in pairs(achDB().firsts) do rec.time, rec.heardAt = SERVER_NOW - 5000, SERVER_NOW - 5000 end
+    achDB().firsts.d9.heardAt = SERVER_NOW - 100          -- killed long ago, heard of recently
+    achDB().firsts.d7.time, achDB().firsts.d7.heardAt = SERVER_NOW - 50, SERVER_NOW - 50
+    ach("R\t" .. (SERVER_NOW - 1000), "Nykommer-Stormrage")
+    flush()
+    check("an answer to R waits a little longer than the milestones", #sentF() == 0)
+    flush()
+    sent = sentF()
+    check("...then sends the firsts stored or heard after the time asked for, newest first",
+        #sent == 2 and sent[1]:find("^F\td7\t") ~= nil and sent[2]:find("^F\td9\t" .. (SERVER_NOW - 5000) .. "\t") ~= nil, table.concat(sent, " ; "))
+    for n = 1, 25 do
+        local key = "e" .. (500000 + n)
+        achDB().firsts[key] = { key = key, kind = "F", type = "R", enc = 500000 + n, map = 0, boss = "Boss" .. n, instance = "Somewhere",
+            names = { "Borin" }, count = 1, time = SERVER_NOW - 4000 + n, heardAt = SERVER_NOW - 4000 + n, id = "F:" .. key, bannered = true, heard = true }
+    end
+    ach("R", "Nykommer-Stormrage")
+    flush()
+    flush()
+    local batch1 = sentF()
+    flush()
+    local batch2 = sentF()
+    ach(F("d9", SERVER_NOW - 4500, "D", 3482, 0, 1, "Relic Guardian", "Excavation Site: Wetlands", "Borin"), "Eira-Stormrage")
+    flush()
+    local batch3 = sentF()
+    check("a plain R gets the firsts 5 at a time, and an answer heard from someone else stops ours",
+        #batch1 == 5 and #batch2 == 5 and #batch3 == 0 and batch1[1]:find("^F\td7\t") ~= nil and achDB().firsts.d9.time == SERVER_NOW - 5000,
+        #batch1 .. " " .. #batch2 .. " " .. #batch3)
+    ach("R", "Nykommer-Stormrage")
+    local total = 0
+    for _ = 1, 7 do
+        flush()
+        total = total + #sentF()
+    end
+    check("...and sends at most 20 in all", total == 20, total)
+    for n = 1, 25 do achDB().firsts["e" .. (500000 + n)] = nil end
+    achDB().firsts.d7.time = t
+    sentNow(ACH)
+
+    -- 16. The lines in the tab.
+    click(chipByID.achievements)
+    local panel = DragonworldAchievementsScroll.parent
+    if not panel.feedChip.selected then click(panel.feedChip) end
+    local function feedRow(id)
+        for _, row in ipairs(DragonworldAchievementsScroll.scrollChild.children) do
+            if row:IsShown() and row.entry and row.entry.id == id then return row end
+        end
+    end
+    local d7Row, raidRow, ownRow = feedRow("F:d7"), feedRow("F:e663"), feedRow("F:d4")
+    check("a guild first is a line in the list: the skull, 'Først i guilden: ...' with the names in colour and the boss in gold",
+        d7Row ~= nil and d7Row.icon.texture == SKULL
+        and d7Row.text.text == nb.ACH_FIRST_ROW:format(ALTINE .. ", " .. BORIN .. ", " .. DAGNY, GOLD .. "Aku'mai|r", "Blackfathom Deeps")
+        and raidRow ~= nil and raidRow.icon.texture == DRAGON, d7Row and d7Row.text.text)
+    check("...with no Gratz button once congratulated, or for your own group's", not d7Row.gratz:IsShown() and ownRow ~= nil and not ownRow.gratz:IsShown())
+    local d9Rec = achDB().firsts.d9
+    achDB().firsts.d9.time = SERVER_NOW - 60
+    click(panel.feedChip)
+    local d9Row = feedRow("F:d9")
+    check("...and a Gratz button on a recent one from another group", d9Row ~= nil and d9Row.gratz:IsShown() and d9Row.gratz.label.text == nb.ACH_GRATZ)
+    chatBefore = #guildChat
+    click(d9Row.gratz)
+    check("...which congratulates in guild chat", #guildChat == chatBefore + 1 and lastChat().text == nb.ACH_FIRST_GRATZ_CHAT:format("Relic Guardian", "Dagny, Eira")
+        and not feedRow("F:d9").gratz:IsShown(), lastChat().text)
+    d9Rec.time = SERVER_NOW - 5000
+    d7Row = feedRow("F:d7")
+    d7Row:Fire("OnEnter")
+    local tip = table.concat(GameTooltip.lines, "\n")
+    check("hovering the line shows the group and that kills from before the addon are unknown",
+        GameTooltip.lines[1] == nb.ACH_FIRST_ROW:format("Altine, Borin, Dagny", "Aku'mai", "Blackfathom Deeps")
+        and tip:find("Guildmedlemmer i gruppen (3): Altine, Borin, Dagny", 1, true) ~= nil and tip:find(nb.ACH_FIRST_TIP, 1, true) ~= nil
+        and tip:find(nb.ACH_TIP_GRATZED, 1, true) ~= nil, tip)
+    d7Row:Fire("OnLeave")
+
+    -- 17. The example.
+    chatBefore = #guildChat
+    dw("achievements first")
+    check("/dw achievements first shows an example with your name: Ragnaros in Molten Core",
+        banner:IsShown() and banner.title.text == nb.ACH_FIRST_BANNER
+        and banner.text.text == nb.ACH_FIRST_OTHER:format(TESTER, GOLD .. "Ragnaros|r", "Molten Core") and banner.shield.texture == DRAGON, banner.text.text)
+    click(banner.button)
+    check("...whose Gratz! sends nothing", not banner:IsShown() and #guildChat == chatBefore)
+    flush()
+    dw("achievements boss")
+    check("/dw achievements boss does the same", banner:IsShown() and banner.title.text == nb.ACH_FIRST_BANNER)
+    click(banner.close)
+    flush()
+    dw("achievements test")
+    check("/dw achievements test still shows the milestone example", banner:IsShown() and banner.title.text == nb.ACH_BANNER)
+    click(banner.close)
+    flush()
+
+    -- 18. Banners turned off.
+    achDB().banner = false
+    ach(F("d10", SERVER_NOW, "D", 3303, 0, 1, "Shade of the Archmage", "City of Dalaran", "Altine"))
+    check("with 'Show the banner' off a first is only stored", achDB().firsts.d10 ~= nil and not banner:IsShown())
+    achDB().banner = savedBannerBox
+
+    -- 19. The language changes while the banner is up.
+    ach(F("d11", SERVER_NOW, "D", 382, 90, 2, "Mekgineer Thermaplugg", "Gnomeregan", "Altine,Borin"))
+    check("Gnomeregan's first shows in Norwegian", banner:IsShown() and banner.title.text == "FØRST I GUILDEN!")
+    ns.SetLanguage("en", true)
+    check("...and switches to English with the language",
+        banner.title.text == "GUILD FIRST!" and banner.text.text == en.ACH_FIRST_OTHER:format(ALTINE .. ", " .. BORIN, GOLD .. "Mekgineer Thermaplugg|r", "Gnomeregan")
+        and banner.button.label.text == en.ACH_GRATZ, banner.text.text)
+    ns.SetLanguage("nb", true)
+    DrainBanners()
+
+    -- 20. /dw debug, the list for other tabs, someone outside the guild.
+    clearChat()
+    dw("debug")
+    local list = ns.GuildFirsts()
+    local dungeons, raids = 0, 0
+    for _, item in ipairs(list) do if item.type == "R" then raids = raids + 1 else dungeons = dungeons + 1 end end
+    check("/dw debug tells which boss signals came, the boss log and how many firsts",
+        has("bosser: ENCOUNTER_END ") and has("raid-hendelse sett: ") and has("GetInstanceInfo: true raid 409") and has("låsinfo: nei")
+        and has("siste bosser: ") and not has("siste bosser: ingen ennå")
+        and has(("guild firsts: %d (dungeon %d, raid %d)"):format(#list, dungeons, raids)), chatText())
+    clearChat()
+    local newestFirst = true
+    for index = 2, #list do if (list[index].time or 0) > (list[index - 1].time or 0) then newestFirst = false end end
+    list[1].names[1] = "Changed"
+    check("GuildFirsts lists them newest first, as copies", #list == firstsCount() and newestFirst and achDB().firsts[list[1].key].names[1] ~= "Changed")
+    place(true, "party", "Hall of Thanes", 1001)
+    ns.IsMember = function() return false end
+    fire("ENCOUNTER_END", 3496, "Durgen Dirgehammer", 1, 5, 1)
+    ns.IsMember = realIsMember
+    flush()
+    check("outside the guild kills are ignored", achDB().firsts.d1 == nil and not banner:IsShown())
+
+    -- Put things back.
+    achDB().firsts, achDB().bossLog = savedFirsts, savedLog
+    achDB().raidEventSeen, achDB().banner, achDB().welcome = savedRaidSeen, savedBannerBox, savedWelcome
+    for id in pairs(achDB().feed) do achDB().feed[id] = nil end
+    for id, entry in pairs(savedFeed) do achDB().feed[id] = entry end
+    for key in pairs(achDB().levels) do achDB().levels[key] = nil end
+    for key, level in pairs(savedLevels) do achDB().levels[key] = level end
+    GROUP.members, GROUP.raid = savedMembers, savedRaid
+    place(savedPlace[1], savedPlace[2], savedPlace[3], savedPlace[4])
+    ns.FIRSTS_EPOCH, SERVER_NOW = savedEpoch, savedServerNow
+    inCombat = false
+    DrainBanners()
+    sentNow(ACH)
+    clearChat()
     click(rsChip)
 end)()
 
@@ -7430,6 +10733,4354 @@ end)()
 
     check("reading a request: a plain R (older versions) means everything",
         nextLogin.SyncRequestSince("R") == 0 and nextLogin.SyncRequestSince("R\t123") == 123 and nextLogin.SyncRequestSince("R\tabc") == 0)
+end)()
+
+-- ============ shared building blocks: chat, group, overlays, banner, layout ============
+;(function()
+    local function click(button) button.scripts.OnClick(button) end
+    local function achDB() return DragonworldDB.modules.achievements end
+
+    -- Chat helpers (Core.lua).
+    local before = #guildChat
+    check("SendChat: '|' becomes '/' and the message goes to guild chat",
+        ns.SendChat("a|b", "GUILD") == true and #guildChat == before + 1 and guildChat[#guildChat].text == "a/b" and guildChat[#guildChat].chatType == "GUILD")
+    check("SendChat: a whisper goes to its target",
+        ns.SendChat("hei", "WHISPER", "Altine-Stormrage") == true and guildChat[#guildChat].chatType == "WHISPER" and guildChat[#guildChat].target == "Altine-Stormrage")
+    check("SendChat: no text, no message", ns.SendChat("", "GUILD") == false and ns.SendChat(nil, "GUILD") == false and #guildChat == before + 2)
+    chatLock = true
+    check("SendChat: while the game locks chat, nothing is sent", ns.SendChat("x", "GUILD") == false and #guildChat == before + 2)
+    chatLock = false
+    local long = string.rep("æ", 150) -- 300 bytes, two per letter
+    local sentLong = ns.SendChat(long, "GUILD")
+    local cut = guildChat[#guildChat].text
+    check("SendChat: a long text is cut to at most 255 bytes without splitting a letter",
+        sentLong and #cut <= 255 and #cut >= 250 and utf8.len(cut) ~= nil and long:sub(1, #cut) == cut, #cut)
+
+    local told, inserted
+    local savedTell, savedInsert = ChatFrame_SendTell, ChatEdit_InsertLink
+    ChatFrame_SendTell = function(name) told = name end
+    ChatEdit_InsertLink = function(text) inserted = text; return true end
+    ns.WhisperTo("Altine-Stormrage")
+    check("WhisperTo opens a whisper with the game's function", told == "Altine-Stormrage")
+    check("InsertChatLink puts the link in the chat line, and a missing link does nothing",
+        ns.InsertChatLink("|Hitem:7|h[Iron Sword]|h") == true and inserted == "|Hitem:7|h[Iron Sword]|h" and ns.InsertChatLink(nil) == false)
+    ChatFrame_SendTell, ChatEdit_InsertLink = savedTell, savedInsert
+
+    check("GuildMOTD falls back to GetGuildRosterMOTD when C_GuildInfo has no GetMOTD", ns.GuildMOTD() == GUILD_MOTD_TEXT)
+    C_GuildInfo.GetMOTD = function() return "X" end
+    check("GuildMOTD reads C_GuildInfo.GetMOTD first", ns.GuildMOTD() == "X")
+    C_GuildInfo.GetMOTD = function() return SECRET end
+    check("...and a secret answer gives an empty text", ns.GuildMOTD() == "")
+    C_GuildInfo.GetMOTD = nil
+
+    -- Group, instance and invites (Status.lua).
+    local function keys(list) return table.concat(list, ",") end
+    check("solo: no group units, group size 1", #ns.GroupUnits() == 0 and ns.GroupSize() == 1 and next(ns.GroupMemberKeys()) == nil)
+    GROUP.members = {
+        { name = "Altine", guid = "Player-1-Altine", class = "MAGE", level = 58 },
+        { name = "Akro", realm = "Polis", guid = "Player-1-Akro", class = "WARRIOR", level = 60 },
+    }
+    check("in a party: party1 and party2, group size 3", keys(ns.GroupUnits()) == "party1,party2" and ns.GroupSize() == 3, keys(ns.GroupUnits()))
+    GROUP.raid = true
+    check("in a raid: raid2 and raid3, the player's own raid1 left out", keys(ns.GroupUnits()) == "raid2,raid3", keys(ns.GroupUnits()))
+    local set = ns.GroupMemberKeys()
+    check("group keys: the GUIDs, and both name forms (first name, and first and last name)",
+        set["Player-1-Altine"] and set["Player-1-Akro"] and set["name:altine"] and set["name:akro"] and set["name:akropolis"] and not set["Player-1-Tester"])
+    check("InMyGroup by GUID and by name; others are not",
+        ns.InMyGroup({ guid = "Player-1-Altine", key = "Someone-Stormrage" }) and ns.InMyGroup({ key = "Akro Polis-Stormrage" })
+        and ns.InMyGroup({ name = "Akro" }) and not ns.InMyGroup({ guid = "Player-1-Borin", key = "Borin-Stormrage" }) and not ns.InMyGroup(nil))
+    GROUP.raid = false
+    GROUP.members[3] = { name = SECRET, realm = SECRET, guid = SECRET, class = "ROGUE", level = 1 }
+    local okSecret, secretSet = pcall(ns.GroupMemberKeys)
+    check("a secret GUID or name is skipped without an error", okSecret and secretSet["Player-1-Altine"] and secretSet[SECRET] == nil)
+    table.remove(GROUP.members, 3)
+
+    local savedCanInvite = C_PartyInfo.CanInvite
+    C_PartyInfo.CanInvite = nil
+    GROUP.leader = false
+    check("CanInviteToGroup: not the leader of a party, so no", ns.CanInviteToGroup() == false)
+    GROUP.raid, GROUP.assistant = true, true
+    check("...but an assistant in a raid may", ns.CanInviteToGroup() == true)
+    GROUP.raid, GROUP.assistant, GROUP.leader = false, false, true
+    check("...and the leader may", ns.CanInviteToGroup() == true)
+    C_PartyInfo.CanInvite = savedCanInvite
+    GROUP.canInvite = false
+    check("C_PartyInfo.CanInvite is asked first", ns.CanInviteToGroup() == false)
+    GROUP.canInvite = nil
+    check("InviteToGroup from a click invites the player and says it tried",
+        ns.InviteToGroup("Borin-Stormrage") == true and GROUP.invites[#GROUP.invites] == "Borin-Stormrage")
+    check("CanConvertToRaid follows the game's answer", ns.CanConvertToRaid() == true)
+    check("ConvertToRaid from a click turns the party into a raid", ns.ConvertToRaid() == true and GROUP.converted == 1 and GROUP.raid == true)
+
+    local inside, itype, name, map = ns.InstanceInfo()
+    check("outside: not in an instance", inside == false and itype == "none" and name == "" and map == 0 and not ns.InDungeonInstance())
+    INSTANCE = { inside = true, type = "party", name = "The Deadmines", map = 36 }
+    inside, itype, name, map = ns.InstanceInfo()
+    check("in a dungeon: its type, name and map", inside and itype == "party" and name == "The Deadmines" and map == 36 and ns.InDungeonInstance())
+    INSTANCE.type = "raid"
+    check("a raid counts as a dungeon instance", ns.InDungeonInstance())
+    INSTANCE.type = "pvp"
+    check("a battleground does not", not ns.InDungeonInstance())
+    GROUP = { members = {}, raid = false, leader = true, assistant = false, invites = {}, converted = 0, canInvite = nil }
+    INSTANCE = { inside = false, type = "none", name = "", map = 0 }
+
+    -- The overlay registry (MainWindow.lua).
+    local overlays = {}
+    for index, letter in ipairs({ "A", "B", "C" }) do
+        overlays[index] = CreateFrame("Frame", "DragonworldTestOverlay" .. letter, UIParent)
+        ns.RegisterOverlay("DragonworldTestOverlay" .. letter)
+    end
+    ns.RegisterOverlay("DragonworldTestOverlayA")
+    ns.HideOverlays("DragonworldTestOverlayB")
+    check("HideOverlays hides every registered overlay except the ones named",
+        not overlays[1]:IsShown() and overlays[2]:IsShown() and not overlays[3]:IsShown())
+    overlays[2]:Hide()
+    local altine
+    for _, member in ipairs(ns.ReadGuildRoster()) do
+        if member.name == "Altine" then altine = member end
+    end
+    DragonworldRecipes:Show()
+    ns.ShowMemberCard(altine)
+    check("opening the member card closes the recipe window", DragonworldMemberCard:IsShown() and not DragonworldRecipes:IsShown())
+    DragonworldMemberCard.close.scripts.OnClick(DragonworldMemberCard.close)
+    sentNow("DragonworldPf")
+
+    -- The public gold banner (Achievements.lua).
+    DrainBanners()
+    local db = achDB()
+    local savedBanner, savedSound = db.banner, db.sound
+    db.sound = false
+    local shows, clicks, clicks2 = 0, 0, 0
+    local sounds = #SOUNDS_PLAYED
+    check("ShowBanner needs a key", ns.ShowBanner({ title = "x" }) == false and ns.ShowBanner("x") == false)
+    check("a custom banner is shown", ns.ShowBanner({ key = "s1a", title = "Title A", text = "Text A", button = "Button A", sound = 8960,
+        onShow = function() shows = shows + 1 end }) == true)
+    local banner = DragonworldMilestoneBanner
+    check("...with its title, text and button", banner:IsShown() and banner.title.text == "Title A" and banner.text.text == "Text A"
+        and banner.button.label.text == "Button A" and not banner.button2:IsShown())
+    check("...its own sound plays even with the Sound box off, and onShow runs once",
+        #SOUNDS_PLAYED == sounds + 1 and SOUNDS_PLAYED[#SOUNDS_PLAYED] == 8960 and shows == 1)
+    check("the same key again is dropped", ns.ShowBanner({ key = "s1a", title = "Again" }) == false and ns.BannerQueueLength() == 0)
+    db.banner = false
+    check("with banners off, a custom banner is dropped", ns.ShowBanner({ key = "s1b", title = "Off" }) == false)
+    local itemC = { key = "s1c", always = true, sound = false, seconds = 30, icon = "Interface\\Icons\\INV_Misc_Note_01",
+        title = function() return "T-" .. ns.GetLanguage() end,
+        text = function() return ("clicked %d"):format(clicks) end,
+        button = "Go", onClick = function() clicks = clicks + 1; return true end }
+    check("...unless it is marked always (it waits behind the one shown)", ns.ShowBanner(itemC) == true and ns.BannerQueueLength() == 1)
+    check("a queued key is not queued twice", ns.ShowBanner({ key = "s1c", always = true }) == false and ns.BannerQueueLength() == 1)
+    click(banner.button)
+    check("a button without onClick closes the banner", not banner:IsShown())
+    sounds = #SOUNDS_PLAYED
+    flush()
+    local language = ns.GetLanguage()
+    check("...and the next one comes up, silent, with its time and its icon",
+        banner:IsShown() and banner.item == itemC and banner.title.text == "T-" .. language and banner.left == 30
+        and banner.shield.texture == "Interface\\Icons\\INV_Misc_Note_01" and #SOUNDS_PLAYED == sounds)
+    ns.SetLanguage("en", true)
+    check("its texts are read again when the language changes", banner.title.text == "T-en")
+    ns.SetLanguage(language, true)
+    click(banner.button)
+    check("onClick returning true keeps the banner and writes it again", banner:IsShown() and clicks == 1 and banner.text.text == "clicked 1")
+    click(banner.close)
+    local itemD = { key = "s1d", always = true, title = "Two buttons", button = "One", button2 = function() return "Two" end,
+        button2Active = function() return false end, onClick2 = function() clicks2 = clicks2 + 1; return true end }
+    sounds = #SOUNDS_PLAYED
+    ns.ShowBanner(itemD)
+    flush()
+    local _, _, _, x1, y1 = banner.button:GetPoint(1)
+    local _, _, _, x2, y2 = banner.button2:GetPoint(1)
+    check("a second button is shown under the first, with its label and greyed out when asked",
+        banner.item == itemD and banner.button2:IsShown() and banner.button2.label.text == "Two" and not banner.button2:IsEnabled() and banner.button:IsEnabled()
+        and x1 == -28 and y1 == 18 and x2 == -28 and y2 == -24 and banner.button:GetHeight() == 28 and banner.button2:GetWidth() == 150)
+    check("...and without a sound of its own, the fanfare follows the Sound box (off)", #SOUNDS_PLAYED == sounds)
+    click(banner.button2)
+    check("onClick2 returning true keeps it open", banner:IsShown() and clicks2 == 1)
+    itemD.onClick2 = function() clicks2 = clicks2 + 1 end
+    click(banner.button2)
+    check("...otherwise it closes", not banner:IsShown() and clicks2 == 2)
+    db.banner, db.sound = true, nil
+    sounds = #SOUNDS_PLAYED
+    ns.ShowBanner({ key = "s1e", title = "Fanfare" })
+    check("with the Sound box on, the fanfare plays", #SOUNDS_PLAYED == sounds + 1 and SOUNDS_PLAYED[#SOUNDS_PLAYED] == 12891)
+    click(banner.close)
+    flush()
+    ns.ShowBanner({ key = "s1f", title = "Icon", icon = "Interface\\Icons\\INV_Misc_Bag_08" })
+    ns.modules.achievements:OnSlash("test")
+    check("the example waits behind it", banner.shield.texture == "Interface\\Icons\\INV_Misc_Bag_08" and ns.BannerQueueLength() == 1)
+    click(banner.close)
+    flush()
+    check("the next milestone banner has the guild shield and one button again",
+        banner:IsShown() and banner.item.kind == "milestone" and banner.shield.texture == ns.ICON and not banner.button2:IsShown()
+        and banner.button:GetHeight() == 36 and select(5, banner.button:GetPoint(1)) == -10)
+    check("the banner's gold colour is shared", type(ns.BannerGold) == "function" and ns.BannerGold("x"):find("x", 1, true) ~= nil)
+    DrainBanners()
+    check("DrainBanners closes the banner and empties the queue", not banner:IsShown() and ns.BannerQueueLength() == 0)
+    db.banner, db.sound = savedBanner, savedSound
+
+    -- Room on the Settings page and the intro (MainWindow.lua).
+    click(win.settingsChip)
+    check("Settings: below the minimap box the left column scrolls",
+        DragonworldSettingsLeft ~= nil and settings.leftScroll == DragonworldSettingsLeft and DragonworldSettingsLeft.scrollChild == settings.left
+        and settings.blink.main.parent == settings.left and settings.blink.kinds[1].parent == settings.left
+        and settings.actionSource.parent == settings.left and settings.link.parent == settings.left and settings.left:GetHeight() > 200,
+        settings.left and settings.left:GetHeight())
+    -- The scroll frame clips its child: every text in it must end inside it.
+    local function LeftX(region)
+        local _, relTo, relPoint, x = region:GetPoint(1)
+        if relTo == nil or relTo == settings.left then return x end
+        return LeftX(relTo) + (tostring(relPoint):find("RIGHT") and relTo:GetWidth() or 0) + x
+    end
+    local clipped = {}
+    for _, key in ipairs({ "actionHint", "versionStatus", "link", "linkHint", "autoText" }) do
+        local region = settings[key]
+        if region:GetWidth() <= 0 or LeftX(region) + region:GetWidth() > 296 then
+            clipped[#clipped + 1] = key .. "=" .. LeftX(region) .. "+" .. region:GetWidth()
+        end
+    end
+    check("Settings: the texts in the scrolling column end inside its 296 px", #clipped == 0, table.concat(clipped, ", "))
+    local oldNewest = settings.versionStatus:GetStringHeight()
+    local _, statusAnchor = settings.link:GetPoint(1)
+    local _, linkAnchor = settings.linkHint:GetPoint(1)
+    local _, hintAnchor = settings.autoText:GetPoint(1)
+    check("...and the wrapping version texts hang from each other, and the column is as tall as they are",
+        statusAnchor == settings.versionStatus and linkAnchor == settings.link and hintAnchor == settings.linkHint
+        and settings.left:GetHeight() == math.ceil(-settings.versionStatusY + oldNewest + 4 + 22 + 4
+            + settings.linkHint:GetStringHeight() + 4 + settings.autoText:GetStringHeight() + 8),
+        settings.left:GetHeight())
+    local fits, shownRows = true, 0
+    for _, row in ipairs(settings.orderRows) do
+        if row:IsShown() then
+            shownRows = shownRows + 1
+            local _, _, _, _, y = row:GetPoint(1)
+            if y - row:GetHeight() < -434 then fits = false end
+        end
+    end
+    check("every tab-order row ends above the bottom of the body", fits and shownRows == 15, shownRows)
+    click(settings.introButton)
+    local intro = win.intro
+    local last = intro.rows[15]
+    local _, _, _, _, lastY = last.icon:GetPoint(1)
+    local lastBottom = lastY - math.max(last.icon:GetHeight(), last.text:GetHeight())
+    local nextTop = -434 + 16 + intro.next:GetHeight()
+    check("intro: with 15 tabs the last row ends above the Next button", intro:IsVisible() and lastBottom > nextTop,
+        lastBottom .. " / " .. nextTop .. " (row height " .. tostring(intro.introRow) .. ")")
+    last.hover.scripts.OnEnter(last.hover)
+    check("...and a shortened row shows the whole text when hovered",
+        last.hover.title ~= nil and GameTooltip.lines[1] == last.hover.title and GameTooltip.lines[2] == last.hover.notes,
+        GameTooltip.lines[1])
+    last.hover.scripts.OnLeave(last.hover)
+    click(intro.next)
+    click(win.setup.done)
+    check("...and back to Settings", win.body:IsVisible() and win.settingsChip.selected)
+
+    -- The fake clock.
+    CLOCK_SHIFT = 60
+    check("CLOCK_SHIFT moves time()", time() == NOW + 60)
+    CLOCK_SHIFT = 0
+    check("...and back", time() == NOW)
+
+    for _, overlay in ipairs(overlays) do overlay:Hide() end
+    click(rsChip)
+end)()
+
+-- ============== officers by guild rank, trust helpers, held versions (Admin.lua) ==============
+;(function()
+    local function click(button) button.scripts.OnClick(button) end
+    local function all(list) return table.concat(list, " ; ") end
+    local function fieldCount(message) return select(2, message:gsub("\t", "")) + 1 end
+    local function rebuild() fire("GUILD_ROSTER_UPDATE"); flush() end
+    local function timersOf(delay)
+        local n = 0
+        for _, timer in ipairs(timers) do if math.abs(timer.delay - delay) < 1e-9 then n = n + 1 end end
+        return n
+    end
+    local OFF, SUG = "DragonworldOff", "DragonworldSug"
+    local LEADER = "|TInterface\\GroupFrame\\UI-Group-LeaderIcon:12:12|t "
+    local ASSIST = "|TInterface\\GroupFrame\\UI-Group-AssistantIcon:12:12|t "
+    local function sugDB() return DragonworldDB.modules.forslag end
+    local function sugReceive(text, sender) fire("CHAT_MSG_ADDON", SUG, text, "GUILD", sender) end
+    local function offReceive(text, sender) fire("CHAT_MSG_ADDON", OFF, text, "GUILD", sender) end
+    local function rosterRemove(key)
+        for index = #ROSTER, 1, -1 do if ROSTER[index][1] == key then table.remove(ROSTER, index) end end
+    end
+    -- New rules apply to everything from here on (the real cutoff is after the harness clock).
+    local savedCutoff = ns.F6_CUTOFF
+    ns.F6_CUTOFF = SERVER_NOW - 30 * 86400
+    -- The members this section adds to the roster would each get the welcome
+    -- banner for new members (Achievements): it is turned off here, and the
+    -- joins only go into the Milestones list.
+    local savedWelcome = DragonworldDB.modules.achievements.welcome
+    DragonworldDB.modules.achievements.welcome = false
+    flush()
+    sentNow(SUG); sentNow(OFF); sentNow(EV_PREFIX)
+
+    check("at login the officer limit was announced once, with the time of the limit we have (none yet)",
+        prefixes[OFF] == true and #OFF_LOGIN == 1 and OFF_LOGIN[1] == "V\t0", all(OFF_LOGIN))
+
+    -- 1. Officer, Guild Master, by rank.
+    guild.rankIndex = 0
+    rebuild()
+    check("rank 0 is an officer and the Guild Master", ns.MyRankIndex() == 0 and ns.IsOfficer() and ns.IsGuildMaster())
+    guild.rankIndex = 1
+    rebuild()
+    check("rank 1 (inside the default limit) is an officer, not the Guild Master, and not admin (that is the code, Forslag only)",
+        ns.OfficerLimit() == 1 and ns.IsOfficer() and not ns.IsGuildMaster() and ns.IsAdmin() == false)
+    guild.rankIndex = nil
+    rebuild()
+    check("rank 3 is neither", ns.MyRankIndex() == 3 and not ns.IsOfficer() and not ns.IsGuildMaster())
+    guild.rankIndex = 0
+    local realIsMember = ns.IsMember
+    ns.IsMember = function() return false end
+    check("outside the guild: never an officer or the Guild Master, whatever the rank", not ns.IsOfficer() and not ns.IsGuildMaster())
+    ns.IsMember = realIsMember
+    guild.rankIndex = nil
+
+    ROSTER[#ROSTER + 1] = { "Hemmelig-Stormrage", "Officer", SECRET, 50, "Mage", "", "", "", true, 0, "MAGE", guid = "Player-1-Hemmelig" }
+    ROSTER[#ROSTER + 1] = { "Ukjent-Stormrage", "Officer", nil, 50, "Mage", "", "", "", true, 0, "MAGE", guid = "Player-1-Ukjent" }
+    rebuild()
+    local rows = {}
+    for _, member in ipairs(ns.ReadGuildRoster()) do rows[member.key] = member end
+    check("a roster row whose rank is secret or missing reads as rank nil, never 0 (Guild Master)",
+        rows["Hemmelig-Stormrage"] and rows["Hemmelig-Stormrage"].rankIndex == nil and rows["Ukjent-Stormrage"] and rows["Ukjent-Stormrage"].rankIndex == nil
+        and rows["Altine-Stormrage"].rankIndex == 1)
+    check("...is not an officer and gets no badge",
+        ns.RankIndexOf(rows["Hemmelig-Stormrage"]) == nil and ns.OfficerBadge(rows["Hemmelig-Stormrage"]) == "" and ns.OfficerBadge(rows["Ukjent-Stormrage"]) == ""
+        and ns.IsOfficerKey("Hemmelig-Stormrage") ~= true and ns.IsOfficerKey("Player-1-Ukjent") ~= true)
+    rosterRemove("Hemmelig-Stormrage")
+    rosterRemove("Ukjent-Stormrage")
+    rebuild()
+
+    -- 2. Is someone else an officer?
+    check("IsOfficerKey: Altine (rank 1) in any name form", ns.IsOfficerKey("Altine-Stormrage") == true and ns.IsOfficerKey("altine") == true
+        and ns.IsOfficerKey("Altine") == true and ns.IsOfficerKey("Player-1-Altine") == true)
+    check("...Borin (rank 3) is not", ns.IsOfficerKey("Borin-Stormrage") == false)
+    flush()
+    local requestsBefore = rosterRequests
+    check("...someone not in the roster is unknown, and a fresh roster is asked for once",
+        ns.IsOfficerKey("Nobody-Stormrage") == nil and rosterRequests == requestsBefore + 1, rosterRequests - requestsBefore)
+    check("...and not again right away", ns.IsOfficerKey("Nobody-Stormrage") == nil and rosterRequests == requestsBefore + 1)
+
+    -- 3. Badges and rank names.
+    check("badges: the assistant icon for Altine, nothing for Borin, nothing for Tester at rank 3",
+        ns.OfficerBadge("Altine-Stormrage") == ASSIST and ns.OfficerBadge("Borin-Stormrage") == "" and ns.OfficerBadge("Tester-Stormrage") == "")
+    guild.rankIndex = 0
+    check("...the leader icon for Tester as Guild Master (own rank from GetGuildInfo), with a size", ns.OfficerBadge("Tester-Stormrage") == LEADER
+        and ns.OfficerBadge("Tester", 16) == "|TInterface\\GroupFrame\\UI-Group-LeaderIcon:16:16|t ")
+    guild.rankIndex = nil
+    check("rank names come from the game, and the number of ranks", ns.RankName(1) == "Officer" and ns.RankName(0) == "Guild Master" and ns.NumRanks() == 5)
+    check("the officers list: Altine only (Tester's own rank is 3 here)", #ns.Officers() == 1 and ns.Officers()[1].name == "Altine" and ns.Officers()[1].rankIndex == 1)
+
+    -- 4. Officer ranks give no rights in Forslag (that is the admin code).
+    local T = SERVER_NOW
+    local borinA = "Borin-Stormrage:" .. T .. ":61"
+    local cedricB = "Cedric-Stormrage:" .. T .. ":62"
+    local dagnyE = "Dagny-Stormrage:" .. T .. ":65"
+    sugReceive(table.concat({ "F", borinA, T, "0", "N", "", "0", "Officer test A" }, "\t"), "Borin-Stormrage")
+    sugReceive(table.concat({ "F", cedricB, T, "0", "N", "", "0", "Officer test B" }, "\t"), "Cedric-Stormrage")
+    sugReceive(table.concat({ "F", dagnyE, T, "0", "N", "", "0", "Officer test E" }, "\t"), "Dagny-Stormrage")
+    ns.OpenModule("forslag")
+    local p = DragonworldForslagScroll.parent
+    local detail = p.detail
+    local function pick(title)
+        for _, row in ipairs(DragonworldForslagScroll.scrollChild.children) do
+            if row:IsShown() and row.label.text == title then click(row); return true end
+        end
+        return false
+    end
+    flush()
+    check("not an officer: no Done/Reject buttons and no delete on someone else's suggestion; the Admin chip is there",
+        pick("Officer test A") and detail:IsShown() and not detail.done:IsShown() and not detail.reject:IsShown() and not detail.delete:IsShown()
+        and p.admin:IsShown())
+    guild.rankIndex = 1
+    rebuild()
+    check("promoted to rank 1 and the roster read again: still no status buttons and no delete on Borin's suggestion",
+        ns.IsOfficer() and not ns.IsAdmin() and detail:IsShown() and not detail.done:IsShown() and not detail.reject:IsShown() and not detail.delete:IsShown())
+    sentNow(SUG)
+    click(detail.done)
+    click(detail.delete)
+    local sent = sentNow(SUG)
+    check("...and the hidden buttons do nothing for an officer without the code", #sent == 0 and sugDB().items[borinA].status == nil
+        and not sugDB().items[borinA].deleted, all(sent))
+
+    -- 8. Deleting suggestions: only the writer, officers or not.
+    sugReceive("F\t" .. cedricB .. "\t" .. (T + 1) .. "\t1\tN\t\t0\t\tAltine-Stormrage", "Altine-Stormrage")
+    check("a deletion of Cedric's suggestion sent by Altine (an officer, named in a 9th field) is not taken in",
+        not sugDB().items[cedricB].deleted and sugDB().held == nil)
+    sugReceive(table.concat({ "S", cedricB, "D", tostring(T + 2), "Altine" }, "\t"), "Borin-Stormrage")
+    check("a status is taken in as before officer ranks, from whoever sends it (the admin's own client is the lock)",
+        sugDB().items[cedricB].status == "D" and sugDB().items[cedricB].statusBy == "Altine")
+    sugReceive("F\t" .. dagnyE .. "\t" .. (T + 1) .. "\t1\tN\t\t0\t", "Dagny-Stormrage")
+    check("the author's own deletion is taken in", sugDB().items[dagnyE].deleted == true)
+    sugReceive(table.concat({ "F", dagnyE, T + 5, "0", "N", "", "0", "Back again" }, "\t"), "Dagny-Stormrage")
+    check("a deletion is final: a newer version that is not deleted is ignored", sugDB().items[dagnyE].deleted == true and sugDB().items[dagnyE].title == "")
+    flush()
+    sentNow(SUG)
+
+    -- 5. Whose officer action is trusted (DW.WhenOfficerAction, used by
+    -- polls, announcements and events), checked directly.
+    local acted = {}
+    local function act(key, sender, by, author)
+        return ns.WhenOfficerAction(key, sender, by, author, function(ok) acted[#acted + 1] = key .. "=" .. tostring(ok) end)
+    end
+    local function actedCount(text)
+        local n = 0
+        for _, entry in ipairs(acted) do if entry == text then n = n + 1 end end
+        return n
+    end
+    check("an action by Altine from Altine is trusted at once", act("t:1", "Altine-Stormrage", "Altine", nil) == true and actedCount("t:1=true") == 1)
+    local pendingBefore = ns.PendingOfficerChecks()
+    check("...one by Altine relayed by Borin (rank 3) is refused at once, and nothing waits",
+        act("t:2", "Borin-Stormrage", "Altine", nil) == false and ns.PendingOfficerChecks() == pendingBefore)
+    check("...one by Borin from Borin is refused when it must be an officer's", act("t:3", "Borin-Stormrage", "Borin", nil) == false)
+    check("...but trusted when Borin is the author", act("t:4", "Borin-Stormrage", "Borin", "Borin-Stormrage") == true)
+    check("...and refused on Altine's thing", act("t:5", "Borin-Stormrage", "Borin", "Altine-Stormrage") == false)
+    flush()
+    local first5 = act("t:6", "Nobody-Stormrage", "Nobody", nil)
+    local pendingNobody = ns.PendingOfficerChecks()
+    local second5 = act("t:6", "Nobody-Stormrage", "Nobody", nil)
+    check("one from someone not in the roster waits (one check, not two)",
+        first5 == nil and second5 == nil and pendingNobody == pendingBefore + 1 and ns.PendingOfficerChecks() == pendingNobody)
+    clock = clock + 200
+    flush()
+    check("...and is refused after the wait, once", actedCount("t:6=false") == 1 and ns.PendingOfficerChecks() == pendingBefore, table.concat(acted, ","))
+    check("one from Frida, not in the roster yet, waits", act("t:7", "Frida-Stormrage", "Frida", nil) == nil and ns.PendingOfficerChecks() == pendingBefore + 1)
+    check("...and the same relayed by Borin (refused) does not cancel Frida's own check",
+        act("t:7", "Borin-Stormrage", "Frida", nil) == false and ns.PendingOfficerChecks() == pendingBefore + 1)
+    ROSTER[#ROSTER + 1] = { "Frida-Stormrage", "Officer", 1, 50, "Priest", "Darnassus", "", "", true, 0, "PRIEST", guid = "Player-1-Frida" }
+    rebuild()
+    check("...and is trusted once the roster shows her as an officer", actedCount("t:7=true") == 1 and actedCount("t:7=false") == 1
+        and ns.PendingOfficerChecks() == pendingBefore, table.concat(acted, ","))
+    rosterRemove("Frida-Stormrage")
+    rebuild()
+    clock = clock + 200
+    flush()
+
+    -- Is someone in the guild (DW.WhenMemberKnown, used by polls passed on by others)?
+    local member = {}
+    check("WhenMemberKnown: Borin is in the guild, answered at once",
+        ns.IsMemberKey("Borin-Stormrage") == true and ns.WhenMemberKnown("Borin-Stormrage", function(ok) member[#member + 1] = ok end) == true and member[1] == true)
+    check("...someone not in the roster waits", ns.WhenMemberKnown("Ghost2-Stormrage", function(ok) member[#member + 1] = ok end) == nil
+        and ns.PendingOfficerChecks() == pendingBefore + 1)
+    clock = clock + 200
+    flush()
+    check("...and is not a member after the wait", member[2] == false and ns.PendingOfficerChecks() == pendingBefore)
+
+    -- Two callers waiting for the same unknown person both get the answer.
+    local answers = {}
+    local first = ns.WhenOfficerKnown("Ghost-Stormrage", function(ok) answers[#answers + 1] = "a" .. tostring(ok) end)
+    local second = ns.WhenOfficerKnown("Ghost-Stormrage", function(ok) answers[#answers + 1] = "b" .. tostring(ok) end)
+    check("WhenOfficerKnown: an unknown person waits, one entry for both callers", first == nil and second == nil and ns.PendingOfficerChecks() == pendingBefore + 1)
+    clock = clock + 200
+    flush()
+    check("...and every caller gets the answer", #answers == 2 and answers[1] == "afalse" and answers[2] == "bfalse" and ns.PendingOfficerChecks() == pendingBefore,
+        table.concat(answers, ","))
+
+    -- A held store has a fixed cap.
+    local capSaved = {}
+    local capStore = ns.NewHeldStore(capSaved)
+    for index = 1, 305 do capStore:Hold("cap" .. index, index, nil, "Borin-Stormrage") end
+    check("a held store keeps at most 300 versions, and the newest one is kept", capStore:Count() == 300 and capStore:Has("cap305", 305), capStore:Count())
+
+    -- 6. The officer limit and its sync.
+    guild.rankIndex = 0
+    rebuild()
+    sentNow(OFF)
+    offReceive("K\t0\t" .. (SERVER_NOW - 5) .. "\tTester-Stormrage", "Altine-Stormrage")
+    check("a limit sent by Altine is ignored when the new limit leaves Altine out", DragonworldDB.officerRanks == nil and ns.OfficerLimit() == 1)
+    roChip.scripts.OnClick(roChip)
+    roPanel.statusChips.all.scripts.OnClick(roPanel.statusChips.all)
+    flush()
+    check("the Roster list shows Altine's officer badge", roRow("Altine") ~= nil and roRow("Altine").rank.text == ASSIST .. "Officer")
+    clearChat()
+    local S0 = SERVER_NOW
+    check("the Guild Master sets the limit to 0", ns.SetOfficerLimit(0) == true)
+    sent = sentNow(OFF)
+    check("...it is sent to the guild with the Guild Master's key", #sent == 1 and sent[1] == "K\t0\t" .. S0 .. "\tTester-Stormrage", all(sent))
+    check("...Altine is no longer an officer, and chat says so", ns.OfficerLimit() == 0 and ns.IsOfficerKey("Altine-Stormrage") == false and ns.IsOfficer()
+        and ns.OfficerBadge("Altine-Stormrage") == "" and has("Offiserer er nå: Guild Master og oppover."), chatText())
+    flush()
+    check("...and the open Roster list drops her badge", roRow("Altine").rank.text == "Officer", roRow("Altine").rank.text)
+    ns.OpenModule("forslag")
+    check("...and the limit cannot be set past the second-lowest rank", ns.SetOfficerLimit(4) == false and ns.SetOfficerLimit(-1) == false)
+    guild.rankIndex = 1
+    check("only the Guild Master can set it", ns.SetOfficerLimit(1) == false and DragonworldDB.officerRanks.limit == 0)
+    guild.rankIndex = 0
+    ROSTER[#ROSTER + 1] = { "Gunnhild-Stormrage", "Guild Master", 0, 60, "Warrior", "Orgrimmar", "", "", true, 0, "WARRIOR", guid = "Player-1-Gunnhild" }
+    rebuild()
+    offReceive("K\t2\t" .. (S0 + 10) .. "\tGunnhild-Stormrage", "Gunnhild-Stormrage")
+    check("a newer limit from a rank-0 sender is taken in", DragonworldDB.officerRanks.limit == 2 and DragonworldDB.officerRanks.at == S0 + 10
+        and ns.OfficerLimit() == 2 and ns.IsOfficerKey("Altine-Stormrage") == true and ns.IsOfficerKey("Borin-Stormrage") == false)
+    offReceive("K\t1\t" .. (S0 + 5) .. "\tGunnhild-Stormrage", "Gunnhild-Stormrage")
+    offReceive("K\t10\t" .. (S0 + 20) .. "\tGunnhild-Stormrage", "Gunnhild-Stormrage")
+    offReceive("K\t1.5\t" .. (S0 + 20) .. "\tGunnhild-Stormrage", "Gunnhild-Stormrage")
+    offReceive("K\t1\t" .. (SERVER_NOW + 400) .. "\tGunnhild-Stormrage", "Gunnhild-Stormrage")
+    offReceive("K\t1\t" .. (S0 + 20) .. "\tAltine-Stormrage", "Gunnhild-Stormrage")
+    offReceive("K\tx", "Gunnhild-Stormrage")
+    check("an older limit, one out of range, one from the future and one set by someone not rank 0 are ignored",
+        DragonworldDB.officerRanks.limit == 2 and DragonworldDB.officerRanks.at == S0 + 10 and ns.OfficerLimit() == 2)
+    offReceive("K\t1\t" .. (S0 + 30) .. "\tGunnhild-Stormrage", "Gunnhild-Stormrage")
+    check("back to limit 1", ns.OfficerLimit() == 1 and DragonworldDB.officerRanks.at == S0 + 30)
+
+    guild.rankIndex = 1
+    sentNow(OFF)
+    offReceive("V\t5", "Altine-Stormrage")
+    check("as an officer: a hello with an older limit gets the limit, after a short random wait",
+        #sentNow(OFF) == 0 and timersOf(2.7) == 1, timersOf(2.7))
+    flush()
+    sent = sentNow(OFF)
+    check("...which is the K", #sent == 1 and sent[1] == "K\t1\t" .. (S0 + 30) .. "\tGunnhild-Stormrage", all(sent))
+    offReceive("V\t5", "Eira-Stormrage")
+    offReceive("K\t1\t" .. (S0 + 30) .. "\tGunnhild-Stormrage", "Altine-Stormrage")
+    flush()
+    check("...unless someone else sends it first", #sentNow(OFF) == 0)
+    offReceive("V\t" .. (S0 + 100), "Altine-Stormrage")
+    sent = sentNow(OFF)
+    check("a hello with a newer limit than ours gets W", #sent == 1 and sent[1] == "W", all(sent))
+    offReceive("W", "Eira-Stormrage")
+    flush()
+    sent = sentNow(OFF)
+    check("W gets the K from an officer", #sent == 1 and sent[1] == "K\t1\t" .. (S0 + 30) .. "\tGunnhild-Stormrage", all(sent))
+    guild.rankIndex = nil
+    offReceive("V\t5", "Altine-Stormrage")
+    offReceive("W", "Eira-Stormrage")
+    check("a member who is not an officer never sends the K", timersOf(2.7) == 0)
+    flush()
+    check("...also after the wait", #sentNow(OFF) == 0)
+    DragonworldDB.officerRanks = { limit = 3, at = S0 + 40, by = "Gunnhild-Stormrage" }
+    check("a stored limit counts while the one who set it is rank 0", ns.OfficerLimit() == 3)
+    for _, row in ipairs(ROSTER) do if row[1] == "Gunnhild-Stormrage" then row[3] = 2 end end
+    rebuild()
+    check("...and not when they are no longer rank 0: the default applies", ns.OfficerLimit() == 1)
+    DragonworldDB.officerRanks = { limit = 0, at = S0 + 50, by = "Altine-Stormrage" }
+    check("...nor when it was set by someone not rank 0", ns.OfficerLimit() == 1)
+    DragonworldDB.officerRanks = nil
+    rosterRemove("Gunnhild-Stormrage")
+    rebuild()
+    check("limit restored to the default", ns.OfficerLimit() == 1)
+
+    -- 7. The admin code is separate from officer ranks, and its saved login is kept.
+    DragonworldDB.admin = { on = true }
+    rebuild()
+    check("a saved admin login counts, whatever the rank, and nothing clears it",
+        ns.IsAdmin() and not ns.IsOfficer() and DragonworldDB.admin.on == true and ns.MigrateAdmin == nil
+        and type(ns.ShowAdminLogin) == "function" and type(ns.OnAdminChanged) == "function" and DragonworldAdminLogin ~= nil)
+    DragonworldDB.admin = nil
+
+    -- 9. Deleting guild events as an officer.
+    guild.rankIndex = 1
+    rebuild()
+    local when = time({ year = 2026, month = 11, day = 25, hour = 20, min = 0 })
+    local evA = "Altine-Stormrage:" .. NOW .. ":51"
+    local evB = "Borin-Stormrage:" .. NOW .. ":52"
+    local evC = "Cedric-Stormrage:" .. NOW .. ":53"
+    local evD = "Cedric-Stormrage:" .. NOW .. ":54"
+    local evE = "Cedric-Stormrage:" .. NOW .. ":55"
+    local evF = "Cedric-Stormrage:" .. NOW .. ":56"
+    local evG = "Altine-Stormrage:" .. NOW .. ":57"
+    local evH = "Cedric-Stormrage:" .. NOW .. ":58"
+    local function event(id, title, sender) receive(table.concat({ "E", id, NOW, when, "0", title, "", "0:A" }, "\t"), sender) end
+    event(evA, "Officer raid", "Altine-Stormrage")
+    event(evB, "Event B", "Borin-Stormrage")
+    event(evC, "Event C", "Cedric-Stormrage")
+    event(evD, "Event D", "Cedric-Stormrage")
+    event(evE, "Event E", "Cedric-Stormrage")
+    event(evF, "Event F", "Cedric-Stormrage")
+    event(evG, "Event G", "Altine-Stormrage")
+    event(evH, "Event H", "Cedric-Stormrage")
+    evChip.scripts.OnClick(evChip)
+    evPanel.tabs.guild.scripts.OnClick(evPanel.tabs.guild)
+    local evDetail = evPanel.guild.detail
+    flush()
+    sentNow(EV_PREFIX)
+    eventRow("Officer raid").scripts.OnClick(eventRow("Officer raid"))
+    check("an officer sees Delete on Altine's event", evDetail.title.text == "Officer raid" and evDetail.delete:IsShown())
+    click(evDetail.delete)
+    sent = sentNow(EV_PREFIX)
+    check("...and the deletion names the deleter in field 9",
+        #sent == 1 and sent[1] == table.concat({ "E", evA, NOW + 1, when, "1", "Officer raid", "", "0:A", "Tester-Stormrage" }, "\t")
+        and evDB().events[evA].deleted and evDB().events[evA].deletedBy == "Tester-Stormrage", all(sent))
+    receive(table.concat({ "E", evB, NOW + 1, when, "1", "Event B", "", "0:A", "Altine-Stormrage" }, "\t"), "Altine-Stormrage")
+    check("a deletion by Altine (an officer) from Altine is taken in", evDB().events[evB].deleted == true and evDB().events[evB].deletedBy == "Altine-Stormrage")
+    receive(table.concat({ "E", evC, NOW + 1, when, "1", "Event C", "", "0:A", "Altine-Stormrage" }, "\t"), "Borin-Stormrage")
+    check("a deletion by Altine relayed by Borin (rank 3) is refused, and not held (only the relayer was refused)", not evDB().events[evC].deleted and evDB().held[evC] == nil)
+    receive(table.concat({ "E", evD, NOW + 1, when, "1", "Event D", "", "0:A", "Borin-Stormrage" }, "\t"), "Borin-Stormrage")
+    check("a deletion by Borin (not the creator, not an officer) is ignored", not evDB().events[evD].deleted)
+    receive(table.concat({ "E", evE, NOW + 1, when, "1", "Event E", "", "0:A" }, "\t"), "Eira-Stormrage")
+    check("a deletion without a deleter, relayed by someone other than the creator after the cutoff, is held",
+        not evDB().events[evE].deleted and evDB().held[evE] and evDB().held[evE].u == NOW + 1)
+    cutoffNow = ns.F6_CUTOFF
+    ns.F6_CUTOFF = SERVER_NOW + 86400
+    receive(table.concat({ "E", evH, NOW + 1, when, "1", "Event H", "", "0:A", "Cedric-Stormrage" }, "\t"), "Borin-Stormrage")
+    check("before the cutoff, an old deletion re-sent by an updated member (field 9 = the creator) is taken in from anyone",
+        evDB().events[evH].deleted == true and evDB().events[evH].deletedBy == "Cedric-Stormrage")
+    ns.F6_CUTOFF = cutoffNow
+    receive(table.concat({ "E", evF, NOW + 1, when, "1", "Event F", "", "0:A" }, "\t"), "Cedric-Stormrage")
+    check("the creator's own deletion (old form) is taken in, with the creator as deleter",
+        evDB().events[evF].deleted == true and evDB().events[evF].deletedBy == "Cedric-Stormrage")
+    receive(table.concat({ "E", evF, NOW + 5, when, "0", "Event F again", "", "0:A" }, "\t"), "Cedric-Stormrage")
+    check("a deletion is final: a newer version that is not deleted is ignored", evDB().events[evF].deleted == true and evDB().events[evF].title == "Event F")
+    flush()
+    sentNow(EV_PREFIX)
+    receive("G\t" .. evF .. "\t" .. evG, "Nykommer-Stormrage")
+    flush()
+    sent = sentNow(EV_PREFIX)
+    local sentF, sentG
+    for _, message in ipairs(sent) do
+        if message:find("^E\t" .. evF:gsub("%-", "%%-") .. "\t") then sentF = message end
+        if message:find("^E\t" .. evG:gsub("%-", "%%-") .. "\t") then sentG = message end
+    end
+    check("a stored deletion is sent on with the deleter (the creator) in field 9",
+        sentF ~= nil and fieldCount(sentF) == 9 and sentF:sub(-#"\tCedric-Stormrage") == "\tCedric-Stormrage", sentF)
+    check("an event that is not deleted is still sent with exactly 8 fields", sentG ~= nil and fieldCount(sentG) == 8, sentG)
+
+    -- 11. /dw debug.
+    clearChat()
+    dw("debug")
+    check("/dw debug has an [offiserer] part with the rank and the limit, and the admin code login on its own line", has("[offiserer]") and has("offiser: ja")
+        and has("grense: standard 1") and has("admin: false"), chatText())
+    clearChat()
+
+    -- Leave things as the remaining tests expect.
+    clock = clock + 300
+    flush()
+    ns.F6_CUTOFF = savedCutoff
+    guild.rankIndex = nil
+    rebuild()
+    sentNow(SUG); sentNow(OFF); sentNow(EV_PREFIX)
+    clearChat()
+    check("the members added in this section only joined the Milestones list, with no welcome banner",
+        DragonworldDB.modules.achievements.feed["Player-1-Frida:J"] ~= nil and DragonworldDB.modules.achievements.feed["Player-1-Gunnhild:J"] ~= nil
+        and (DragonworldMilestoneBanner == nil or not DragonworldMilestoneBanner:IsShown()))
+    DragonworldDB.modules.achievements.welcome = savedWelcome
+    click(rsChip)
+end)()
+
+-- ========== announcements and the officers chip (Modules\Kunngjoringer.lua) ==========
+;(function()
+    local ANN, OFF = "DragonworldAnn", "DragonworldOff"
+    local L = ns.L
+    local function click(button) button.scripts.OnClick(button) end
+    local function all(list) return table.concat(list, " ; ") end
+    local function annDB() return DragonworldDB.modules.kunngjoringer end
+    local function annReceive(text, sender) fire("CHAT_MSG_ADDON", ANN, text, "GUILD", sender) end
+    -- The roster is read again 1 s after the event; the window redraws 0.2 s after that.
+    local function rebuild() fire("GUILD_ROSTER_UPDATE"); flush(); flush() end
+    local function timersOf(delay)
+        local n = 0
+        for _, timer in ipairs(timers) do if math.abs(timer.delay - delay) < 1e-9 then n = n + 1 end end
+        return n
+    end
+    local function split(message) local out = {}; for piece in (message .. "\t"):gmatch("(.-)\t") do out[#out + 1] = piece end; return out end
+    local function decode(text) return (text:gsub("~(.?)", function(code) if code == "n" then return "\n" end return code end)) end
+    local function A(id, updated, flags, round, parts, by, title) return table.concat({ "A", id, updated, flags, round, parts, by, title }, "\t") end
+    -- The A messages in a list, by id, with their pieces and the message they give.
+    local function parse(list)
+        local out, pieces = {}, {}
+        for _, message in ipairs(list) do
+            local f = split(message)
+            if f[1] == "A" then
+                out[f[2]] = { updated = tonumber(f[3]), flags = f[4], round = tonumber(f[5]), parts = tonumber(f[6]), by = f[7], title = f[8], message = message }
+            elseif f[1] == "T" then
+                pieces[f[2]] = pieces[f[2]] or {}
+                pieces[f[2]][tonumber(f[4])] = f[5]
+            end
+        end
+        for id, entry in pairs(out) do
+            entry.pieces = pieces[id] or {}
+            local joined = {}
+            for index = 1, entry.parts do joined[index] = entry.pieces[index] or "<missing>" end
+            entry.body = decode(table.concat(joined))
+        end
+        return out
+    end
+    local function size(set) local n = 0; for _ in pairs(set) do n = n + 1 end; return n end
+    local function shownTitles() local t = {}; for _, a in ipairs(ns.Announcements()) do t[#t + 1] = a.title end; return table.concat(t, ",") end
+    local function annRow(title)
+        for _, row in ipairs(DragonworldAnnScroll.scrollChild.children) do
+            if row:IsShown() and row.label.text:find(title, 1, true) then return row end
+        end
+    end
+    local function entryFor(id)
+        for _, entry in ipairs(ns.AnnouncementHelloEntries()) do if entry:sub(1, #id + 1) == id .. "," then return entry end end
+    end
+    local function bannerShown() return DragonworldMilestoneBanner ~= nil and DragonworldMilestoneBanner:IsShown() end
+
+    DrainBanners()
+    local language = ns.GetLanguage()
+    ns.SetLanguage("nb", true)
+    guild.rankIndex = nil
+    rebuild()
+    sentNow(ANN); sentNow(OFF)
+    local T = SERVER_NOW
+
+    check("at login the announcements hello was sent once: an empty list, then Q", prefixes[ANN] == true and #ANN_LOGIN == 1 and ANN_LOGIN[1] == "Q", all(ANN_LOGIN))
+    check("Kunngjøringer is a module without a tab of its own, and the last file in the .toc",
+        ns.modules.kunngjoringer ~= nil and ns.modules.kunngjoringer.CreatePanel == nil and ADDON_FILES[#ADDON_FILES].name == "Modules\\Kunngjoringer.lua"
+        and type(ns.Announcements) == "function" and type(ns.PinnedAnnouncements) == "function" and type(ns.ShowAnnouncements) == "function"
+        and type(ns.OnAnnouncementsChanged) == "function" and type(ns.IsMainBodyShown) == "function")
+
+    -- 1. /dw kunngjoringer opens the window over the main window.
+    local altine
+    for _, member in ipairs(ns.ReadGuildRoster()) do if member.name == "Altine" then altine = member end end
+    ns.ShowMemberCard(altine)
+    check("(the member card is open)", DragonworldMemberCard:IsShown())
+    dw("kunngjoringer")
+    sentNow("DragonworldPf")
+    local o = DragonworldAnnouncements
+    check("/dw kunngjoringer opens the announcements window over the main window, and closes the member card",
+        o ~= nil and o:IsVisible() and o.parent == win and o:GetFrameLevel() == win:GetFrameLevel() + 50 and o.strata == "DIALOG"
+        and o:GetWidth() == 812 and o:GetHeight() == 434 and not DragonworldMemberCard:IsShown() and o.title.text == "Kunngjøringer" and ns.IsMainBodyShown())
+    check("...and it is one of the overlays: opening the member card closes it", (function()
+        ns.ShowMemberCard(altine)
+        local closed = not o:IsShown()
+        DragonworldMemberCard.close.scripts.OnClick(DragonworldMemberCard.close)
+        sentNow("DragonworldPf")
+        ns.ShowAnnouncements()
+        return closed and o:IsShown()
+    end)())
+
+    -- 2. Not an officer.
+    check("not an officer: no New button, and the text says an officer writes them",
+        not o.newButton:IsShown() and o.empty:IsShown() and o.empty.text == L.ANN_EMPTY_MEMBER and not o.form:IsShown())
+    check("...and no strip under the status buttons", win.pinned ~= nil and not win.pinned:IsShown())
+    check("the officers chip shows the limit to everyone", o.officers.label.text == "Offiserer: Officer og oppover")
+
+    -- 3. An officer writes one.
+    guild.rankIndex = 1
+    rebuild()
+    local form = o.form
+    check("as an officer the New button shows, and the strip invites to write one",
+        o.newButton:IsShown() and o.empty.text == L.ANN_EMPTY and win.pinned:IsShown() and win.pinned.label.text == "Skriv en kunngjøring")
+    o:Hide()
+    click(win.pinned)
+    check("...a click on it opens the window with the form", o:IsVisible() and form:IsShown() and form.heading.text == "Ny kunngjøring")
+    click(form.cancel)
+    click(o.newButton)
+    check("New opens the form, with Pin ticked and no banner box", form:IsShown() and form.pinCheck:GetChecked() and not form.bannerCheck:IsShown()
+        and form.titleBox.maxLetters == 60 and form.bodyBox.maxLetters == 500 and form.bodyBox.multiLine)
+    click(form.send)
+    check("an empty heading is refused", form.error.text == "Skriv en overskrift først." and #sentNow(ANN) == 0)
+    form.titleBox:TypeText("Raid onsdag")
+    form.bodyBox:TypeText("Linje 1\nLinje 2~x")
+    click(form.send)
+    local sent = sentNow(ANN)
+    local got = parse(sent)
+    local myId = "Tester-Stormrage:" .. T .. ":1"
+    local mine = annDB().items[myId]
+    check("Send gives one A (pinned, round 1, by me) and pieces that give the message back",
+        count(sent, "^A\t") == 1 and got[myId] ~= nil and got[myId].updated == T and got[myId].flags == "p" and got[myId].round == 1
+        and got[myId].by == "Tester-Stormrage" and got[myId].title == "Raid onsdag" and got[myId].parts == 1 and got[myId].pieces[1] == "Linje 1~nLinje 2~~x"
+        and got[myId].body == "Linje 1\nLinje 2~x", all(sent))
+    check("...it is stored, and the author gets no banner", mine ~= nil and mine.body == "Linje 1\nLinje 2~x" and mine.pinned and annDB().bannered[myId] == 1
+        and not bannerShown() and ns.BannerQueueLength() == 0)
+    check("...the window shows it, and the strip shows it as pinned",
+        not form:IsShown() and o.detail:IsShown() and o.detail.title.text == "Raid onsdag" and o.detail.body.text == "Linje 1\nLinje 2~x"
+        and o.detail.meta.text:find("Festet øverst", 1, true) ~= nil and annRow("Raid onsdag").label.text == "|cffffd100[Festet]|r Raid onsdag"
+        and win.pinned.label.text == "|cffffd100Festet:|r Raid onsdag", win.pinned.label.text)
+    win.pinned:Fire("OnEnter")
+    check("...hovering the strip shows the heading, who wrote it and the message", GameTooltip.lines[1] == "Raid onsdag" and GameTooltip.lines[2]:find("Tester", 1, true) ~= nil
+        and GameTooltip.lines[3] == "Linje 1\nLinje 2~x" and GameTooltip.lines[4] == "Klikk for å lese.", table.concat(GameTooltip.lines, " / "))
+    win.pinned:Fire("OnLeave")
+
+    -- 4. An announcement from Altine, an officer.
+    local altA = "Altine-Stormrage:" .. (T - 100) .. ":1"
+    annReceive(A(altA, T, "-", 1, 1, "Altine-Stormrage", "Guild-møte"), "Altine-Stormrage")
+    check("its heading alone does not show it while the message is on its way", annDB().items[altA] ~= nil and annDB().items[altA].bodyParts ~= nil
+        and not shownTitles():find("Guild-møte", 1, true) and not bannerShown())
+    annReceive(table.concat({ "T", altA, T, "1", "Falsk tekst" }, "\t"), "Borin-Stormrage")
+    check("...a piece of her message sent by Borin (not an officer) is ignored", annDB().items[altA].bodyParts ~= nil and annDB().items[altA].bodyParts[1] == nil
+        and not shownTitles():find("Guild-møte", 1, true) and not bannerShown())
+    annReceive(table.concat({ "T", altA, T, "1", "Fredag kl 20~nVel møtt" }, "\t"), "Altine-Stormrage")
+    local banner = DragonworldMilestoneBanner
+    check("an announcement from Altine is stored, and gives a gold banner", annDB().items[altA].body == "Fredag kl 20\nVel møtt" and bannerShown()
+        and banner.title.text == "KUNNGJØRING!" and banner.text.text:find("Guild-møte", 1, true) ~= nil and banner.text.text:find("fra Altine", 1, true) ~= nil
+        and banner.button.label.text == "Les" and annDB().bannered[altA] == 1, banner and banner.text.text)
+    o:Hide()
+    click(banner.button)
+    check("Read opens the window on it", o:IsVisible() and o.detail:IsShown() and o.detail.title.text == "Guild-møte" and not bannerShown())
+
+    -- 5. Whose announcements are trusted.
+    local borinA = "Borin-Stormrage:" .. T .. ":1"
+    annReceive(A(borinA, T, "-", 1, 0, "Borin-Stormrage", "Spam"), "Borin-Stormrage")
+    check("one by Borin (not an officer) from Borin is not taken in, but held", annDB().items[borinA] == nil and annDB().held[borinA] ~= nil and annDB().held[borinA].u == T)
+    local relayed = "Altine-Stormrage:" .. T .. ":2"
+    annReceive(A(relayed, T, "-", 1, 0, "Altine-Stormrage", "Relayed"), "Borin-Stormrage")
+    check("...one by Altine passed on by Borin (a member) is taken in: any member may pass on an officer's announcement",
+        annDB().items[relayed] ~= nil and annDB().held[relayed] == nil and shownTitles():find("Relayed", 1, true) ~= nil, shownTitles())
+    annDB().items[relayed] = nil -- out of the way of the counts below
+    DrainBanners()
+    local pendingBefore = ns.PendingOfficerChecks()
+    local nobodyA = "Nobody-Stormrage:" .. T .. ":1"
+    annReceive(A(nobodyA, T, "-", 1, 0, "Nobody-Stormrage", "Who"), "Nobody-Stormrage")
+    check("...one from someone not in the roster waits, held meanwhile", annDB().items[nobodyA] == nil and ns.PendingOfficerChecks() == pendingBefore + 1 and annDB().held[nobodyA] ~= nil)
+    flush()
+    sentNow(ANN)
+    annReceive("G\t" .. altA, "Nykommer-Stormrage")
+    annReceive(A(altA, T + 5, "-", 1, 0, "Borin-Stormrage", "Guild-møte kapret"), "Borin-Stormrage")  -- by a member: refused, held
+    flush()
+    sent = sentNow(ANN)
+    got = parse(sent)
+    check("...a refused version does not count as sent: asked for it, we still send ours (the newcomer refuses Borin's version too)",
+        got[altA] ~= nil and got[altA].updated == T and got[altA].body == "Fredag kl 20\nVel møtt"
+        and annDB().items[altA].updated == T and annDB().held[altA] ~= nil and annDB().held[altA].u == T + 5, all(sent))
+    check("...and our list names the held version, its content unknown", entryFor(altA) == altA .. "," .. (T + 5) .. ",-", entryFor(altA))
+    annReceive("H\t" .. altA .. "," .. (T + 3) .. ",zz", "Eira-Stormrage")
+    flush()
+    sent = sentNow(ANN)
+    check("...a version between ours and the held one is still asked for", #sent == 1 and sent[1] == "G\t" .. altA, all(sent))
+    annReceive("H\t" .. altA .. "," .. (T + 5) .. ",zz", "Eira-Stormrage")
+    flush()
+    sent = sentNow(ANN)
+    check("...but the held version itself is not", #sent == 0, all(sent))
+
+    -- 6. Edits, with and without a new banner.
+    annReceive(A(altA, T + 10, "-", 1, 0, "Altine-Stormrage", "Guild-møte (endret)"), "Altine-Stormrage")
+    check("Altine edits without asking for a banner again: taken in, no banner", annDB().items[altA].title == "Guild-møte (endret)" and annDB().items[altA].body == ""
+        and not bannerShown() and annDB().held[altA] == nil)
+    annReceive(A(altA, T + 11, "-", 2, 0, "Altine-Stormrage", "Guild-møte (igjen)"), "Altine-Stormrage")
+    check("...with a new round: a banner again", bannerShown() and banner.text.text:find("Guild-møte (igjen)", 1, true) ~= nil and annDB().bannered[altA] == 2)
+    click(banner.close)
+    flush()
+    click(annRow("Raid onsdag"))
+    click(o.detail.edit)
+    check("Edit opens the form with the text, and an unticked box for a new banner",
+        form:IsShown() and form.heading.text == "Endre kunngjøring" and form.titleBox:GetText() == "Raid onsdag" and form.bodyBox:GetText() == "Linje 1\nLinje 2~x"
+        and form.pinCheck:GetChecked() and form.bannerCheck:IsShown() and not form.bannerCheck:GetChecked())
+    form.titleBox:SetText("Raid onsdag kl 20")
+    click(form.send)
+    got = parse(sentNow(ANN))
+    check("...saving without the tick keeps the round", got[myId] ~= nil and got[myId].round == 1 and got[myId].updated == T + 1
+        and got[myId].title == "Raid onsdag kl 20" and got[myId].body == "Linje 1\nLinje 2~x" and got[myId].flags == "p")
+    click(o.detail.edit)
+    form.bannerCheck:SetChecked(true)
+    click(form.send)
+    got = parse(sentNow(ANN))
+    check("...with the tick the round goes up (a banner for the others, not for me)", got[myId] ~= nil and got[myId].round == 2 and got[myId].updated == T + 2
+        and annDB().bannered[myId] == 2 and not bannerShown())
+
+    -- 7. Pinning.
+    click(o.detail.pin)
+    got = parse(sentNow(ANN))
+    check("Unpin sends it unpinned, with its message again", got[myId] ~= nil and got[myId].flags == "-" and got[myId].body == "Linje 1\nLinje 2~x"
+        and not annDB().items[myId].pinned and o.detail.pin.label.text == "Fest")
+    check("...and the strip shows the newest announcement instead", win.pinned.label.text == "Kunngjøring: Raid onsdag kl 20", win.pinned.label.text)
+    o:Hide()
+    click(win.pinned)
+    check("...a click on it opens that one", o:IsVisible() and o.detail.title.text == "Raid onsdag kl 20")
+    local pins = {}
+    for index = 1, 3 do
+        pins[index] = "Altine-Stormrage:" .. (T - 60 + index) .. ":" .. (10 + index)
+        annReceive(A(pins[index], T + 20 + index, "p", 1, 0, "Altine-Stormrage", "Festet " .. index), "Altine-Stormrage")
+    end
+    DrainBanners()
+    check("three pinned: the strip shows the newest and how many more", #ns.PinnedAnnouncements() == 3 and win.pinned.label.text == "|cffffd100Festet:|r Festet 3  (+2)",
+        win.pinned.label.text)
+    click(o.newButton)
+    form.titleBox:TypeText("Fjerde")
+    click(form.send)
+    check("a 4th pinned one is refused with the error text", form:IsShown() and form.error.text == "Høyst 3 kunngjøringer kan være festet. Løsne en først." and #sentNow(ANN) == 0)
+    click(form.cancel)
+    pins[4] = "Altine-Stormrage:" .. (T - 56) .. ":14"
+    annReceive(A(pins[4], T + 24, "p", 1, 0, "Altine-Stormrage", "Festet 4"), "Altine-Stormrage")
+    DrainBanners()
+    local pinnedTitles, first = {}, nil
+    for _, item in ipairs(ns.PinnedAnnouncements()) do pinnedTitles[#pinnedTitles + 1] = item.title end
+    for _, item in ipairs(ns.Announcements()) do if item.id == pins[1] then first = item end end
+    check("with 4 flagged pinned from officers, only the 3 newest show pinned; the oldest shows unpinned",
+        table.concat(pinnedTitles, ",") == "Festet 4,Festet 3,Festet 2" and first ~= nil and first.pinned == false and annDB().items[pins[1]].pinned == true
+        and ns.Announcements()[1].title == "Festet 4" and ns.Announcements()[4].title == "Festet 1" and ns.Announcements()[6].title == "Raid onsdag kl 20", table.concat(pinnedTitles, ","))
+    click(annRow("Festet 1"))
+    check("...the window treats that one as unpinned: its button says Pin", o.detail.title.text == "Festet 1" and o.detail.pin.label.text == "Fest"
+        and o.detail.meta.text:find("Festet øverst", 1, true) == nil, o.detail.pin.label.text)
+    click(o.detail.edit)
+    check("...Edit opens it with Pin unticked", form:IsShown() and form.titleBox:GetText() == "Festet 1" and not form.pinCheck:GetChecked())
+    click(form.cancel)
+    clearChat()
+    click(o.detail.pin)
+    check("...and Pin on it is refused while 3 show pinned", #sentNow(ANN) == 0 and has("Høyst 3 kunngjøringer") and annDB().items[pins[1]].updated == T + 21, chatText())
+    clearChat()
+
+    -- 8. Deleting.
+    click(annRow("Raid onsdag kl 20"))
+    local before = annDB().items[myId].updated
+    click(o.detail.delete)
+    sent = sentNow(ANN)
+    check("Delete sends a tombstone: flag d, no pieces, no heading", #sent == 1 and sent[1] == A(myId, before + 1, "d", 2, 0, "Tester-Stormrage", ""), all(sent))
+    check("...it is kept, but not shown", annDB().items[myId].deleted and annDB().items[myId].title == "" and annDB().items[myId].body == ""
+        and not shownTitles():find("Raid onsdag", 1, true) and o.empty:IsShown() and o.empty.text == "Klikk en kunngjøring for å lese den.")
+    annReceive(A(myId, T + 50, "-", 3, 0, "Altine-Stormrage", "Back"), "Altine-Stormrage")
+    check("...a deletion is final: a newer version that is not deleted is ignored", annDB().items[myId].deleted and annDB().items[myId].title == "")
+
+    -- 9. Catching up.
+    flush()
+    sentNow(ANN)
+    annReceive("Q", "Nykommer-Stormrage")
+    check("a Q is not answered the same instant", #sentNow(ANN) == 0)
+    flush()
+    local firstBatch = sentNow(ANN)
+    local firstGot = parse(firstBatch)
+    check("...the answer comes in batches of 5 records, the next one after a wait", size(firstGot) == 5 and timersOf(7) == 1, all(firstBatch))
+    flush()
+    local secondBatch = sentNow(ANN)
+    local everything = {}
+    for _, message in ipairs(firstBatch) do everything[#everything + 1] = message end
+    for _, message in ipairs(secondBatch) do everything[#everything + 1] = message end
+    local all6 = parse(everything)
+    check("...together every record we keep, the tombstone too", size(parse(secondBatch)) == 1 and size(all6) == 6 and all6[myId] ~= nil and all6[myId].flags == "d"
+        and all6[altA] ~= nil and all6[pins[4]] ~= nil, all(secondBatch))
+    local function sig(item) return table.concat({ item.updated, item.deleted and "d" or "", item.pinned and "p" or "", item.round, item.by, item.title, item.body }, "|") end
+    local kept = annDB().items
+    annDB().items = {}
+    for _, message in ipairs(everything) do annReceive(message, "Altine-Stormrage") end
+    local same = size(annDB().items) == size(kept)
+    for id, item in pairs(kept) do
+        if not annDB().items[id] or sig(annDB().items[id]) ~= sig(item) then same = false end
+    end
+    check("...and taken in by an empty client, they give the same records", same and not bannerShown())
+    flush()
+    sentNow(ANN)
+    annReceive("Q", "Nykommer2-Stormrage")
+    for _, message in ipairs(everything) do annReceive(message, "Altine-Stormrage") end
+    flush()
+    flush()
+    sent = sentNow(ANN)
+    check("a second Q that someone else answered first gets no answer from us", #sent == 0, all(sent))
+    annReceive("Q", "Nykommer3-Stormrage")
+    flush()
+    firstGot = parse(sentNow(ANN))
+    local rest
+    for id in pairs(all6) do if not firstGot[id] then rest = id end end
+    annReceive(all6[rest].message, "Altine-Stormrage")
+    flush()
+    sent = sentNow(ANN)
+    check("...and a record someone else sent between our batches is skipped", size(firstGot) == 5 and rest ~= nil and #sent == 0, all(sent))
+
+    -- 10. A long id still fits.
+    local realName = character.name
+    local tail = "-Stormrage:" .. SERVER_NOW .. ":" .. ((annDB().seq or 0) + 1)
+    character.name = string.rep("L", 60 - #tail)
+    click(o.newButton)
+    form.titleBox:TypeText("Lang")
+    form.bodyBox:TypeText(string.rep("~", 500))
+    form.pinCheck:SetChecked(false)
+    flush()
+    sentNow(ANN)
+    click(form.send)
+    sent = sentNow(ANN)
+    local longId = character.name .. tail
+    got = parse(sent)
+    local fits, whole = true, true
+    for _, message in ipairs(sent) do if #message > 250 then fits = false end end
+    for _, piece in pairs(got[longId] and got[longId].pieces or {}) do if #piece % 2 ~= 0 or piece:gsub("~~", "") ~= "" then whole = false end end
+    check("with a 60-byte id, a 500-letter message goes in pieces of at most 250 bytes, none splitting a '~~'",
+        #longId == 60 and got[longId] ~= nil and got[longId].parts == 6 and #sent == 7 and fits and whole and got[longId].body == string.rep("~", 500), #sent)
+    click(o.detail.delete)
+    sentNow(ANN)
+    character.name = realName .. string.rep("L", 61 - #(realName .. "-Stormrage:" .. SERVER_NOW .. ":" .. ((annDB().seq or 0) + 1)))
+    click(o.newButton)
+    form.titleBox:TypeText("For lang")
+    form.pinCheck:SetChecked(false)
+    click(form.send)
+    check("...and a 61-byte id is refused with a message", form.error.text == "Navnet på karakteren din er for langt til å legge ut en kunngjøring." and #sentNow(ANN) == 0)
+    click(form.cancel)
+    character.name = realName
+
+    -- 11. Banners at login.
+    DrainBanners()
+    flush()
+    sentNow(ANN)
+    ns.RestartAnnouncementHello()
+    flush()
+    sent = sentNow(ANN)
+    check("a new login says hello: the list of what we have, then Q", count(sent, "^H\t") >= 1 and sent[#sent] == "Q" and sent[1]:find(pins[4], 1, true) ~= nil, all(sent))
+    local logins = {}
+    for index = 1, 3 do
+        logins[index] = "Altine-Stormrage:" .. (T - 10 + index) .. ":" .. (30 + index)
+        annReceive(A(logins[index], T + 30 + index, "-", 1, 0, "Altine-Stormrage", "Login " .. index), "Altine-Stormrage")
+    end
+    check("announcements taken in during the login exchange give no banner at once", not bannerShown() and ns.BannerQueueLength() == 0)
+    flush()
+    check("...then the login choice shows the 2 newest; a banner is marked seen only when shown",
+        bannerShown() and banner.text.text:find("Login 3", 1, true) ~= nil and ns.BannerQueueLength() == 1
+        and annDB().bannered[logins[3]] == 1 and annDB().bannered[logins[2]] == nil and annDB().bannered[logins[1]] == nil, banner.text.text)
+    click(banner.close)
+    flush()
+    check("...the second comes next, and the third waits in the window", bannerShown() and banner.text.text:find("Login 2", 1, true) ~= nil
+        and annDB().bannered[logins[2]] == 1 and annDB().bannered[logins[1]] == nil and ns.BannerQueueLength() == 0)
+    click(banner.close)
+    flush()
+
+    -- 12. Demotion hides, but never purges.
+    local function setRank(key, rank) for _, row in ipairs(ROSTER) do if row[1] == key then row[3] = rank end end end
+    setRank("Altine-Stormrage", 3)
+    rebuild()
+    check("Altine demoted: her announcements disappear, and the strip follows", #ns.Announcements() == 0 and #ns.PinnedAnnouncements() == 0
+        and win.pinned.label.text == "Skriv en kunngjøring" and o.empty.text == L.ANN_EMPTY, shownTitles())
+    check("...but nothing is purged: still stored, and still in our list", annDB().items[altA] ~= nil and annDB().items[pins[4]] ~= nil and entryFor(pins[4]) ~= nil)
+    setRank("Altine-Stormrage", 1)
+    rebuild()
+    check("promoted again: they show again", #ns.PinnedAnnouncements() == 3 and win.pinned.label.text == "|cffffd100Festet:|r Festet 4  (+2)" and annRow("Festet 4") ~= nil)
+
+    -- 13. Two versions with the same time.
+    local tie = "Altine-Stormrage:" .. (T - 5) .. ":40"
+    annDB().authored[tie] = { [T + 40] = true } -- Tie B below was made on this account, so it is not taken for a fake
+    annReceive(A(tie, T + 40, "-", 1, 0, "Altine-Stormrage", "Tie A"), "Altine-Stormrage")
+    local tieA = entryFor(tie)
+    annReceive(A(tie, T + 40, "-", 1, 0, "Tester-Stormrage", "Tie B"), "Altine-Stormrage")
+    local tieB = entryFor(tie)
+    check("two versions with the same time: the larger by wins, and our list tells them apart",
+        annDB().items[tie].title == "Tie B" and annDB().items[tie].by == "Tester-Stormrage" and tieA ~= nil and tieB ~= nil and tieA ~= tieB, tostring(tieA) .. " " .. tostring(tieB))
+    annReceive(A(tie, T + 40, "-", 1, 0, "Altine-Stormrage", "Tie A"), "Altine-Stormrage")
+    check("...the smaller by does not win it back", annDB().items[tie].title == "Tie B")
+    DrainBanners()
+    flush()
+    sentNow(ANN)
+    annReceive("H\t" .. tie .. "," .. (T + 40) .. ",zz", "Peer-Stormrage")
+    flush()
+    sent = sentNow(ANN)
+    local askedTie, sentTie = false, false
+    for _, message in ipairs(sent) do
+        if message == "G\t" .. tie then askedTie = true end
+        if message:sub(1, #tie + 3) == "A\t" .. tie .. "\t" then sentTie = true end
+    end
+    check("...a list with the same time but other content: we send ours and ask for theirs", askedTie and sentTie, all(sent))
+    annReceive(A(tie, T + 40, "d", 1, 0, "Altine-Stormrage", ""), "Altine-Stormrage")
+    check("...and a deletion with the same time wins", annDB().items[tie].deleted == true and entryFor(tie) ~= tieB and entryFor(tie):find("," .. (T + 40) .. ",d", 1, true) ~= nil,
+        entryFor(tie))
+    local gone = "Altine-Stormrage:" .. (T - 4) .. ":41"
+    annReceive(A(gone, T + 45, "-", 1, 0, "Altine-Stormrage", "Live"), "Altine-Stormrage")
+    annReceive(A(gone, T + 44, "d", 1, 0, "Altine-Stormrage", ""), "Altine-Stormrage")
+    check("a deletion beats a live version even when the live one is newer", annDB().items[gone].deleted == true and annDB().items[gone].updated == T + 44)
+    DrainBanners()
+    flush()
+    sentNow(ANN)
+    annReceive("H\t" .. gone .. "," .. (T + 45) .. ",zz", "Peer-Stormrage")
+    flush()
+    sent = sentNow(ANN)
+    got = parse(sent)
+    check("...a peer that lists it live with a newer time gets our deletion, and we do not ask for theirs",
+        got[gone] ~= nil and got[gone].flags == "d" and not all(sent):find("G\t" .. gone, 1, true), all(sent))
+    local live = "Altine-Stormrage:" .. (T - 3) .. ":42"
+    annReceive(A(live, T + 46, "-", 1, 0, "Altine-Stormrage", "Live 2"), "Altine-Stormrage")
+    DrainBanners()
+    flush()
+    sentNow(ANN)
+    annReceive("H\t" .. live .. "," .. (T + 43) .. ",dzz", "Peer-Stormrage")
+    flush()
+    sent = sentNow(ANN)
+    check("...and a peer that lists an older deletion of one we have live: we ask for it", count(sent, "^G\t") == 1 and all(sent):find("G\t" .. live, 1, true) ~= nil
+        and parse(sent)[live] == nil, all(sent))
+
+    -- 14. Post in guild chat.
+    click(o.newButton)
+    form.titleBox:TypeText("Del meg")
+    form.bodyBox:TypeText("Linje en\n" .. string.rep("x", 400))
+    form.pinCheck:SetChecked(false)
+    click(form.send)
+    sentNow(ANN)
+    local chatBefore = #guildChat
+    click(o.detail.share)
+    local line = guildChat[#guildChat]
+    check("Post in guild chat sends the heading and message to guild chat, at most 250 bytes", #guildChat == chatBefore + 1 and line.chatType == "GUILD"
+        and line.text:sub(1, 33) == "[Dragonworld] Del meg: Linje en x" and #line.text <= 250 and #line.text >= 240, line and line.text)
+    guild.rankIndex = nil
+    rebuild()
+    click(annRow("Festet 4"))
+    check("...the officer buttons are hidden from members", o.detail:IsVisible() and o.detail.title.text == "Festet 4" and not o.detail.share:IsShown() and not o.detail.edit:IsShown() and not o.detail.delete:IsShown()
+        and not o.newButton:IsShown())
+    guild.rankIndex = 1
+    rebuild()
+
+    -- 15. The officers chip.
+    guild.rankIndex = 0
+    rebuild()
+    lastMenu = nil
+    click(o.officers)
+    check("as Guild Master the officers chip opens a menu with a choice per rank (0-3), the limit in force marked",
+        lastMenu ~= nil and lastMenu.owner == o.officers and lastMenu.titles[1] == "Offiserer er denne ranken og oppover:" and #lastMenu.radios == 4
+        and lastMenu.radios[1].text == "Guild Master" and lastMenu.radios[4].text == "Member" and lastMenu.radios[2].selected() and not lastMenu.radios[1].selected())
+    o.officers:Fire("OnEnter")
+    local tip = table.concat(GameTooltip.lines, " / ")
+    check("...its tooltip tells the Guild Master to click", GameTooltip.lines[1] == "Offiserer" and tip:find(L.OFF_TIP_GM, 1, true) ~= nil, tip)
+    o.officers:Fire("OnLeave")
+    sentNow(OFF)
+    lastMenu.radios[1].click()
+    sent = sentNow(OFF)
+    check("...choosing Guild Master sets the limit, sends it, and the chip says so", ns.OfficerLimit() == 0 and #sent == 1 and sent[1]:find("^K\t0\t") ~= nil
+        and o.officers.label.text == "Offiserer: Guild Master og oppover", all(sent))
+    lastMenu.radios[2].click()
+    sentNow(OFF)
+    guild.rankIndex = 1
+    rebuild()
+    lastMenu = nil
+    click(o.officers)
+    check("for an officer who is not the Guild Master, the click does nothing", lastMenu == nil and ns.OfficerLimit() == 1 and #sentNow(OFF) == 0)
+    o.officers:Fire("OnEnter")
+    tip = table.concat(GameTooltip.lines, " / ")
+    local listsAltine = false
+    for _, text in ipairs(GameTooltip.lines) do if text:sub(-6) == "Altine" then listsAltine = true end end
+    check("...and the tooltip explains it and lists the officers", GameTooltip.lines[2] == L.OFF_TIP_TEXT and listsAltine and not tip:find(L.OFF_TIP_GM, 1, true), tip)
+    o.officers:Fire("OnLeave")
+    DragonworldDB.officerRanks = nil
+    rebuild()
+    check("(limit back to the default)", ns.OfficerLimit() == 1)
+
+    -- 16. The hello purge.
+    annDB().bannered["Ghost-Stormrage:1:1"] = 3
+    ns.RestartAnnouncementHello()
+    flush()
+    sentNow(ANN)
+    check("the hello purge drops banner marks for announcements we no longer have", annDB().bannered["Ghost-Stormrage:1:1"] == nil and annDB().bannered[altA] == 2)
+    DrainBanners()
+    local savedNow = SERVER_NOW
+    SERVER_NOW = T + 31 * 86400
+    ns.RestartAnnouncementHello()
+    flush()
+    sentNow(ANN)
+    check("after 30 days a tombstone and an old unpinned announcement are forgotten; pinned ones stay up to 90 days",
+        annDB().items[myId] == nil and annDB().items[altA] == nil and annDB().items[pins[4]] ~= nil and annDB().items[tie] == nil)
+    SERVER_NOW = savedNow
+
+    -- 17. Broken messages.
+    DrainBanners()
+    clearChat()
+    local title4 = annDB().items[pins[4]].title
+    for _, message in ipairs({
+        "A", "A\tx\ty", A("no id", T, "-", 1, 0, "Altine-Stormrage", "x"), A(pins[4], "zz", "-", 1, 0, "Altine-Stormrage", "x"),
+        A(pins[4], T + 99999, "-", 1, 0, "Altine-Stormrage", "future"), A(pins[4], T + 60, "-", 1, 9, "Altine-Stormrage", "parts"),
+        A(pins[4], T + 60, "-", 100, 0, "Altine-Stormrage", "round"), A(pins[4], T + 60, "q", 1, 0, "Altine-Stormrage", "flags"),
+        A(pins[4], T + 60, "-", 1, 0, string.rep("x", 61), "by"), A(pins[4], T + 60, "-", 1.5, 0, "Altine-Stormrage", "half"),
+        A(string.rep("y", 70) .. ":" .. T .. ":1", T, "-", 1, 0, "Altine-Stormrage", "long id"),
+        A("Altine-Stormrage:" .. (T + 99999) .. ":1", T, "-", 1, 0, "Altine-Stormrage", "written in the future"),
+        "T", "T\t" .. pins[4] .. "\tx\t1\ty", "T\t" .. pins[4] .. "\t" .. T .. "\t1.5\ty", "H\t,,,", "H\tgarbage", "H\ta,b,c", "G", "Z\t1",
+    }) do annReceive(message, "Altine-Stormrage") end
+    flush()
+    check("broken messages give no Lua errors and change nothing", not has("Feil") and annDB().items[pins[4]].title == title4
+        and annDB().items["Altine-Stormrage:" .. (T + 99999) .. ":1"] == nil, chatText())
+    dw("debug")
+    check("/dw debug still works, with a [kunngjoringer] part", has("[kunngjoringer]") and has("lagret:") and has("[offiserer]"), chatText())
+    clearChat()
+
+    -- Leave things as the remaining tests expect.
+    DrainBanners()
+    o:Hide()
+    guild.rankIndex = nil
+    rebuild()
+    clock = clock + 300
+    flush()
+    sentNow(ANN); sentNow(OFF); sentNow("DragonworldSug"); sentNow(EV_PREFIX); sentNow("DragonworldPf")
+    ns.SetLanguage(language, true)
+    clearChat()
+    click(rsChip)
+end)()
+
+-- ==================== polls in the Forslag tab (Modules\Forslag.lua) ====================
+;(function()
+    local POLL = "DragonworldPoll"
+    local DAY = 86400
+    local L = ns.L
+    local function click(button) button.scripts.OnClick(button) end
+    local function all(list) return table.concat(list, " ; ") end
+    local function esc(text) return (text:gsub("%p", "%%%0")) end
+    local function sugDB() return DragonworldDB.modules.forslag end
+    local function polls() return DragonworldDB.modules.forslag.polls end
+    local function pollReceive(text, sender) fire("CHAT_MSG_ADDON", POLL, text, "GUILD", sender) end
+    -- The roster is read again 1 s after the event; the panel redraws 0.2 s after that.
+    local function rebuild() fire("GUILD_ROSTER_UPDATE"); flush(); flush() end
+    local function timersOf(delay)
+        local n = 0
+        for _, timer in ipairs(timers) do if math.abs(timer.delay - delay) < 1e-9 then n = n + 1 end end
+        return n
+    end
+    local function P(id, updated, endsAt, flags, n, by, question) return table.concat({ "P", id, updated, endsAt, flags, n, by, question }, "\t") end
+    local function O(id, first, ...) return table.concat({ "O", id, first, ... }, "\t") end
+    local function bannerShown() return DragonworldMilestoneBanner ~= nil and DragonworldMilestoneBanner:IsShown() end
+    local function entryFor(id)
+        for _, entry in ipairs(ns.PollHelloEntries()) do if entry:sub(1, #id + 1) == id .. "," then return entry end end
+    end
+    local function rows()
+        local out = {}
+        for _, row in ipairs(DragonworldPollScroll.scrollChild.children) do if row:IsShown() then out[#out + 1] = row end end
+        return out
+    end
+    local function rowFor(question)
+        for _, row in ipairs(rows()) do if row.label.text:find(question, 1, true) then return row end end
+    end
+    local function size(set) local n = 0; for _ in pairs(set) do n = n + 1 end; return n end
+
+    DrainBanners()
+    local language = ns.GetLanguage()
+    ns.SetLanguage("nb", true)
+    guild.rankIndex = nil
+    rebuild()
+    local savedCutoff = ns.F6_CUTOFF
+    ns.F6_CUTOFF = SERVER_NOW - 1              -- polls have no legacy path; the officer rules apply
+    sentNow(POLL)
+    local T = SERVER_NOW
+
+    check("at login the polls hello was sent once: an empty list, then Q", prefixes[POLL] == true and #POLL_LOGIN == 1 and POLL_LOGIN[1] == "Q", all(POLL_LOGIN))
+    check("DW.OpenPoll and DW.Polls exist, and the old panel title is gone from every language", type(ns.OpenPoll) == "function" and type(ns.Polls) == "function"
+        and (function() for _, language in ipairs(ns.LANGUAGES) do if ns.strings[language.code].SUG_PANEL_TITLE ~= nil then return false end end return true end)())
+
+    -- 1. The mode chips.
+    click(chipByID.forslag)
+    local p = DragonworldForslagScroll.parent
+    local pd, pf = p.pollDetail, p.pollForm
+    check("the Forslag tab starts on Suggestions, with a Polls chip next to it",
+        p:IsVisible() and p.title == nil and p.modes.suggestions.selected and not p.modes.polls.selected and p.modes.suggestions.label.text == "Forslag"
+        and p.modes.polls.label.text == "Avstemninger (0)" and p.filters.all:IsShown() and p.views.archive:IsShown() and p.newButton:IsShown()
+        and DragonworldForslagScroll:IsShown() and not DragonworldPollScroll:IsShown() and not p.pollViews.open:IsShown() and not pd:IsShown() and not pf:IsShown())
+    click(p.modes.polls)
+    check("Polls hides the suggestions and shows the polls, and explains itself when there are none",
+        p.modes.polls.selected and not p.modes.suggestions.selected and not p.filters.all:IsShown() and not p.views.active:IsShown() and not p.newButton:IsShown()
+        and not DragonworldForslagScroll:IsShown() and not p.detail:IsShown() and not p.form:IsShown() and DragonworldPollScroll:IsShown()
+        and p.pollViews.open:IsShown() and p.pollViews.open.selected and p.pollViews.open.label.text == "Åpne (0)" and p.pollViews.ended.label.text == "Avsluttet (0)"
+        and p.empty:IsShown() and p.empty.text == L.POLL_EMPTY)
+
+    -- 2. Every guild member makes polls, officer or not.
+    check("not an officer: the New poll button is there all the same, and no line saying only officers make them",
+        not ns.IsOfficer() and p.newPoll:IsShown() and p.newPoll.label.text == "Ny avstemning" and p.pollOnlyOfficers == nil
+        and (function() for _, language in ipairs(ns.LANGUAGES) do if ns.strings[language.code].POLL_ONLY_OFFICERS ~= nil then return false end end return true end)())
+    click(p.modes.suggestions)
+    check("back on Suggestions everything is as before", p.filters.all:IsShown() and p.newButton:IsShown() and DragonworldForslagScroll:IsShown()
+        and not DragonworldPollScroll:IsShown() and not p.newPoll:IsShown() and p.newButton.label.text == "Nytt forslag")
+    click(p.modes.polls)
+
+    -- 3. An officer makes a poll.
+    guild.rankIndex = 1
+    rebuild()
+    check("an officer has the New poll button too", p.newPoll:IsShown() and p.newPoll.label.text == "Ny avstemning")
+    click(p.newPoll)
+    check("New poll opens the form: a question, six answers, and 3 days chosen",
+        pf:IsShown() and not p.empty:IsShown() and not pd:IsShown() and pf.heading.text == "Ny avstemning" and pf.qBox.maxLetters == 70
+        and #pf.optBoxes == 6 and pf.optBoxes[6].maxLetters == 30 and #pf.days == 6 and pf.days[3].selected and not pf.days[1].selected
+        and pf.days[3].label.text == "3 d" and pf.days[6].label.text == "14 d" and pf.endsText.text == "Slutter DATE(" .. (T + 3 * DAY) .. ")"
+        and pf.send.label.text == "Legg ut avstemning" and pf.cancel.label.text == "Avbryt" and pf.hint.text == L.POLL_FORM_HINT)
+    click(pf.days[1])
+    check("choosing a length moves the end", pf.days[1].selected and not pf.days[3].selected and pf.endsText.text == "Slutter DATE(" .. (T + DAY) .. ")")
+    click(pf.days[3])
+    click(pf.send)
+    check("an empty question is refused", pf.error.text == "Skriv et spørsmål først." and pf:IsShown() and #sentNow(POLL) == 0)
+    pf.qBox:TypeText("Hvilken raid-dag?")
+    pf.optBoxes[1]:TypeText("Onsdag")
+    click(pf.send)
+    check("one answer is refused", pf.error.text == "Skriv minst to forskjellige svar." and #sentNow(POLL) == 0)
+    pf.optBoxes[3]:TypeText(" ONSDAG ")
+    click(pf.send)
+    check("two answers that are the same are refused", pf.error.text == "Skriv minst to forskjellige svar." and #sentNow(POLL) == 0)
+    pf.optBoxes[3]:SetText("Torsdag")
+    pf.optBoxes[6]:TypeText("Fredag")
+    click(pf.send)
+    local sent = sentNow(POLL)
+    local myPoll = "Tester-Stormrage:" .. T .. ":1"
+    check("a valid poll sends P (3 answers, open 3 days, by me) and one O with the answers",
+        #sent == 2 and sent[1] == P(myPoll, T, T + 3 * DAY, "-", 3, "Tester-Stormrage", "Hvilken raid-dag?") and sent[2] == O(myPoll, 1, "Onsdag", "Torsdag", "Fredag"), all(sent))
+    local mine = polls()[myPoll]
+    check("...it is stored, without a vote and without a banner for me", mine ~= nil and mine.count == 3 and mine.options[3] == "Fredag" and next(mine.votes) == nil
+        and sugDB().pollBannered[myPoll] == true and not bannerShown() and ns.BannerQueueLength() == 0)
+    check("...the form closes and the poll is shown, marked as not voted in the list",
+        not pf:IsShown() and pd:IsShown() and pd.question.text == "Hvilken raid-dag?" and pf.qBox:GetText() == "" and pf.optBoxes[6]:GetText() == ""
+        and #rows() == 1 and rows()[1].label.text == "|cffffd100*|r Hvilken raid-dag?" and rows()[1].sub.text == "3 dager igjen  -  0 stemmer" and rows()[1].selected
+        and p.modes.polls.label.text == "Avstemninger (1)" and p.pollViews.open.label.text == "Åpne (1)", rows()[1] and rows()[1].sub.text)
+    check("...with three answers, the votes-are-not-secret notice and the buttons for its maker",
+        pd.options[1]:IsShown() and pd.options[3]:IsShown() and not pd.options[4]:IsShown() and pd.options[1].label.text == "Onsdag"
+        and pd.notice.text == "Stemmene er ikke hemmelige: alle med addonen kan se hvem som stemte på hva."
+        and pd.meta.text:find("slutter DATE(" .. (T + 3 * DAY) .. ")", 1, true) ~= nil and pd.meta.text:find("0 stemmer", 1, true) ~= nil
+        and pd.endNow:IsShown() and pd.endNow.label.text == "Avslutt nå" and pd.share.label.text == "Del i guild-chat" and pd.delete.label.text == "Slett", pd.meta.text)
+    check("...the bottom row fits 304 px without overlap, and Share uses the small font",
+        pd.endNow:GetWidth() == 96 and select(4, pd.share:GetPoint(1)) == 100 and pd.share:GetWidth() == 124 and pd.delete:GetWidth() == 72
+        and 100 + 124 <= 304 - 72 and pd.share.label.fontTemplate == "GameFontHighlightSmall")
+
+    -- 4. Voting.
+    SERVER_NOW = T + 10
+    click(pd.options[2])
+    sent = sentNow(POLL)
+    check("voting sends only my vote", #sent == 1 and sent[1] == "V\t" .. myPoll .. "\tTester-Stormrage,2," .. (T + 10), all(sent))
+    check("...my answer is marked, with 1 (100%) and my name", pd.options[2].selected and not pd.options[1].selected and pd.options[2].count.text == "1 (100%)"
+        and pd.options[2].names.text == "Tester" and pd.options[1].count.text == "0 (0%)" and pd.options[1].names.text == "-"
+        and rows()[1].label.text == "Hvilken raid-dag?" and rows()[1].sub.text == "2 dager igjen  -  1 stemmer", rows()[1].sub.text)
+    SERVER_NOW = T + 20
+    click(pd.options[1])
+    sent = sentNow(POLL)
+    check("changing to answer 1 sends a newer V", #sent == 1 and sent[1] == "V\t" .. myPoll .. "\tTester-Stormrage,1," .. (T + 20)
+        and pd.options[1].selected and not pd.options[2].selected, all(sent))
+    pd.options[1]:Fire("OnEnter")
+    check("...hovering my answer says a click takes it back", GameTooltip.lines[1] == "Onsdag" and GameTooltip.lines[2] == "Tester"
+        and GameTooltip.lines[3] == L.POLL_TIP_UNVOTE, table.concat(GameTooltip.lines, " / "))
+    pd.options[1]:Fire("OnLeave")
+    pd.options[3]:Fire("OnEnter")
+    check("...and another answer says a click changes the vote", GameTooltip.lines[1] == "Fredag" and GameTooltip.lines[2] == "-"
+        and GameTooltip.lines[3] == L.POLL_TIP_CHANGE, table.concat(GameTooltip.lines, " / "))
+    pd.options[3]:Fire("OnLeave")
+    click(pd.options[1])
+    sent = sentNow(POLL)
+    check("clicking the same answer takes the vote back (choice 0)", #sent == 1 and sent[1] == "V\t" .. myPoll .. "\tTester-Stormrage,0," .. (T + 21)
+        and not pd.options[1].selected and polls()[myPoll].votes["Tester-Stormrage"].c == 0 and pd.options[1].count.text == "0 (0%)", all(sent))
+    pd.options[1]:Fire("OnEnter")
+    check("...then hovering says a click votes", GameTooltip.lines[3] == L.POLL_TIP_VOTE, table.concat(GameTooltip.lines, " / "))
+    pd.options[1]:Fire("OnLeave")
+    click(pd.options[1])
+    sentNow(POLL)
+
+    -- 6. Whose votes count.
+    local function vote(id, voter) return polls()[id].votes[voter] end
+    pollReceive("V\t" .. myPoll .. "\tBorin-Stormrage,2," .. (T + 30), "Borin-Stormrage")
+    check("a vote for Borin from Borin counts", vote(myPoll, "Borin-Stormrage") ~= nil and vote(myPoll, "Borin-Stormrage").c == 2 and vote(myPoll, "Borin-Stormrage").direct == true)
+    pollReceive("V\t" .. myPoll .. "\tBorin-Stormrage,3," .. (T + 40), "Eira-Stormrage")
+    check("...a vote for Borin sent by Eira is ignored", vote(myPoll, "Borin-Stormrage").c == 2 and vote(myPoll, "Borin-Stormrage").updated == T + 30)
+    pollReceive("V\t" .. myPoll .. "\tBorin-Stormrage,1," .. (T + 25), "Altine-Stormrage")
+    check("...an older vote for Borin relayed by Altine (an officer) does not replace his own", vote(myPoll, "Borin-Stormrage").c == 2 and vote(myPoll, "Borin-Stormrage").direct == true)
+    pollReceive("V\t" .. myPoll .. "\tBorin-Stormrage,3," .. (T + 45) .. "\tEira-Stormrage,3," .. (T + 35), "Altine-Stormrage")
+    check("...newer votes relayed by Altine are accepted", vote(myPoll, "Borin-Stormrage").c == 3 and vote(myPoll, "Borin-Stormrage").updated == T + 45
+        and vote(myPoll, "Eira-Stormrage").c == 3 and vote(myPoll, "Eira-Stormrage").direct == nil)
+    pollReceive("V\t" .. myPoll .. "\tCedric-Stormrage,9," .. (T + 40), "Cedric-Stormrage")
+    pollReceive("V\t" .. myPoll .. "\tCedric-Stormrage,1," .. (SERVER_NOW + 601), "Cedric-Stormrage")
+    pollReceive("V\t" .. myPoll .. "\tCedric-Stormrage,4," .. (T + 40), "Cedric-Stormrage")
+    check("...an answer that does not exist, or a time too far ahead, is ignored", vote(myPoll, "Cedric-Stormrage") == nil)
+    local savedNow = SERVER_NOW
+    SERVER_NOW = T + 3 * DAY + 400
+    pollReceive("V\t" .. myPoll .. "\tCedric-Stormrage,1," .. (T + 3 * DAY + 301), "Cedric-Stormrage")
+    check("...and a vote more than 5 minutes after the end is ignored", vote(myPoll, "Cedric-Stormrage") == nil)
+    pollReceive("V\t" .. myPoll .. "\tCedric-Stormrage,1," .. (T + 3 * DAY + 300), "Cedric-Stormrage")
+    check("...within 5 minutes it still counts", vote(myPoll, "Cedric-Stormrage") ~= nil)
+    polls()[myPoll].votes["Cedric-Stormrage"] = nil
+    SERVER_NOW = savedNow
+    pollReceive("V\t" .. myPoll .. "\tBorin-X,1," .. (T + 50) .. "\tborin,2," .. (T + 51) .. "\tBORIN,1," .. (T + 49), "Borin-Stormrage")
+    check("...other spellings of Borin's name sent by Borin are still one vote for Borin, kept under the sender's name",
+        (function()
+            local keys = {}
+            for voter in pairs(polls()[myPoll].votes) do if ns.NameKey(voter) == "borin" then keys[#keys + 1] = voter end end
+            return #keys == 1 and keys[1] == "Borin-Stormrage" and vote(myPoll, "Borin-Stormrage").c == 2 and vote(myPoll, "Borin-Stormrage").updated == T + 51
+        end)())
+    pollReceive("V\t" .. myPoll .. "\tborin-storm rage,1," .. (T + 48), "Altine-Stormrage")
+    check("...and an older vote under another spelling relayed by an officer does not add one", vote(myPoll, "borin-storm rage") == nil and vote(myPoll, "Borin-Stormrage").c == 2)
+    polls()[myPoll].votes["Borin-Stormrage"] = { c = 3, updated = T + 45 } -- back to how it was for the checks below
+    flush()
+    -- 5. What the poll shows.
+    check("the poll shows the counts, the share and the names", pd.options[1].count.text == "1 (33%)" and pd.options[3].count.text == "2 (67%)"
+        and pd.options[3].names.text == "Borin, Eira" and pd.options[1].names.text == "Tester" and pd.meta.text:find("3 stemmer", 1, true) ~= nil
+        and pd.options[3].fill.width > pd.options[1].fill.width and pd.options[2].fill.width == 1, pd.options[3].count.text)
+
+    -- 7. Polls from others.
+    SERVER_NOW = T + 60
+    local altPoll = "Altine-Stormrage:" .. (T + 50) .. ":1"
+    local altEnd = T + 60 + 2 * DAY
+    pollReceive(P(altPoll, T + 60, altEnd, "-", 2, "Altine-Stormrage", "Skal vi ha guild-møte?"), "Altine-Stormrage")
+    check("a poll from Altine waits for its answers before it shows", polls()[altPoll] ~= nil and polls()[altPoll].optionParts ~= nil and not bannerShown()
+        and (function() for _, item in ipairs(ns.Polls()) do if item.id == altPoll then return false end end return true end)())
+    pollReceive(O(altPoll, 1, "Falsk", "Svar"), "Borin-Stormrage")
+    check("...answers sent by Borin (not an officer) are ignored", polls()[altPoll].optionParts ~= nil and polls()[altPoll].options[1] == nil)
+    pollReceive(O(altPoll, 1, "Ja", "Nei"), "Altine-Stormrage")
+    local banner = DragonworldMilestoneBanner
+    check("...with them it shows, and gives the gold banner NY AVSTEMNING! with Vote", polls()[altPoll].optionParts == nil and bannerShown()
+        and banner.title.text == "NY AVSTEMNING!" and banner.text.text:find("Skal vi ha guild-møte?", 1, true) ~= nil
+        and banner.text.text:find("Stem før DATE(" .. altEnd .. ")", 1, true) ~= nil and banner.button.label.text == "Stem" and sugDB().pollBannered[altPoll] == true,
+        banner and banner.text.text)
+    click(p.modes.suggestions)
+    click(banner.button)
+    check("Vote opens the polls on it", p.modes.polls.selected and pd:IsShown() and pd.question.text == "Skal vi ha guild-møte?" and p.pollViews.open.selected
+        and not bannerShown() and rowFor("Skal vi ha guild-møte?").selected)
+    local borinPoll = "Borin-Stormrage:" .. (T + 60) .. ":1"
+    pollReceive(P(borinPoll, T + 60, T + 60 + DAY, "-", 2, "Borin-Stormrage", "Fra Borin"), "Borin-Stormrage")
+    check("a poll by Borin (not an officer) from Borin is taken in: every member may make polls", polls()[borinPoll] ~= nil
+        and polls()[borinPoll].optionParts ~= nil and sugDB().pollHeld.held[borinPoll] == nil)
+    local relayed = "Altine-Stormrage:" .. (T + 60) .. ":2"
+    pollReceive(P(relayed, T + 60, T + 60 + DAY, "-", 2, "Altine-Stormrage", "Videresendt"), "Borin-Stormrage")
+    check("...one by Altine passed on by Borin (a member) is taken in: any member may pass on a poll as its author made it",
+        polls()[relayed] ~= nil and polls()[relayed].optionParts ~= nil and sugDB().pollHeld.held[relayed] == nil)
+    DrainBanners()
+    local eiraPoll = "Eira-Stormrage:" .. (T + 60) .. ":1"
+    pollReceive(P(eiraPoll, T + 60, T + 60 + DAY, "-", 2, "Eira-Stormrage", "Fra Eira"), "Altine-Stormrage")
+    check("...one by Eira passed on by Altine (an officer) is taken in", polls()[eiraPoll] ~= nil and polls()[eiraPoll].optionParts ~= nil
+        and sugDB().pollHeld.held[eiraPoll] == nil)
+    pollReceive(O(eiraPoll, 1, "Falsk", "Svar"), "Borin-Stormrage")
+    check("...its answers from Borin, who did not send it, are ignored", polls()[eiraPoll].optionParts ~= nil and polls()[eiraPoll].options[1] == nil)
+    pollReceive(O(eiraPoll, 1, "Ja", "Nei"), "Altine-Stormrage")
+    check("...from Altine, who passed it on, they are taken in", polls()[eiraPoll].optionParts == nil and polls()[eiraPoll].options[2] == "Nei")
+    DrainBanners()
+    pollReceive(P(relayed, T + 60, T + 60 + DAY, "-", 2, "Altine-Stormrage", "Videresendt"), "Altine-Stormrage")
+    pollReceive(O(relayed, 1, "Ja", "Nei"), "Altine-Stormrage")
+    check("...a second new poll from Altine within 10 minutes gives no live banner",
+        polls()[relayed].optionParts == nil and polls()[relayed].options[2] == "Nei" and not bannerShown() and sugDB().pollBannered[relayed] == nil)
+    local unknownPoll = "Ukjent-Stormrage:" .. (T + 60) .. ":1"
+    pollReceive(P(unknownPoll, T + 60, T + 60 + DAY, "-", 2, "Ukjent-Stormrage", "Hvem?"), "Fremmed-Stormrage")
+    check("...but one passed on by someone not in the roster waits, held meanwhile", polls()[unknownPoll] == nil and sugDB().pollHeld.held[unknownPoll] ~= nil)
+    clock = clock + 200
+    flush()
+    check("...and is not taken in", polls()[unknownPoll] == nil and sugDB().pollHeld.held[unknownPoll] ~= nil)
+    -- Out of the way of the counts below.
+    polls()[borinPoll], polls()[relayed], polls()[eiraPoll] = nil, nil, nil
+    sugDB().pollHeld.held[unknownPoll] = nil
+    flush()
+    sentNow(POLL)
+
+    -- 5 (continued). A 70-letter question pushes the answers down.
+    local longPoll = "Altine-Stormrage:" .. (T + 61) .. ":3"
+    pollReceive(P(longPoll, T + 61, T + 61 + DAY, "-", 6, "Altine-Stormrage", string.rep("x", 70)), "Altine-Stormrage")
+    pollReceive(O(longPoll, 1, "En", "To", "Tre", "Fire", "Fem", "Seks"), "Altine-Stormrage")
+    DrainBanners()
+    ns.OpenPoll(longPoll)
+    local _, qRel = pd.question:GetPoint(1)
+    local _, metaRel, _, _, metaY = pd.meta:GetPoint(1)
+    local _, noticeRel, _, _, noticeY = pd.notice:GetPoint(1)
+    local _, scrollRel, scrollRelPoint, _, scrollY = pd.optionScroll:GetPoint(1)
+    local noticeBottom = -2 - pd.question:GetStringHeight() + metaY - pd.meta:GetStringHeight() + noticeY - pd.notice:GetStringHeight()
+    local firstTop = noticeBottom + scrollY + select(5, pd.options[1]:GetPoint(1))
+    check("with a 70-letter question the question wraps, and the first answer starts below the notice",
+        pd.question.text == string.rep("x", 70) and pd.question:GetStringHeight() >= 24 and qRel == nil and metaRel == pd.question and noticeRel == pd.meta
+        and scrollRel == pd.notice and scrollRelPoint == "BOTTOMLEFT" and firstTop < noticeBottom and pd.options[6]:IsShown()
+        and pd.optionContent:GetHeight() == 6 * 38 and select(2, pd.optionScroll:GetPoint(2)) == pd, firstTop .. " / " .. noticeBottom)
+
+    -- 8. End now.
+    SERVER_NOW = T + 1000
+    pollReceive("V\t" .. myPoll .. "\tDagny-Stormrage,1," .. (T + 1500), "Dagny-Stormrage")
+    local before = entryFor(myPoll)
+    ns.OpenPoll(myPoll)
+    sentNow(POLL)
+    click(pd.endNow)
+    sent = sentNow(POLL)
+    check("End now sends P with the end set to now", #sent == 1 and sent[1] == P(myPoll, T + 1000, T + 1000, "-", 3, "Tester-Stormrage", "Hvilken raid-dag?"), all(sent))
+    check("...the answers can no longer be chosen, and the poll moves to Ended",
+        not pd.options[1]:IsEnabled() and p.pollViews.ended.selected and pd:IsShown() and not pd.endNow:IsShown() and pd.share:IsShown()
+        and pd.meta.text:find("sluttet DATE(" .. (T + 1000) .. ")", 1, true) ~= nil and rowFor("Hvilken raid-dag?") ~= nil
+        and rowFor("Hvilken raid-dag?").sub.text == "sluttet DATE(" .. (T + 1000) .. ")  -  3 stemmer", pd.meta.text)
+    click(pd.options[2])
+    check("...a click on an answer does nothing", #sentNow(POLL) == 0 and vote(myPoll, "Tester-Stormrage").c == 1)
+    check("...a vote cast after the new end (plus 5 minutes) is dropped, and the vote count in our list goes down",
+        vote(myPoll, "Dagny-Stormrage") == nil and before == myPoll .. "," .. T .. ",4," .. (T + 1500) .. ",l"
+        and entryFor(myPoll) == myPoll .. "," .. (T + 1000) .. ",3," .. (T + 45) .. ",l", tostring(before) .. " / " .. tostring(entryFor(myPoll)))
+
+    -- Share in guild chat.
+    local chatBefore = #guildChat
+    click(pd.share)
+    local said = guildChat[#guildChat]
+    check("Post in guild chat says the question, the answers and when it ended", #guildChat == chatBefore + 1 and said.chatType == "GUILD"
+        and said.text == "[Dragonworld] Avstemning: Hvilken raid-dag?  1) Onsdag  2) Torsdag  3) Fredag  (stem i Forslag-fanen i addonen, sluttet DATE(" .. (T + 1000) .. "))",
+        said and said.text)
+
+    -- 9. Delete.
+    click(pd.delete)
+    sent = sentNow(POLL)
+    check("Delete sends a tombstone: flag d, no question, no answers", #sent == 1 and sent[1] == P(myPoll, T + 1001, T + 1000, "d", 3, "Tester-Stormrage", ""), all(sent))
+    check("...it is kept, but emptied and not shown", polls()[myPoll].deleted and polls()[myPoll].question == "" and next(polls()[myPoll].votes) == nil
+        and rowFor("Hvilken raid-dag?") == nil and not pd:IsShown() and entryFor(myPoll) == myPoll .. "," .. (T + 1001) .. ",0,0,d", entryFor(myPoll))
+    pollReceive(P(myPoll, T + 1100, T + 2 * DAY, "-", 3, "Altine-Stormrage", "Tilbake"), "Altine-Stormrage")
+    pollReceive("V\t" .. myPoll .. "\tAltine-Stormrage,1," .. (T + 900), "Altine-Stormrage")
+    check("...a deletion is final: a newer version that is not deleted, and votes, are ignored", polls()[myPoll].deleted and polls()[myPoll].question == ""
+        and next(polls()[myPoll].votes) == nil)
+    flush()
+    sentNow(POLL)
+    pollReceive("H\t" .. myPoll .. "," .. (T + 2000) .. ",0,0,l", "Eira-Stormrage")
+    flush()
+    sent = sentNow(POLL)
+    check("...and a member who lists it live gets the tombstone, whatever the times", #sent == 1 and sent[1] == P(myPoll, T + 1001, T + 1000, "d", 3, "Tester-Stormrage", ""), all(sent))
+
+    -- 10. Votes for a poll we do not know.
+    local ghost = "Altine-Stormrage:" .. (T + 900) .. ":7"
+    pollReceive("V\t" .. ghost .. "\tEira-Stormrage,1," .. (T + 950), "Eira-Stormrage")
+    check("a vote from the voter for a poll we lack is kept", polls()[ghost] ~= nil and polls()[ghost].stub and polls()[ghost].votes["Eira-Stormrage"].c == 1)
+    flush()
+    sent = sentNow(POLL)
+    check("...and the poll is asked for", count(sent, "^G\t" .. esc(ghost) .. "$") == 1, all(sent))
+    pollReceive("V\tAltine-Stormrage:5:5\tEira-Stormrage,1," .. T, "Borin-Stormrage")
+    check("...a vote relayed by a member makes no such placeholder", polls()["Altine-Stormrage:5:5"] == nil)
+    pollReceive(P(ghost, T + 960, T + 960 + DAY, "-", 2, "Altine-Stormrage", "Spøkelse?"), "Altine-Stormrage")
+    check("the poll arrives: the vote is kept, the answers are still missing", not polls()[ghost].stub and polls()[ghost].optionParts ~= nil
+        and polls()[ghost].votes["Eira-Stormrage"].c == 1 and polls()[ghost].arrived == SERVER_NOW)
+    flush()
+    flush()
+    sent = sentNow(POLL)
+    check("...answers still missing after 20 s are asked for", count(sent, "^G\t" .. esc(ghost) .. "$") == 1, all(sent))
+    pollReceive(O(ghost, 1, "Ja"), "Altine-Stormrage")
+    pollReceive(O(ghost, 2, "Nei"), "Altine-Stormrage")
+    check("...answers can come in more than one message", polls()[ghost].optionParts == nil and polls()[ghost].options[2] == "Nei")
+    DrainBanners()
+    local oldStub = "Altine-Stormrage:" .. (T + 800) .. ":8"
+    pollReceive("V\t" .. oldStub .. "\tEira-Stormrage,1," .. (T + 950), "Eira-Stormrage")
+    polls()[oldStub].stubAt = SERVER_NOW - DAY - 1
+    sugDB().pollBannered["Ghost-Stormrage:1:1"] = true
+    ns.RestartPollHello()
+    flush()
+    check("the hello forgets votes for an unknown poll after a day, and banner marks for polls we do not have",
+        polls()[oldStub] == nil and sugDB().pollBannered["Ghost-Stormrage:1:1"] == nil and sugDB().pollBannered[altPoll] == true)
+    flush()
+    sentNow(POLL)
+    ;(function()
+        -- At most 40 placeholders: votes for 45 made-up polls keep the newest 40.
+        local function stubs()
+            local list = {}
+            for id, poll in pairs(polls()) do if poll.stub then list[#list + 1] = id end end
+            return list
+        end
+        local savedClock = SERVER_NOW
+        for index = 1, 45 do
+            SERVER_NOW = savedClock + index
+            pollReceive("V\tFake-Stormrage:" .. index .. ":" .. index .. "\tEira-Stormrage,1," .. (T + 950), "Eira-Stormrage")
+        end
+        SERVER_NOW = savedClock
+        flush()
+        local asked = sentNow(POLL)
+        check("votes for many unknown polls keep at most 40 placeholders, the newest, and ask only for those",
+            #stubs() == 40 and polls()["Fake-Stormrage:5:5"] == nil and polls()["Fake-Stormrage:6:6"] ~= nil and polls()["Fake-Stormrage:45:45"] ~= nil
+            and count(asked, "Fake%-Stormrage:5:5") == 0 and count(asked, "Fake%-Stormrage:45:45") == 1, #stubs() .. " / " .. all(asked))
+        for _, id in ipairs(stubs()) do polls()[id] = nil end
+        flush()
+        sentNow(POLL)
+    end)()
+
+    -- 11. Catching up.
+    for index = 1, 3 do
+        local id = "Altine-Stormrage:" .. (T + 970 + index) .. ":" .. (20 + index)
+        pollReceive(P(id, T + 980 + index, T + 980 + index + DAY, "-", 2, "Altine-Stormrage", "Ekstra " .. index), "Altine-Stormrage")
+        pollReceive(O(id, 1, "A", "B"), "Altine-Stormrage")
+    end
+    DrainBanners()
+    flush()
+    sentNow(POLL)
+    pollReceive("Q", "Nykommer-Stormrage")
+    check("a Q is not answered the same instant", #sentNow(POLL) == 0)
+    flush()
+    local firstBatch = sentNow(POLL)
+    check("...the answer comes in batches of 5 polls, the next one after a wait", count(firstBatch, "^P\t") == 5 and timersOf(7) == 1, all(firstBatch))
+    flush()
+    local secondBatch = sentNow(POLL)
+    local everything = {}
+    for _, message in ipairs(firstBatch) do everything[#everything + 1] = message end
+    for _, message in ipairs(secondBatch) do everything[#everything + 1] = message end
+    check("...together every poll we keep, the tombstone and the votes too", count(secondBatch, "^P\t") == 2 and count(everything, "^P\t" .. esc(myPoll) .. "\t.*\td\t") == 1
+        and count(everything, "^V\t" .. esc(ghost) .. "\tEira%-Stormrage,1,") == 1 and count(everything, "^O\t" .. esc(longPoll) .. "\t1\tEn\tTo\tTre\tFire\tFem\tSeks$") == 1, all(secondBatch))
+    local function sig(poll)
+        local votes = {}
+        for voter, v in pairs(poll.votes) do votes[#votes + 1] = voter .. "=" .. v.c .. "@" .. v.updated end
+        table.sort(votes)
+        return table.concat({ poll.updated, poll.endsAt, poll.deleted and "d" or "", poll.by, poll.question, poll.count, table.concat(poll.options, "/"), table.concat(votes, ",") }, "|")
+    end
+    local kept = polls()
+    sugDB().polls = {}
+    for _, message in ipairs(everything) do pollReceive(message, "Altine-Stormrage") end
+    local same = size(polls()) == size(kept)
+    for id, poll in pairs(kept) do
+        if not polls()[id] or sig(polls()[id]) ~= sig(poll) then same = false end
+    end
+    check("...and taken in by an empty client, they give the same polls and votes", same and size(kept) == 7 and not bannerShown(), size(polls()) .. " / " .. size(kept))
+    flush()
+    sentNow(POLL)
+    pollReceive("Q", "Nykommer2-Stormrage")
+    for _, message in ipairs(everything) do pollReceive(message, "Altine-Stormrage") end
+    flush()
+    flush()
+    sent = sentNow(POLL)
+    check("a second Q that an officer answered first gets no answer from us", #sent == 0, all(sent))
+    guild.rankIndex = nil
+    rebuild()
+    sentNow(POLL)
+    pollReceive("G\t" .. altPoll, "Nykommer3-Stormrage")
+    flush()
+    sent = sentNow(POLL)
+    check("a member asked for a poll waits longer than an officer before answering", #sent == 0 and timersOf(15) == 1, all(sent))
+    flush()
+    sent = sentNow(POLL)
+    check("...then passes on a poll changed since it was made (any member may)", count(sent, "^P\t" .. esc(altPoll) .. "\t") == 1, all(sent))
+    pollReceive("G\t" .. longPoll, "Nykommer3-Stormrage")
+    flush()
+    flush()
+    sent = sentNow(POLL)
+    check("...and a poll as its author made it", count(sent, "^P\t" .. esc(longPoll) .. "\t") == 1 and count(sent, "^O\t" .. esc(longPoll) .. "\t") == 1, all(sent))
+    guild.rankIndex = 1
+    rebuild()
+    sentNow(POLL)
+
+    -- 12. The counts and the time left.
+    ns.OpenPoll(altPoll)
+    local openCount = #rows()
+    check("the Polls chip counts the open polls", p.modes.polls.label.text == "Avstemninger (" .. openCount .. ")" and p.pollViews.open.label.text == "Åpne (" .. openCount .. ")"
+        and openCount == 6, p.modes.polls.label.text)
+    local function altSub() return rowFor("Skal vi ha guild-møte?") and rowFor("Skal vi ha guild-møte?").sub.text end
+    SERVER_NOW = altEnd - 2 * DAY
+    click(p.pollViews.open)
+    check("time left in days", altSub() == "2 dager igjen  -  0 stemmer", altSub())
+    SERVER_NOW = altEnd - 5 * 3600
+    click(p.pollViews.open)
+    check("...in hours", altSub() == "5 timer igjen  -  0 stemmer", altSub())
+    SERVER_NOW = altEnd - 1800
+    click(p.pollViews.open)
+    check("...and within the hour", altSub() == "slutter innen en time  -  0 stemmer", altSub())
+    SERVER_NOW = altEnd + 10
+    flush()
+    check("the 61-second update moves it to Ended by itself (all of them have ended by now)", altSub() == nil and p.modes.polls.label.text == "Avstemninger (0)"
+        and p.empty:IsShown() and p.empty.text == L.POLL_EMPTY, p.modes.polls.label.text)
+    click(p.pollViews.ended)
+    check("...where it says when it ended", altSub() == "sluttet DATE(" .. altEnd .. ")  -  0 stemmer", altSub())
+    SERVER_NOW = T + 1100
+
+    -- 13. At login: at most one banner.
+    DrainBanners()
+    ns.RestartPollHello()
+    flush()
+    sentNow(POLL)
+    local login1 = "Altine-Stormrage:" .. (T + 1050) .. ":31"
+    local login2 = "Altine-Stormrage:" .. (T + 1060) .. ":32"
+    pollReceive(P(login1, T + 1090, T + 1090 + DAY, "-", 2, "Altine-Stormrage", "Første"), "Altine-Stormrage")
+    pollReceive(O(login1, 1, "A", "B"), "Altine-Stormrage")
+    pollReceive(P(login2, T + 1095, T + 1095 + DAY, "-", 2, "Altine-Stormrage", "Andre"), "Altine-Stormrage")
+    pollReceive(O(login2, 1, "A", "B"), "Altine-Stormrage")
+    check("two polls received during the login exchange give no banner right away", not bannerShown() and ns.BannerQueueLength() == 0)
+    flush()
+    banner = DragonworldMilestoneBanner
+    check("...then exactly one login banner, for the newest", bannerShown() and ns.BannerQueueLength() == 0 and banner.text.text:find("Andre", 1, true) ~= nil
+        and sugDB().pollBannered[login2] == true and sugDB().pollBannered[login1] == nil, banner and banner.text.text)
+    DrainBanners()
+
+    -- 14. DW.Polls.
+    ns.OpenPoll(login1)
+    click(pd.options[2])
+    sentNow(POLL)
+    local found
+    for _, item in ipairs(ns.Polls()) do if item.id == login1 then found = item end end
+    check("DW.Polls gives copies, with open and my choice", found ~= nil and found.open == true and found.myChoice == 2 and found.total == 1 and found.count == 2
+        and found.options[2] == "B" and found.question == "Første" and found.author == "Altine-Stormrage" and type(found.arrived) == "number")
+    found.options[1] = "changed"
+    check("...changing a copy changes nothing", polls()[login1].options[1] == "A")
+    local hasDeleted = false
+    for _, item in ipairs(ns.Polls()) do if item.id == myPoll then hasDeleted = true end end
+    check("...and a deleted poll is not in it", not hasDeleted)
+
+    -- Broken messages.
+    clearChat()
+    for _, message in ipairs({
+        "P", "P\tx\ty", P("no id", T, T + DAY, "-", 2, "Altine-Stormrage", "x"), P(login1, "zz", T + DAY, "-", 2, "Altine-Stormrage", "x"),
+        P(login1, SERVER_NOW + 99999, T + DAY, "-", 2, "Altine-Stormrage", "future"), P(login1, T + 1200, T + DAY, "-", 7, "Altine-Stormrage", "count"),
+        P(login1, T + 1200, T + 20 * DAY, "-", 2, "Altine-Stormrage", "too long"), P(login1, T + 1200, T, "-", 2, "Altine-Stormrage", "ends before"),
+        P(login1, T + 1200, T + 1090 + DAY, "x", 2, "Altine-Stormrage", "flags"), P(login1, T + 1200, T + 1090 + DAY, "-", 2, string.rep("x", 61), "by"),
+        "O", "O\t" .. login1 .. "\tx\ty", "V", "V\t" .. login1 .. "\tgarbage", "H\t,,,", "H\tgarbage", "H\ta,b,c,d,e", "G", "Z\t1",
+    }) do pollReceive(message, "Altine-Stormrage") end
+    flush()
+    check("broken poll messages give no Lua errors and change nothing", not has("Feil") and polls()[login1].question == "Første" and polls()[login1].updated == T + 1090, chatText())
+    dw("debug")
+    check("/dw debug has a line about the polls", has("avstemninger lagret:"), chatText())
+    clearChat()
+
+    -- 16. A member who is not an officer makes, ends and deletes their own polls.
+    ;(function()
+        local made = {}
+        guild.rankIndex = nil
+        rebuild()
+        DrainBanners()
+        click(p.modes.polls)
+        sentNow(POLL)
+        local function make(question)
+            click(p.newPoll)
+            pf.qBox:SetText(question)
+            pf.optBoxes[1]:SetText("Ja")
+            pf.optBoxes[2]:SetText("Nei")
+            for index = 3, 6 do pf.optBoxes[index]:SetText("") end
+            click(pf.days[3])
+            click(pf.send)
+        end
+        SERVER_NOW = T + 1200
+        make("Medlem 1")
+        local m1 = "Tester-Stormrage:" .. (T + 1200) .. ":2"
+        made[#made + 1] = m1
+        local sent = sentNow(POLL)
+        check("a member who is not an officer posts a poll", not ns.IsOfficer() and polls()[m1] ~= nil and #sent == 2
+            and sent[1] == P(m1, T + 1200, T + 1200 + 3 * DAY, "-", 2, "Tester-Stormrage", "Medlem 1"), all(sent))
+        check("...and gets End now, Share and Delete on it", pd:IsShown() and pd.question.text == "Medlem 1" and pd.endNow:IsShown() and pd.share:IsShown() and pd.delete:IsShown())
+        SERVER_NOW = T + 1210
+        make("Medlem 2")
+        local m2 = "Tester-Stormrage:" .. (T + 1210) .. ":3"
+        made[#made + 1] = m2
+        sentNow(POLL)
+        SERVER_NOW = T + 1220
+        make("Medlem 3")
+        check("a third open poll is refused with a short error", polls()["Tester-Stormrage:" .. (T + 1220) .. ":4"] == nil and pf:IsShown()
+            and pf.error.text == "Du har allerede 2 åpne avstemninger. Avslutt en før du lager en ny." and #sentNow(POLL) == 0, pf.error.text)
+        click(pf.cancel)
+        ns.OpenPoll(m1)
+        click(pd.endNow)
+        sent = sentNow(POLL)
+        check("ending your own poll early sends P by you", #sent == 1 and sent[1] == P(m1, T + 1220, T + 1220, "-", 2, "Tester-Stormrage", "Medlem 1")
+            and p.pollViews.ended.selected, all(sent))
+        make("Medlem 3")
+        local m3 = "Tester-Stormrage:" .. (T + 1220) .. ":4"
+        made[#made + 1] = m3
+        check("...then a new poll is allowed again", polls()[m3] ~= nil and #sentNow(POLL) == 2)
+        ns.OpenPoll(m2)
+        click(pd.delete)
+        sent = sentNow(POLL)
+        check("deleting your own poll sends the tombstone by you", #sent == 1 and sent[1] == P(m2, T + 1220, T + 1210 + 3 * DAY, "d", 2, "Tester-Stormrage", "")
+            and polls()[m2].deleted, all(sent))
+        ns.OpenPoll(login1)
+        check("someone else's poll: no End now, Share or Delete", pd:IsShown() and pd.question.text == "Første" and not pd.endNow:IsShown()
+            and not pd.share:IsShown() and not pd.delete:IsShown())
+        local chatBefore = #guildChat
+        click(pd.endNow)
+        click(pd.share)
+        click(pd.delete)
+        check("...and the hidden buttons do nothing", #sentNow(POLL) == 0 and #guildChat == chatBefore and not polls()[login1].deleted
+            and polls()[login1].endsAt == T + 1090 + DAY)
+
+        -- What others send.
+        DrainBanners()
+        SERVER_NOW = T + 1230
+        local b1 = "Borin-Stormrage:" .. (T + 1230) .. ":1"
+        local b2 = "Borin-Stormrage:" .. (T + 1231) .. ":2"
+        local b3 = "Borin-Stormrage:" .. (T + 1232) .. ":3"
+        made[#made + 1] = b1
+        made[#made + 1] = b2
+        made[#made + 1] = b3
+        pollReceive(P(b1, T + 1230, T + 1230 + DAY, "-", 2, "Borin-Stormrage", "Borins første"), "Borin-Stormrage")
+        pollReceive(O(b1, 1, "A", "B"), "Borin-Stormrage")
+        check("a new poll from Borin (a member) is shown, with a live banner", polls()[b1].optionParts == nil and bannerShown()
+            and DragonworldMilestoneBanner.text.text:find("Borins første", 1, true) ~= nil)
+        DrainBanners()
+        pollReceive(P(b2, T + 1231, T + 1231 + DAY, "-", 2, "Borin-Stormrage", "Borins andre"), "Borin-Stormrage")
+        pollReceive(O(b2, 1, "A", "B"), "Borin-Stormrage")
+        check("...his next one within 10 minutes gives no live banner", polls()[b2].optionParts == nil and not bannerShown() and sugDB().pollBannered[b2] == nil)
+        clock = clock + 601
+        pollReceive(P(b3, T + 1232, T + 1232 + DAY, "-", 2, "Borin-Stormrage", "Borins tredje"), "Borin-Stormrage")
+        check("...a third open poll from him is not taken in here either (the limit is checked on receive too), nor held",
+            polls()[b3] == nil and sugDB().pollHeld.held[b3] == nil and not bannerShown())
+        SERVER_NOW = T + 1240
+        pollReceive(P(b1, T + 1240, T + 1240, "-", 2, "Borin-Stormrage", "Borins første"), "Borin-Stormrage")
+        check("Borin ending his own poll early is taken in", polls()[b1].endsAt == T + 1240 and polls()[b1].updated == T + 1240)
+        pollReceive(P(b3, T + 1232, T + 1232 + DAY, "-", 2, "Borin-Stormrage", "Borins tredje"), "Borin-Stormrage")
+        pollReceive(O(b3, 1, "A", "B"), "Borin-Stormrage")
+        check("...then his third is taken in, and 10 minutes after the last banner it gives one again", polls()[b3] ~= nil and polls()[b3].optionParts == nil
+            and bannerShown() and DragonworldMilestoneBanner.text.text:find("Borins tredje", 1, true) ~= nil)
+        DrainBanners()
+        pollReceive(P(login1, T + 1241, T + 1090 + DAY, "d", 2, "Borin-Stormrage", ""), "Borin-Stormrage")
+        check("Borin deleting Altine's poll is refused, and held", not polls()[login1].deleted and sugDB().pollHeld.held[login1] ~= nil)
+        pollReceive(P(b2, T + 1241, T + 1231 + DAY, "d", 2, "Borin-Stormrage", ""), "Eira-Stormrage")
+        check("Borin's own deletion passed on by Eira (a member) is taken in", polls()[b2].deleted == true and sugDB().pollHeld.held[b2] == nil)
+        pollReceive(P(b2, T + 1242, T + 1231 + DAY, "d", 2, "Altine-Stormrage", ""), "Altine-Stormrage")
+        check("an officer (Altine) deleting Borin's poll is taken in", polls()[b2].deleted == true and sugDB().pollHeld.held[b2] == nil)
+        -- A new poll by a member, passed on by another member: neither is an officer.
+        local b4 = "Borin-Stormrage:" .. (T + 1243) .. ":4"
+        made[#made + 1] = b4
+        SERVER_NOW = T + 1243
+        pollReceive(P(b4, T + 1243, T + 1243 + DAY, "-", 2, "Borin-Stormrage", "Borins fjerde"), "Eira-Stormrage")
+        check("a new poll by Borin passed on by Eira (neither an officer) is taken in: any member may pass on a poll by its author",
+            polls()[b4] ~= nil and polls()[b4].optionParts ~= nil and sugDB().pollHeld.held[b4] == nil)
+        local b5 = "Borin-Stormrage:" .. (T + 1243) .. ":5"
+        pollReceive(P(b5, T + 1243, T + 1243 + DAY, "-", 2, "Borin-Stormrage", "Borins femte"), "Eira-Stormrage")
+        check("...but a third open one passed on by Eira is not: the limit of 2 open polls holds for relayed polls too, and it is not held",
+            polls()[b5] == nil and sugDB().pollHeld.held[b5] == nil)
+        pollReceive(P(b4, T + 1243, T + 1243 + DAY, "-", 2, "Borin-Stormrage", "Borins fjerde"), "Altine-Stormrage")
+        check("...a copy of the fourth from Altine changes nothing", polls()[b4] ~= nil and polls()[b4].optionParts ~= nil and sugDB().pollHeld.held[b4] == nil)
+        pollReceive(O(b4, 1, "Falsk", "Svar"), "Cedric-Stormrage")
+        check("...its answers from Cedric, who did not send it, are ignored", polls()[b4].optionParts ~= nil and polls()[b4].options[1] == nil)
+        pollReceive(O(b4, 1, "Ja", "Nei"), "Altine-Stormrage")
+        check("...from Altine, who passed it on, they are taken in and the poll is shown", polls()[b4].optionParts == nil and polls()[b4].options[2] == "Nei"
+            and (function() for _, item in ipairs(ns.Polls()) do if item.id == b4 then return true end end return false end)())
+        DrainBanners()
+
+        -- An officer may end and delete anyone's poll, and has no limit.
+        guild.rankIndex = 1
+        rebuild()
+        ns.OpenPoll(b3)
+        check("an officer gets End now, Share and Delete on Borin's poll", pd:IsShown() and pd.question.text == "Borins tredje"
+            and pd.endNow:IsShown() and pd.share:IsShown() and pd.delete:IsShown())
+        sentNow(POLL)
+        click(pd.delete)
+        sent = sentNow(POLL)
+        check("...and can delete it", polls()[b3].deleted == true and #sent == 1 and sent[1] == P(b3, T + 1243, T + 1232 + DAY, "d", 2, "Tester-Stormrage", ""), all(sent))
+        for index = 1, 2 do
+            SERVER_NOW = T + 1250 + index
+            make("Offiser " .. index)
+            made[#made + 1] = "Tester-Stormrage:" .. (T + 1250 + index) .. ":" .. (4 + index)
+        end
+        check("an officer has no limit on open polls", polls()[made[#made - 1]] ~= nil and polls()[made[#made]] ~= nil and polls()[m3] ~= nil)
+
+        -- Out of the way of the remaining tests.
+        for _, id in ipairs(made) do
+            polls()[id] = nil
+            sugDB().pollBannered[id] = nil
+        end
+        sugDB().pollHeld.held[login1] = nil
+        SERVER_NOW = T + 1100
+        flush()
+        sentNow(POLL)
+    end)()
+
+    -- 15. Leave things as the remaining tests expect.
+    DrainBanners()
+    guild.rankIndex = nil
+    rebuild()
+    ns.F6_CUTOFF = savedCutoff
+    click(p.modes.suggestions)
+    clock = clock + 300
+    flush()
+    sentNow(POLL); sentNow("DragonworldSug"); sentNow("DragonworldAnn"); sentNow("DragonworldOff"); sentNow(EV_PREFIX); sentNow("DragonworldPf")
+    ns.SetLanguage(language, true)
+    clearChat()
+    click(rsChip)
+end)()
+
+-- ===================== main and alts (Alts.lua, F9) =====================
+;(function()
+    local PF = "DragonworldPf"
+    local function click(button) button.scripts.OnClick(button) end
+    local function pfReceive(text, sender) fire("CHAT_MSG_ADDON", PF, text, "GUILD", sender) end
+    -- The K messages this client has sent since last asked (other profile messages are dropped).
+    local function kSent()
+        local out = {}
+        for _, message in ipairs(sentNow(PF)) do
+            if message:sub(1, 2) == "K\t" then out[#out + 1] = message end
+        end
+        return out
+    end
+    -- Everything that went out on any message name, for after a login.
+    local function drain()
+        for prefix in pairs(prefixes) do sentNow(prefix) end
+    end
+    local function entry(name)
+        for _, m in ipairs(ROSTER) do if m[1] == name .. "-Stormrage" then return m end end
+    end
+    local function member(name)
+        for _, m in ipairs(ns.ReadGuildRoster()) do if m.name == name then return m end end
+    end
+    local function openCard(name)
+        ns.ShowMemberCard(ns.AltCardRow(member(name)))
+        return DragonworldMemberCard
+    end
+    local function occurrences(text, needle)
+        local n, from = 0, 1
+        while true do
+            local at = text:find(needle, from, true)
+            if not at then return n end
+            n, from = n + 1, at + #needle
+        end
+    end
+
+    -- Keep what the rest of the tests expect.
+    local language = ns.GetLanguage()
+    ns.SetLanguage("en", true)
+    local E = ns.strings.en
+    local savedAlts = DragonworldDB.alts
+    local savedChars = {}
+    for key, value in pairs(DragonworldDB.memberCharacters or {}) do savedChars[key] = value end
+    local savedRoster, savedState = {}, {}
+    for i, m in ipairs(ROSTER) do savedRoster[i] = m; savedState[m] = { m[9], m.last } end
+    local savedCharacter = character
+    local ach = DragonworldDB.modules.achievements
+    local savedFeed, savedLevels, savedWelcome = {}, {}, ach.welcome
+    for id, item in pairs(ach.feed or {}) do savedFeed[id] = item end
+    for key, level in pairs(ach.levels or {}) do savedLevels[key] = level end
+    ach.welcome = false
+    local roProfessions = DragonworldDB.modules.roster.professions
+    local savedDagnyProfessions = roProfessions["Player-1-Dagny"]
+    DragonworldDB.alts = nil
+    character = { name = "Tester", realm = "Stormrage", class = "PALADIN" }
+    local altine, borin = entry("Altine"), entry("Borin")
+    check("alts: the roster has the members these tests use", altine ~= nil and borin ~= nil and entry("Dagny") ~= nil and entry("Eira") ~= nil and entry("Tester") ~= nil)
+    altine[9], altine.last = true, nil
+    fire("GUILD_ROSTER_UPDATE")
+    flush()
+    drain()
+
+    -- 1. No traffic for players who never took part.
+    check("alts: login traffic is unchanged for an account that never took part (2 profile messages at login)", #PROFILE_LOGIN == 2)
+    pfReceive("R", "Nykommer-Stormrage")
+    flush()
+    flush()
+    local answer = sentNow(PF)
+    local anyK = false
+    for _, message in ipairs(answer) do anyK = anyK or message:find("^K\t") ~= nil end
+    check("...and with no saved choice, a full answer to R has no K message", not anyK and DragonworldDB.alts == nil, table.concat(answer, " ; "))
+
+    -- 2. The own card.
+    click(roChip)
+    click(roPanel.statusChips.all)
+    local card = openCard("Tester")
+    check("your own card has My characters where Inspect sits, and says your other characters are not shown",
+        card:IsShown() and card.altsButton:IsShown() and card.altsButton.label.text == E.MC_ALTS_BUTTON and select(4, card.altsButton:GetPoint()) == 16
+        and not card.inspect:IsShown() and not card.whisper:IsShown() and not card.invite:IsShown() and card.alts.text == E.MC_ALTS_NONE_ME, card.alts.text)
+    check("...on the line of the legacy points, right after them", select(4, card.alts:GetPoint()) == 16 + card.legacy:GetStringWidth() + 16 and select(5, card.alts:GetPoint()) == -82)
+    card = openCard("Altine")
+    check("...and not on someone else's card", not card.altsButton:IsShown() and card.alts.text == "" and card.inspect:IsShown() and not card.altsHover:IsShown())
+
+    -- 3. The picker.
+    DragonworldDB.memberCharacters = { ["Tester-Stormrage"] = 1, ["Borin-Stormrage"] = 1 }
+    card = openCard("Tester")
+    click(card.altsButton)
+    local picker = DragonworldAltPicker
+    local function prow(name)
+        for _, row in ipairs(picker.rows) do if row:IsShown() and row.name.text == name then return row end end
+    end
+    local function shownRows()
+        local n = 0
+        for _, row in ipairs(picker.rows) do if row:IsShown() then n = n + 1 end end
+        return n
+    end
+    check("My characters opens the picker over the window and closes the card",
+        picker ~= nil and picker:IsShown() and picker.strata == "DIALOG" and not card:IsShown() and picker.title.text == E.ALT_TITLE and picker.hint.text == E.ALT_HINT
+        and picker.shareLabel.text == E.ALT_SHARE and select(4, picker:GetPoint()) == 14 and select(5, picker:GetPoint()) == -92)
+    local tRow, bRow = prow("Tester"), prow("Borin")
+    check("...one row per character of the account in the guild, highest level first: Tester (you are on it) and Borin (level 42)",
+        tRow == picker.rows[1] and bRow == picker.rows[2] and shownRows() == 2 and tRow.status.text == E.ALT_ROW_CURRENT
+        and bRow.level.text == E.RO_TIP_LEVEL:format(42) and bRow.status.text == E.ALT_ROW_HIDDEN and colour(bRow.status.color, 0.55, 0.55, 0.55)
+        and not bRow.main:IsShown() and tRow.main:IsShown() and tRow.main.selected and tRow.main.label.text == E.ALT_MAIN)
+    check("...the master box starts unticked, and the character you are on is ticked", not picker.share:GetChecked() and tRow.check:GetChecked() and not bRow.check:GetChecked())
+    picker.share:SetChecked(true); click(picker.share)
+    click(picker.save)
+    check("turning it on with only one character ticked asks for two and saves nothing",
+        picker:IsShown() and picker.error.text == E.ALT_NEED_TWO and DragonworldDB.alts == nil and #kSent() == 0, picker.error.text)
+    clearChat()
+    picker.share:SetChecked(false); click(picker.share)
+    click(picker.save)
+    flush()
+    check("...saving with the box off on an account that never took part saves, sends and says nothing, and opens your card again",
+        DragonworldDB.alts == nil and #kSent() == 0 and not has(E.ALT_SAVED_OFF) and #chat == 0 and not picker:IsShown() and DragonworldMemberCard:IsShown(), chatText())
+    check("...nor does choosing off directly", ns.SetMyAltChoice(false, "Player-1-Tester", { ["Player-1-Tester"] = true }) == false and DragonworldDB.alts == nil and #kSent() == 0)
+    click(DragonworldMemberCard.altsButton)
+    picker.share:SetChecked(true); click(picker.share)
+
+    -- 4. Saving.
+    clearChat()
+    bRow.check:SetChecked(true); click(bRow.check)
+    check("ticking Borin shows its Main chip and clears the message", bRow.main:IsShown() and not bRow.main.selected and picker.error.text == "")
+    click(picker.save)
+    flush()
+    local t = DragonworldDB.alts and DragonworldDB.alts.time
+    local sent = kSent()
+    check("saving with both ticked stores the choice at the server time and sends exactly one K, main first",
+        DragonworldDB.alts ~= nil and DragonworldDB.alts.on == true and t == SERVER_NOW and DragonworldDB.alts.main == "Player-1-Tester"
+        and #sent == 1 and sent[1] == "K\tPlayer-1-Tester\t" .. t .. "\tS\t1-Tester,1-Borin", table.concat(sent, " ; "))
+    card = DragonworldMemberCard
+    check("...prints that it is saved, and your card opens again, waiting for Borin",
+        has(E.ALT_SAVED_ON) and not picker:IsShown() and card:IsShown() and card.name.text == "Tester" and card.alts.text == E.MC_ALTS_PENDING, card.alts.text)
+    click(card.altsButton)
+    tRow, bRow = prow("Tester"), prow("Borin")
+    check("...the picker now shows Borin as waiting for a login", tRow.status.text == E.ALT_ROW_CURRENT and bRow.status.text == E.ALT_ROW_PENDING
+        and picker.share:GetChecked() and tRow.main.selected and bRow.check:GetChecked())
+    click(picker.cancel)
+    check("Cancel closes the picker and opens your card again", not picker:IsShown() and card:IsShown() and card.name.text == "Tester")
+    click(card.close)
+    check("...and nothing more is sent", #kSent() == 0)
+
+    -- 5. Before Borin has confirmed.
+    flush()
+    check("before Borin has confirmed, Roster still shows two rows", roRow("Tester") ~= nil and roRow("Borin") ~= nil and not roRow("Tester").altsButton:IsShown()
+        and roPanel.count.text == E.RO_COUNT:format(#roRows(), #ROSTER), roPanel.count.text)
+
+    -- 6. Borin's own record confirms the link.
+    pfReceive("K\tPlayer-1-Borin\t" .. t .. "\tS\t1-Tester,1-Borin", "Borin-Stormrage")
+    flush()
+    local head = roRow("Tester")
+    check("once Borin's own K lists Tester too, Roster folds them into one row: Tester with a gold +1",
+        head ~= nil and head.altsButton:IsShown() and head.altsButton.text.text == "+1" and roRow("Borin") == nil
+        and select(4, head.name:GetPoint()) == 4 and head.name.width == 130 - 26 and head.altsButton.width == #"+1" * 6 + 4)
+    check("...and the count says how many players and characters", roPanel.count.text == E.RO_COUNT_ALTS:format(#ROSTER - 1, #ROSTER - 1, #ROSTER), roPanel.count.text)
+    head.altsButton:Fire("OnEnter")
+    check("...hovering +1 says it shows the alt", GameTooltip.lines[1] == E.RO_ALTS_TIP:format(1), GameTooltip.lines[1])
+    head.altsButton:Fire("OnLeave")
+    click(head.altsButton)
+    local rows, alt, headAt = roRows(), roRow("Borin"), nil
+    for i, row in ipairs(rows) do if row == roRow("Tester") then headAt = i end end
+    check("...clicking +1 shows Borin under Tester, moved in, with when Borin was last on",
+        alt ~= nil and alt.member.altChild and rows[headAt + 1] == alt and select(4, alt.name:GetPoint()) == 16 and alt.name.width == 130 - 12
+        and alt.last.text == E.RO_DAYS:format(3) and not alt.altsButton:IsShown())
+    roRow("Tester").altsButton:Fire("OnEnter")
+    check("...then hovering +1 says it hides it", GameTooltip.lines[1] == E.RO_ALTS_TIP_HIDE:format(1))
+    roRow("Tester").altsButton:Fire("OnLeave")
+    click(roRow("Tester").altsButton)
+    check("...and a second click hides it again", roRow("Borin") == nil)
+    roRow("Tester"):Fire("OnEnter")
+    local lines = table.concat(GameTooltip.lines, " / ")
+    check("hovering the row lists the other characters (Tester is the main, so no Main line)",
+        lines:find(E.RO_TIP_ALSO, 1, true) ~= nil and lines:find("Borin 42 = " .. E.RO_DAYS:format(3), 1, true) ~= nil and not lines:find("Main:", 1, true), lines)
+    roRow("Tester"):Fire("OnLeave")
+
+    card = openCard("Tester")
+    check("Tester's card says Also plays: Borin", card.alts.text == E.MC_ALSO_PLAYS:format("Borin") and card.altsHover:IsShown() and colour(card.alts.color, 1, 1, 1), card.alts.text)
+    card.altsHover:Fire("OnEnter")
+    lines = table.concat(GameTooltip.lines, " / ")
+    check("...hovering lists the player's characters with level and when last online",
+        GameTooltip.lines[1] == E.MC_ALTS_TIP_TITLE and lines:find("Tester (main) 60|r = " .. E.RO_ONLINE, 1, true) ~= nil
+        and lines:find("Borin 42|r = " .. E.RO_DAYS:format(3), 1, true) ~= nil and GameTooltip.lines[#GameTooltip.lines] == E.MC_ALTS_TIP_CLICK, lines)
+    card.altsHover:Fire("OnLeave")
+    lastMenu = nil
+    card.altsHover:Fire("OnClick")
+    check("...a click offers the other characters' cards", lastMenu ~= nil and lastMenu.titles[1] == E.MC_ALTS_TIP_TITLE and #lastMenu.buttons == 1 and lastMenu.buttons[1].text == "Borin")
+    lastMenu.buttons[1].click()
+    check("...picking one opens it: Borin's card says Also plays: Tester (main), and that Tester is online now",
+        card.name.text == "Borin" and card.alts.text == E.MC_ALSO_PLAYS:format(E.MC_MAIN_MARK:format("Tester")) and card.seen.text == E.MC_ONLINE_AS:format("Tester")
+        and not card.altsButton:IsShown(), card.alts.text .. " | " .. card.seen.text)
+    do
+        local savedMenu = MenuUtil
+        MenuUtil = nil
+        card.altsHover:Fire("OnClick")
+        MenuUtil = savedMenu
+        check("...without a menu, a click opens the next character's card", card.name.text == "Tester")
+    end
+    click(card.close)
+
+    -- 7. Spoofing and broken messages.
+    clearChat()
+    pfReceive("K\tPlayer-1-Borin\t" .. (t + 10) .. "\tO\t", "Altine-Stormrage")
+    pfReceive("K\tPlayer-1-Altine\t" .. t .. "\tS\t1-Altine,1-Tester", "Altine-Stormrage")
+    local thirteen = { "1-Borin" }
+    for n = 1, 12 do thirteen[#thirteen + 1] = ("1-X%02d"):format(n) end
+    local T20 = tostring(t + 20)
+    for _, message in ipairs({
+        "K\tPlayer-1-Borin\t" .. T20 .. "\tS\t1-Tester",                               -- S without the sender
+        "K\tPlayer-1-Borin\t" .. T20 .. "\tS\t" .. table.concat(thirteen, ","),         -- 13 characters
+        "K\tPlayer-1-Borin\t" .. T20 .. "\tS\t1-Bo|rin,1-Borin",                        -- a |
+        "K\tPlayer-1-Borin\t" .. T20 .. "\tS\t1-" .. string.rep("A", 23) .. ",1-Borin", -- an entry over 24 bytes
+        "K\tPlayer-1-Borin\t" .. T20 .. "\tS\t1-Borin,1-Borin",                         -- twice the same
+        "K\tPlayer-1-Borin\t" .. T20 .. "\tS\t1-Borin,,1-Tester",                       -- an empty entry
+        "K\tCreature-1-Borin\t" .. T20 .. "\tO\t",                                      -- not a player
+        "K\tname:borin\t" .. T20 .. "\tO\t",
+        "K\tPlayer-1-Borin\t" .. T20 .. "\tH\t1-Borin",                                 -- H with a list
+        "K\tPlayer-1-Borin\t" .. T20 .. "\tO\t1-Borin",                                 -- O with a list
+        "K\tPlayer-1-Borin\t" .. T20 .. "\tX\t",                                        -- unknown state
+        "K\tPlayer-1-Borin\t" .. (SERVER_NOW + 601) .. "\tO\t",                         -- too far ahead
+        "K\tPlayer-1-Borin\tsoon\tO\t",
+        "K\tPlayer-1-Borin\t" .. T20 .. "\tO\t\textra",                                 -- an extra field
+        "K\tPlayer-1-Borin\t" .. T20 .. "\tO",                                          -- a field missing
+        "K",
+    }) do pfReceive(message, "Borin-Stormrage") end
+    pfReceive("K\tPlayer-1-Borin\t" .. T20 .. "\tO\t", "Borin-Argent Dawn")         -- same name, another realm
+    fire("GUILD_ROSTER_UPDATE")
+    flush()
+    check("the sender check: the realm must match when both names have one, spaces do not matter",
+        ns.AltSenderMatches("Player-1-Borin", "Borin-Stormrage") and ns.AltSenderMatches("Player-1-Borin", "borin-Storm rage")
+        and ns.AltSenderMatches("Player-1-Borin", "Borin") and not ns.AltSenderMatches("Player-1-Borin", "Borin-ArgentDawn")
+        and not ns.AltSenderMatches("Player-1-Borin", "Altine-Stormrage"))
+    local borinRecord = ns.AltRecordOf("Player-1-Borin")
+    check("a K for Borin sent by Altine is not taken, nor are broken ones, and nothing errors",
+        borinRecord ~= nil and borinRecord.time == t and borinRecord.state == "S" and roRow("Tester").altsButton:IsShown() and #chat == 0, chatText())
+    check("...Altine's own K listing Tester makes no link, since Tester does not list Altine",
+        ns.AltRecordOf("Player-1-Altine") ~= nil and roRow("Altine") ~= nil and not roRow("Altine").altsButton:IsShown() and roRow("Tester").altsButton.text.text == "+1")
+
+    -- 8. Altine (online) and Dagny (offline for a year) linked.
+    local function k(name, time, state, list)
+        pfReceive(("K\tPlayer-1-%s\t%d\t%s\t%s"):format(name, time, state, list), name .. "-Stormrage")
+    end
+    k("Altine", t + 30, "S", "1-Altine,1-Dagny")
+    k("Dagny", t + 30, "S", "1-Altine,1-Dagny")
+    flush()
+    click(roPanel.statusChips.inactive)
+    check("Altine (online) and Dagny (offline a year) linked: Inactive no longer shows Dagny", roRow("Dagny") == nil and roRow("Altine") == nil)
+    click(roPanel.statusChips.all)
+    check("...in All, Altine is the row, with +1", roRow("Altine") ~= nil and roRow("Altine").altsButton.text.text == "+1" and roRow("Dagny") == nil)
+    click(roPanel.statusChips.online)
+    check("...and in Online too", roRow("Altine") ~= nil and roRow("Altine").altsButton.text.text == "+1" and roRow("Dagny") == nil)
+    click(roPanel.statusChips.all)
+    card = openCard("Dagny")
+    check("Dagny's card says Online now as Altine", card.seen.text == E.MC_ONLINE_AS:format("Altine"), card.seen.text)
+    altine[9], altine.last = false, { 0, 0, 0, 2 }
+    fire("GUILD_ROSTER_UPDATE")
+    flush()
+    card = openCard("Dagny")
+    check("...with Altine offline for 2 hours: Last online 2 hours ago (as Altine)", card.seen.text == E.MC_LAST_HOURS_AS:format(2, "Altine"), card.seen.text)
+    click(card.close)
+    check("...and the row's last-online column says 2 h", roRow("Altine") ~= nil and roRow("Altine").last.text == E.RO_HOURS:format(2),
+        roRow("Altine") and roRow("Altine").last.text)
+
+    -- 9. A filter that matches only the alt.
+    roPanel.searchBox:SetText("Dagny")
+    check("a search that matches only the alt makes the alt the row", roRow("Dagny") ~= nil and roRow("Dagny").altsButton.text.text == "+1" and roRow("Altine") == nil)
+    roPanel.searchBox:SetText("")
+    roProfessions["Player-1-Dagny"] = { list = { { name = "Jewelcrafting", level = 50, max = 300 } }, updated = SERVER_NOW }
+    click(roPanel.professionChip)
+    for _, radio in ipairs(lastMenu.radios) do if radio.text == "Jewelcrafting" then radio.click() end end
+    check("...and so does a profession filter", #roRows() == 1 and roRow("Dagny") ~= nil and roRow("Dagny").altsButton:IsShown() and roRow("Altine") == nil, #roRows())
+    click(roPanel.professionChip)
+    lastMenu.radios[1].click()
+    altine[9], altine.last = true, nil
+    fire("GUILD_ROSTER_UPDATE")
+    flush()
+
+    -- 10. Hidden and withdrawn.
+    k("Altine", t + 40, "S", "1-Altine,1-Dagny,1-Eira")
+    k("Dagny", t + 40, "S", "1-Altine,1-Dagny,1-Eira")
+    k("Eira", t + 40, "S", "1-Altine,1-Dagny,1-Eira")
+    flush()
+    check("three linked characters give +2", roRow("Altine").altsButton.text.text == "+2" and roRow("Eira") == nil and roRow("Dagny") == nil)
+    k("Eira", t + 50, "H", "")
+    flush()
+    check("Eira hidden: Altine and Dagny stay linked (+1), and Eira has her own row",
+        roRow("Altine").altsButton.text.text == "+1" and roRow("Eira") ~= nil and not roRow("Eira").altsButton:IsShown() and roRow("Dagny") == nil)
+    k("Altine", t + 60, "S", "1-Altine,1-Dagny")
+    flush()
+    check("...also after Altine's newer list without Eira", roRow("Altine").altsButton.text.text == "+1" and roRow("Eira") ~= nil and roRow("Dagny") == nil)
+    k("Eira", t + 70, "O", "")
+    flush()
+    check("sharing turned off on Eira, newer than the others' records, hides the group", not roRow("Altine").altsButton:IsShown() and roRow("Dagny") ~= nil)
+    k("Altine", t + 80, "S", "1-Altine,1-Dagny")
+    flush()
+    check("...until a newer record from Altine brings it back", roRow("Altine").altsButton.text.text == "+1" and roRow("Dagny") == nil)
+
+    -- 11. Turning it off.
+    clearChat()
+    card = openCard("Tester")
+    click(card.altsButton)
+    picker.share:SetChecked(false); click(picker.share)
+    click(picker.save)
+    flush()
+    sent = kSent()
+    local t2 = DragonworldDB.alts.time
+    check("unticking Show my characters and saving sends one K with O and an empty list",
+        #sent == 1 and sent[1] == "K\tPlayer-1-Tester\t" .. t2 .. "\tO\t" and t2 == t + 1 and has(E.ALT_SAVED_OFF), table.concat(sent, " ; "))
+    check("...the link is gone here at once: two rows again, and your card says they are not shown",
+        roRow("Tester") ~= nil and not roRow("Tester").altsButton:IsShown() and roRow("Borin") ~= nil and DragonworldMemberCard.alts.text == E.MC_ALTS_NONE_ME)
+    click(DragonworldMemberCard.close)
+
+    -- 12. At most 12 characters.
+    for n = 1, 11 do
+        local name = ("Twink%02d"):format(n)
+        ROSTER[#ROSTER + 1] = { name .. "-Stormrage", "Member", 3, 10 + n, "Mage", "Elwynn Forest", "", "", false, 0, "MAGE",
+            last = { 0, 0, 1, 0 }, guid = ("Player-4395-0A1B2C%02d"):format(n) }
+        DragonworldDB.memberCharacters[name .. "-Stormrage"] = 1
+    end
+    fire("GUILD_ROSTER_UPDATE")
+    flush()
+    check("a main that is not ticked (or not on the account) is not saved: the highest-level ticked character is the main",
+        ns.SetMyAltChoice(true, "Player-1-Gone1", { ["Player-1-Tester"] = true, ["Player-1-Borin"] = true, ["Player-1-Gone1"] = true })
+        and DragonworldDB.alts.main == "Player-1-Tester" and DragonworldDB.alts.show["Player-1-Gone1"] == nil, DragonworldDB.alts.main)
+    flush()
+    kSent()
+    -- Saved from an older version: characters no longer in the guild, one of them the main.
+    DragonworldDB.alts.show["Player-1-Gone1"], DragonworldDB.alts.show["Player-1-Gone2"] = true, true
+    DragonworldDB.alts.main = "Player-1-Gone1"
+    card = openCard("Tester")
+    click(card.altsButton)
+    check("the picker lists all 13 characters of the account", shownRows() == 13, shownRows())
+    picker.share:SetChecked(true); click(picker.share)
+    for n = 1, 10 do
+        local row = prow(("Twink%02d"):format(n))
+        row.check:SetChecked(true); click(row.check)
+    end
+    check("...characters no longer in the guild do not count towards the 12", prow("Twink10").check:GetChecked() and picker.error.text == "", picker.error.text)
+    local last = prow("Twink11")
+    last.check:SetChecked(true); click(last.check)
+    check("a 13th tick is undone, with a message in red", not last.check:GetChecked() and picker.error.text == E.ALT_MAX:format(12)
+        and colour(picker.error.color, 1.00, 0.35, 0.30), picker.error.text)
+    click(picker.save)
+    flush()
+    sent = kSent()
+    local list = sent[1] and sent[1]:match("\tS\t(.*)$") or ""
+    check("...saving 12 characters sends one K of at most 255 bytes with all 12, main first",
+        #sent == 1 and #sent[1] <= 255 and select(2, list:gsub(",", "")) == 11 and list:find("^1%-Tester,1%-Borin,4395%-0A1B2C01,") ~= nil
+        and DragonworldDB.alts.main == "Player-1-Tester" and DragonworldDB.alts.show["Player-1-Gone1"] == nil, sent[1])
+    click(DragonworldMemberCard.close)
+
+    -- 13. Logging in on Borin.
+    drain()
+    local at = DragonworldDB.alts.time
+    character = { name = "Borin", realm = "Stormrage", class = "WARRIOR", guid = "Player-1-Borin" }
+    fire("PLAYER_ENTERING_WORLD")
+    flush()
+    sent = kSent()
+    check("logging in on Borin sends Borin's K at the login, with the account's time, shown",
+        #sent == 1 and sent[1]:find("^K\tPlayer%-1%-Borin\t" .. at .. "\tS\t1%-Tester,1%-Borin,") ~= nil
+        and DragonworldDB.profiles["Player-1-Borin"].sent.K == at, table.concat(sent, " ; "))
+    drain()
+    fire("PLAYER_ENTERING_WORLD")
+    flush()
+    check("...a second PLAYER_ENTERING_WORLD in the same session sends no second K", #kSent() == 0)
+    drain()
+
+    -- 14. A guild character of the account that is not ticked.
+    ROSTER[#ROSTER + 1] = { "Nyalt-Stormrage", "Member", 3, 5, "Rogue", "Elwynn Forest", "", "", true, 0, "ROGUE", guid = "Player-1-Nyalt" }
+    fire("GUILD_ROSTER_UPDATE")
+    flush()
+    drain()
+    clearChat()
+    character = { name = "Nyalt", realm = "Stormrage", class = "ROGUE", guid = "Player-1-Nyalt" }
+    fire("PLAYER_ENTERING_WORLD")
+    flush()
+    sent = kSent()
+    check("a guild character of the account that is not ticked sends H at its login", #sent == 1 and sent[1] == "K\tPlayer-1-Nyalt\t" .. at .. "\tH\t", table.concat(sent, " ; "))
+    check("...and the player is told once how to add it", occurrences(chatText(), E.ALT_NEW_CHAR) == 1 and DragonworldDB.alts.told["Player-1-Nyalt"] == true, chatText())
+    drain()
+    clearChat()
+    fire("PLAYER_ENTERING_WORLD")
+    flush()
+    check("...but not again", not has(E.ALT_NEW_CHAR), chatText())
+    drain()
+    character = { name = "Tester", realm = "Stormrage", class = "PALADIN" }
+    fire("PLAYER_ENTERING_WORLD")
+    flush()
+    drain()
+    clearChat()
+
+    -- 15. Sync: participants answer every R with their K.
+    pfReceive("R\t" .. (at - 1000), "Nykommer-Stormrage")
+    flush()
+    sent = kSent()
+    check("an answer to R with an older time includes K", #sent == 1 and sent[1]:find("^K\tPlayer%-1%-Tester\t" .. at .. "\tS\t") ~= nil, table.concat(sent, " ; "))
+    pfReceive("R\t" .. (at + 100), "Nykommer-Stormrage")
+    flush()
+    check("...an answer to R with a newer time right after leaves it out (not in every answer of a login wave)", #kSent() == 0)
+    clock = clock + 300
+    pfReceive("R\t" .. (at + 100), "Nykommer-Stormrage")
+    flush()
+    check("...five minutes later it includes it again (only the character itself can send it)", #kSent() == 1)
+    pfReceive("R", "Nykommer-Stormrage")
+    flush()
+    check("...and so does an answer to a plain R", #kSent() == 1)
+
+    -- 16. A K from a character the roster does not have yet.
+    local borinAt
+    for i, m in ipairs(ROSTER) do if m == borin then borinAt = i end end
+    table.remove(ROSTER, borinAt)
+    fire("GUILD_ROSTER_UPDATE")
+    flush()
+    local before = ns.AltRecordOf("Player-1-Borin").time
+    pfReceive("K\tPlayer-1-Borin\t" .. (at + 5) .. "\tS\t1-Tester,1-Borin", "Borin-Stormrage")
+    pfReceive("K\tPlayer-1-Borin\t" .. (at + 4) .. "\tO\t", "Altine-Stormrage")      -- someone else's, for the same character
+    clearChat()
+    dw("debug")
+    check("a K from a character that is not in the roster yet waits, each sender's on its own",
+        before == at and ns.AltRecordOf("Player-1-Borin").time == at and has("K som venter: 2"), chatText())
+    table.insert(ROSTER, borinAt, borin)
+    fire("GUILD_ROSTER_UPDATE")
+    check("...and Borin's own is taken once the roster has Borin, the other is not",
+        ns.AltRecordOf("Player-1-Borin").time == at + 5 and ns.AltRecordOf("Player-1-Borin").state == "S")
+    flush()
+    table.remove(ROSTER, borinAt)
+    fire("GUILD_ROSTER_UPDATE")
+    flush()
+    pfReceive("K\tPlayer-1-Borin\t" .. (at + 6) .. "\tS\t1-Tester,1-Borin", "Borin-Stormrage")
+    flush(); flush(); flush()
+    table.insert(ROSTER, borinAt, borin)
+    fire("GUILD_ROSTER_UPDATE")
+    flush()
+    check("...but one that waited more than 120 seconds is dropped", ns.AltRecordOf("Player-1-Borin").time == at + 5)
+
+    -- 17. /dw debug.
+    clearChat()
+    dw("debug")
+    check("/dw debug has an [alts] part", has("[alts]") and has("på: true") and has("min post: S " .. at) and has("K som venter: 0"), chatText())
+    clearChat()
+
+    -- Put things back.
+    for i = #ROSTER, 1, -1 do ROSTER[i] = nil end
+    for i, m in ipairs(savedRoster) do ROSTER[i] = m; m[9], m.last = savedState[m][1], savedState[m][2] end
+    DragonworldDB.alts = savedAlts
+    DragonworldDB.memberCharacters = savedChars
+    for _, profile in pairs(DragonworldDB.profiles) do
+        if type(profile) == "table" then profile.alts = nil end
+    end
+    roProfessions["Player-1-Dagny"] = savedDagnyProfessions
+    character = savedCharacter
+    for id in pairs(ach.feed) do ach.feed[id] = nil end
+    for id, item in pairs(savedFeed) do ach.feed[id] = item end
+    for key in pairs(ach.levels) do ach.levels[key] = nil end
+    for key, level in pairs(savedLevels) do ach.levels[key] = level end
+    ach.welcome = savedWelcome
+    fire("GUILD_ROSTER_UPDATE")
+    flush()
+    DrainBanners()
+    drain()
+    ns.SetLanguage(language, true)
+    clearChat()
+    click(rsChip)
+end)()
+
+-- ================== who can craft it? (CraftSearch.lua, F2) ==================
+;(function()
+    local E = ns.strings.en
+    local function click(button) button.scripts.OnClick(button) end
+    local function b36(n)
+        local digits, text = "0123456789abcdefghijklmnopqrstuvwxyz", ""
+        repeat
+            local r = n % 36
+            text = digits:sub(r + 1, r + 1) .. text
+            n = math.floor(n / 36)
+        until n == 0
+        return text
+    end
+    local function ids(list)
+        local out = {}
+        for i, id in ipairs(list) do out[i] = b36(id) end
+        return table.concat(out, ",")
+    end
+    -- Runs only the waiting timers of one delay (the others keep waiting).
+    local function runTimers(delay)
+        local due, keep = {}, {}
+        for _, timer in ipairs(timers) do
+            if timer.delay == delay then due[#due + 1] = timer else keep[#keep + 1] = timer end
+        end
+        timers = keep
+        for _, timer in ipairs(due) do timer.fn() end
+        return #due
+    end
+    -- The crafter lines a tooltip got from the craft search.
+    local function craftLines(tooltip)
+        local out = {}
+        for i, line in ipairs(tooltip.lines) do
+            if line:find("Dragonworld - can be crafted by: ", 1, true) == 1 then out[#out + 1] = i end
+        end
+        return out
+    end
+    local function tipLine(id, tooltip)
+        tooltip = tooltip or GameTooltip
+        tooltip:SetItemByID(id)
+        local found = craftLines(tooltip)
+        return found[1] and tooltip.lines[found[1]] or nil, #found, found[1] and tooltip.colors[found[1]], found[1] and tooltip.wraps[found[1]]
+    end
+    local function names(group)
+        local out = {}
+        for _, crafter in ipairs(group and group.crafters or {}) do out[#out + 1] = crafter.member.name end
+        return table.concat(out, ",")
+    end
+    local function groupNames(groups)
+        local out = {}
+        for _, group in ipairs(groups or {}) do out[#out + 1] = group.name end
+        return table.concat(out, ",")
+    end
+    local green = function(name) return "|cff40ff40" .. name .. " " .. E.CS_TIP_ONLINE .. "|r" end
+    local white = function(name) return "|cffffffff" .. name .. "|r" end
+
+    -- Keep what the rest of the tests expect.
+    local language = ns.GetLanguage()
+    ns.SetLanguage("en", true)
+    local craftDB = DragonworldDB.modules.craft
+    local ro = DragonworldDB.modules.roster
+    local savedCrafts, savedProfessions = ro.crafts, ro.professions["Player-1-Borin"]
+    local savedSpell, savedTrade = C_Spell, C_TradeSkillUI
+
+    -- Fakes: recipe names, and the game's answers about what a recipe makes.
+    ITEMS[60] = { name = "Test Brew", quality = 2, classID = 0, bind = 0 }
+    ITEMS[61] = { name = "Dagny Dye", quality = 1, classID = 0, bind = 0 }
+    local spellNames = {
+        [2331] = "Minor Mana Potion", [2334] = "Elixir of Minor Fortitude", [424242] = "Forge Iron Sword",
+        [2657] = "Smelt Copper", [2659] = "Smelt Bronze", [3304] = "Smelt Tin",
+        [920001] = "Test Brew", [920002] = "Totem Carving", [930001] = "Faded Letter",
+        [940001] = "Enchant Bracer - Minor Health", [960001] = "Dagny Dye",
+        [910001] = "Sword", [910002] = "Swordfish Steak",
+    }
+    for n = 1, 70 do spellNames[950000 + n] = "Gadget " .. n end
+    C_Spell = { GetSpellName = function(id) return spellNames[id] end }
+    SCHEMATIC_CALLS = 0
+    SCHEMATIC = {
+        [424242] = { name = "Forge Iron Sword", outputItemID = 7 },
+        [920001] = { name = "Test Brew", outputItemID = 60 },
+        [920002] = { name = "Totem Carving", outputItemID = 9 },
+        [940001] = { name = "Enchant Bracer - Minor Health", recipeType = 3 },   -- an enchant: no item
+        [960001] = { name = "Dagny Dye", outputItemID = 61 },
+    }
+    C_TradeSkillUI = {
+        GetRecipeSchematic = function(id, isRecraft)
+            assert(type(id) == "number" and isRecraft == false, "GetRecipeSchematic(recipeID, false)")
+            SCHEMATIC_CALLS = SCHEMATIC_CALLS + 1
+            return SCHEMATIC[id]
+        end,
+    }
+    local T = SERVER_NOW - 100
+    ro.crafts = {
+        ["Player-1-Altine"] = { Alchemy = { t = T, ids = ids({ 2331, 2334, 424242, 920001, 930001, 940001 }) } },
+        ["Player-1-Tester"] = { Mining = { t = T, ids = ids({ 2657, 2659, 3304, 920001, 920002 }) } },
+        ["Player-1-Borin"] = { Cooking = { t = T, ids = ids({ 920001 }) } },
+        ["Player-1-Dagny"] = { Cooking = { t = T, ids = ids({ 920001, 960001 }) } },
+        ["Player-1-Eira"] = { Cooking = { t = T, ids = ids({ 920001 }) } },
+        ["Player-1-Gone"] = { Alchemy = { t = T, ids = ids({ 2331 }) } },   -- not in the guild any more
+    }
+    -- Start clean: earlier sections already built the index (and remembered answers).
+    craftDB.v = 0
+    ns.modules.craft:OnLoad(craftDB)
+    fire("GUILD_ROSTER_UPDATE")
+    flush()
+
+    -- 1. A module without a tab, with a command.
+    local craftChips, anyCraft = 0, false
+    for _, child in ipairs(win.body.children) do
+        if child.kind == "Button" and child.id then
+            craftChips = craftChips + 1
+            anyCraft = anyCraft or child.id == "craft"
+        end
+    end
+    clearChat()
+    dw("help")
+    local craftAt
+    for i, file in ipairs(ADDON_FILES) do if file.name == "CraftSearch.lua" then craftAt = i end end
+    check("craft: a module without a tab or a sidebar chip, loaded right after the recipe window, and /dw help lists /dw craft",
+        ns.modules.craft ~= nil and ns.modules.craft.CreatePanel == nil and not anyCraft and craftChips == 15
+        and craftAt ~= nil and ADDON_FILES[craftAt - 1].name == "RecipeWindow.lua" and has("/dw craft - " .. E.CS_TITLE .. ": " .. E.CS_NOTES), chatText())
+    clearChat()
+
+    -- 10. A tooltip never builds the index; it asks for a build a little later.
+    local callsBefore = SCHEMATIC_CALLS
+    local line = tipLine(7)
+    check("craft: a tooltip before any search builds nothing and adds no line, but asks for a build 2 s later",
+        line == nil and SCHEMATIC_CALLS == callsBefore and queued(2) >= 1)
+    flush()                    -- the build: unknown recipes wait for the game
+    check("...the build asks the game about the recipes in steps of 0.12 s", queued(0.12) == 1)
+    runTimers(0.12)
+
+    -- 2. Searching.
+    local groups, why = ns.SearchCrafts("ma")
+    check("craft: 'ma' finds Minor Mana Potion with Altine (Gone, who left the guild, is not listed)",
+        groups ~= nil and #groups == 1 and groups[1].name == "Minor Mana Potion" and names(groups[1]) == "Altine" and groups[1].crafters[1].reachable, groupNames(groups))
+    groups = ns.SearchCrafts("sword")
+    check("...'sword' groups the recipe under the item it makes (Iron Sword)",
+        groups ~= nil and #groups == 1 and groups[1].key == "i7" and groups[1].itemID == 7 and groups[1].spell == 424242 and groups[1].name == "Iron Sword", groupNames(groups))
+    groups, why = ns.SearchCrafts("m")
+    check("...one letter is too short", groups == nil and why == "short")
+    check("...capitals do not matter", ns.SearchCrafts("MANA") ~= nil and ns.SearchCrafts("MANA")[1].name == "Minor Mana Potion")
+    check("...the counts", ns.CountCraftMatches("smelt") == 3 and ns.CountCraftMatches("x") == 0 and ns.CountCraftMatches("zzzz") == 0)
+    groups = ns.SearchCrafts("smelt")
+    check("...things that match equally well come by name", groupNames(groups) == "Smelt Bronze,Smelt Copper,Smelt Tin" and names(groups[1]) == "Tester"
+        and groups[1].crafters[1].isMe, groupNames(groups))
+
+    -- 3. Someone no longer in the guild never shows.
+    local goneShown = false
+    for _, text in ipairs({ "minor", "mana", "potion" }) do
+        for _, group in ipairs(ns.SearchCrafts(text) or {}) do
+            for _, crafter in ipairs(group.crafters) do goneShown = goneShown or crafter.member.guid == "Player-1-Gone" end
+        end
+    end
+    check("craft: a recipe list from someone not in the roster is never shown", not goneShown)
+
+    -- 4. The order of the crafters.
+    groups = ns.SearchCrafts("test brew")
+    check("craft: crafters come you first, then online, then by when they were last on: Eira (6 h), Borin (3 d), Dagny (1 y)",
+        groups ~= nil and #groups == 1 and names(groups[1]) == "Tester,Altine,Eira,Borin,Dagny" and groups[1].reachable == 2 and groups[1].rank == 1, names(groups and groups[1]))
+
+    -- 5. The tooltip line.
+    local text, count, colour, wrap = tipLine(7)
+    check("craft: an item a member can craft gets one gold, wrapped line in its tooltip, online names marked",
+        text == E.CS_TIP_LINE:format(green("Altine")) and count == 1 and colour ~= nil and colour[1] == 1 and colour[2] == 0.82 and colour[3] == 0 and wrap == true, text)
+    tooltipCallback(GameTooltip, { id = 7 })
+    check("...once, also when the game reports the item twice", #craftLines(GameTooltip) == 1)
+    check("...in the tooltip of a linked item too", tipLine(7, ItemRefTooltip) ~= nil)
+    check("...but not in other tooltips", tipLine(7, OtherTooltip) == nil)
+    hover(SECRET)
+    check("...a secret item gives nothing", #craftLines(GameTooltip) == 0)
+    check("...an item only you can make gives no line (you are left out)", tipLine(9) == nil)
+    text = tipLine(60)
+    check("...more than 3 crafters: 3 names, online first, and how many more",
+        text == E.CS_TIP_LINE:format(green("Altine") .. ", " .. white("Eira") .. ", " .. white("Borin") .. " " .. E.CS_TIP_MORE:format(1)), text)
+    craftDB.tooltip = false
+    check("...nothing when the line is turned off", tipLine(7) == nil)
+    craftDB.tooltip = nil
+
+    -- 6. A recipe the game knows nothing about is found by its name.
+    text = tipLine(5)
+    check("craft: a recipe with no known item counts for the item with exactly its name, and nothing is remembered for it",
+        text == E.CS_TIP_LINE:format(green("Altine")) and craftDB.items[930001] == nil, text)
+
+    -- 7. An enchant.
+    groups = ns.SearchCrafts("enchant bracer")
+    check("craft: a confirmed enchant is remembered as 0, found by its name, and gives no item",
+        craftDB.items[940001] == 0 and groups ~= nil and #groups == 1 and groups[1].key == "s940001" and groups[1].itemID == nil
+        and groups[1].name == "Enchant Bracer - Minor Health", groupNames(groups))
+    check("...the game's answers are remembered (the item, and the enchant)", craftDB.items[424242] == 7 and craftDB.items[920001] == 60 and craftDB.v == 1)
+
+    -- 11. The window.
+    click(roChip)
+    check("craft: Roster has a Who crafts? button next to My professions", roPanel.craftChip:IsShown() and roPanel.craftChip.label.text == E.CS_OPEN
+        and roPanel.searchBox.width == 150 and roPanel.mineChip.width == 128 and roPanel.craftChip.width == 128 and select(2, roPanel.craftChip:GetPoint()) == roPanel.mineChip)
+    do
+        local point, rel, _, x, y = roPanel.count:GetPoint()
+        check("...the member count sits on the title line, out of the way of the search row",
+            point == "TOPRIGHT" and rel == nil and x == -14 and y == -12 and roPanel.count.width == 220 and roPanel.count.justifyH == "RIGHT")
+    end
+    roPanel.craftChip:Fire("OnEnter")
+    check("...its tooltip says what it does", GameTooltip.lines[1] == E.CS_OPEN_TIP)
+    roPanel.craftChip:Fire("OnLeave")
+    local requests = rosterRequests
+    click(roPanel.craftChip)
+    local o = DragonworldCraftSearch
+    local function csRows()
+        local out = {}
+        for _, row in ipairs(DragonworldCraftScroll.scrollChild.children) do if row:IsShown() then out[#out + 1] = row end end
+        return out
+    end
+    local function crafterRow(name)
+        for _, row in ipairs(csRows()) do if row.kind == "crafter" and row.crafter.member.name == name then return row end end
+    end
+    local function search(text)
+        o.searchBox:TypeText(text)
+        runTimers(0.15)
+    end
+    ns.ShowMemberCard(ns.AltCardRow(ns.ReadGuildRoster()[2]))
+    local cardLevel = DragonworldMemberCard:GetFrameLevel()
+    click(roPanel.craftChip)
+    check("...it opens the search over the main window (and asks the game for a fresh member list)",
+        o ~= nil and o:IsVisible() and o.parent == win and o.strata == "DIALOG" and o:GetWidth() == win:GetWidth() - 28 and o:GetHeight() == win:GetHeight() - 106
+        and o.title.text == E.CS_TITLE and o.searchLabel.text == E.RC_SEARCH and rosterRequests > requests and o.searchBox.focused)
+    check("...above the member card (which it closes), below the recipe window",
+        o:GetFrameLevel() == win:GetFrameLevel() + 30 and o:GetFrameLevel() > cardLevel and not DragonworldMemberCard:IsShown()
+        and (DragonworldRecipes == nil or DragonworldRecipes:GetFrameLevel() > o:GetFrameLevel()))
+
+    -- 12. Texts.
+    check("craft: with nothing typed it explains how to search, and how much is known", o.empty:IsShown() and o.empty.text == E.CS_HINT
+        and #csRows() == 0 and o.info.text == E.CS_INFO:format(11, 5), o.info.text)
+    search("mana")
+    local rowsNow = csRows()
+    check("...typing 'mana' lists the item with Altine under it: profession and level, online, a Whisper button",
+        #rowsNow == 2 and rowsNow[1].kind == "item" and rowsNow[1].name.text == "Minor Mana Potion" and rowsNow[1].count.text == E.CS_ITEM_COUNT:format(1, 1)
+        and rowsNow[2].kind == "crafter" and rowsNow[2].who.text == "Altine" and rowsNow[2].prof.text.text == "Alchemy 300"
+        and rowsNow[2].last.text == E.RO_ONLINE and rowsNow[2].whisper:IsShown() and not o.empty:IsShown(), rowsNow[2] and rowsNow[2].prof.text.text)
+    search("zzzz")
+    check("...nothing found says so", o.empty:IsShown() and o.empty.text == E.CS_NO_MATCH:format("zzzz") and #csRows() == 0)
+    search("zz|zz")
+    check("...'|' is taken out of the search", o.empty.text == E.CS_NO_MATCH:format("zzzz") and ns.SearchCrafts("ma|na")[1].name == "Minor Mana Potion")
+    search("test brew")
+    local item = csRows()[1]
+    check("...an item row has the icon and quality colour of the item",
+        item.kind == "item" and item.icon.texture == 1060 and item.name.color[1] == 0.12 and item.count.text == E.CS_ITEM_COUNT:format(5, 2))
+    item.scripts.OnEnter(item)
+    check("...hovering it shows the item (with the crafter line) and how to link it",
+        GameTooltip.lines[1] == "Test Brew" and #craftLines(GameTooltip) == 1 and GameTooltip.lines[#GameTooltip.lines] == E.RC_TIP_LINK)
+    item.scripts.OnLeave(item)
+    local me = crafterRow("Tester")
+    check("...you come first, marked (you), with no Whisper; offline members show when they were last on, without Whisper",
+        me ~= nil and me.who.text == "Tester |cff999999" .. E.CS_YOU .. "|r" and not me.whisper:IsShown() and crafterRow("Altine").whisper:IsShown()
+        and crafterRow("Eira").last.text == E.RO_HOURS:format(6) and crafterRow("Borin").last.text == E.RO_DAYS:format(3)
+        and crafterRow("Dagny").last.text == E.RO_YEARS:format(1) and not crafterRow("Eira").whisper:IsShown() and not crafterRow("Dagny").whisper:IsShown())
+    do
+        local told, inserted, linked
+        local savedTell, savedInsert, savedModified = ChatFrame_SendTell, ChatEdit_InsertLink, IsModifiedClick
+        ChatFrame_SendTell = function(name) told = name end
+        ChatEdit_InsertLink = function(text) inserted = text; return true end
+        local row = crafterRow("Altine")
+        click(row.whisper)
+        check("craft: Whisper opens a whisper to Altine with the item's link in the chat line",
+            told == "Altine-Stormrage" and inserted == link(60), tostring(told) .. " " .. tostring(inserted))
+        inserted = nil
+        IsModifiedClick = function(what) return what == "CHATLINK" end
+        item.scripts.OnClick(item, "LeftButton")
+        linked = inserted
+        IsModifiedClick = function() return false end
+        inserted = nil
+        item.scripts.OnClick(item, "LeftButton")
+        check("...shift-clicking the item links it in chat; a plain click does nothing", linked == link(60) and inserted == nil)
+        ChatFrame_SendTell, ChatEdit_InsertLink, IsModifiedClick = savedTell, savedInsert, savedModified
+    end
+    search("mana")
+    local altineRow = crafterRow("Altine")
+    altineRow.prof:Fire("OnEnter")
+    check("craft: hovering the profession says a click shows what Altine makes in it", GameTooltip.lines[1] == E.CS_TIP_RECIPES:format("Altine", "Alchemy"))
+    altineRow.prof:Fire("OnLeave")
+    click(altineRow.prof)
+    local rv = DragonworldRecipes
+    check("...a click opens her recipe window searched for 'mana', over the search window, which stays open",
+        rv ~= nil and rv:IsVisible() and rv.searchBox.text == "mana" and rv.title.text == "Altine - Alchemy 300/300" and o:IsShown()
+        and rv:GetFrameLevel() > o:GetFrameLevel(), rv and rv.searchBox.text)
+    click(rv.close)
+    search("totem of testing")
+    local carver = crafterRow("Tester")
+    click(carver.prof)
+    rv = DragonworldRecipes
+    check("...when the item's name is not in the recipe's name, the recipe window is searched for the recipe's name instead",
+        carver ~= nil and rv:IsVisible() and rv.searchBox.text == "Totem Carving" and rv.title.text:find("Tester - Mining", 1, true) == 1, rv.searchBox.text)
+    click(rv.close)
+    search("mana")
+    altineRow:Fire("OnEnter")
+    check("...hovering the name says a click opens the member card", GameTooltip.lines[#GameTooltip.lines] == E.CS_TIP_CARD)
+    altineRow:Fire("OnLeave")
+    altineRow.scripts.OnClick(altineRow, "LeftButton")
+    check("...clicking the row closes the search and shows Altine's card", not o:IsShown() and DragonworldMemberCard:IsShown() and DragonworldMemberCard.name.text == "Altine")
+    click(DragonworldMemberCard.close)
+    click(roPanel.craftChip)
+    check("...opening it again keeps 'mana'", o:IsShown() and o.searchBox:GetText() == "mana" and #csRows() == 2)
+    check("...the box for the tooltip line is ticked; unticking it turns the line off", o.tooltipCheck:GetChecked() and o.tooltipLabel.text == E.CS_TOOLTIP_CHECK)
+    o.tooltipCheck:SetChecked(false); click(o.tooltipCheck)
+    check("...(stored as off, and no line)", craftDB.tooltip == false and tipLine(7) == nil)
+    o.tooltipCheck:SetChecked(true); click(o.tooltipCheck)
+    check("...ticking it again brings it back", craftDB.tooltip == nil and tipLine(7) ~= nil)
+    ns.SetLanguage("nb", true)
+    check("...the window follows the language", o.title.text == ns.strings.nb.CS_TITLE and o.close.label.text == ns.strings.nb.RC_CLOSE
+        and roPanel.craftChip.label.text == ns.strings.nb.CS_OPEN and crafterRow("Altine").whisper.label.text == ns.strings.nb.RC_WHISPER)
+    ns.SetLanguage("en", true)
+
+    -- 9. Many new recipes are asked about in steps; failures are not asked again.
+    local gadgets1, gadgets2 = {}, {}
+    for n = 1, 35 do gadgets1[n] = 950000 + n; gadgets2[n] = 950035 + n end
+    roReceive(("C\tPlayer-1-Borin\tEngineering\t%d\t1\t2\t%s"):format(T, ids(gadgets1)), "Borin-Stormrage")
+    roReceive(("C\tPlayer-1-Borin\tEngineering\t%d\t2\t2\t%s"):format(T, ids(gadgets2)), "Borin-Stormrage")
+    check("craft: a new recipe list asks for a build 2 s later", queued(2) >= 1)
+    callsBefore = SCHEMATIC_CALLS
+    flush()
+    check("...which asks the game about nothing yet", SCHEMATIC_CALLS == callsBefore and queued(0.12) == 1)
+    runTimers(0.12)
+    check("...then 60 recipes per step", SCHEMATIC_CALLS == callsBefore + 60, SCHEMATIC_CALLS - callsBefore)
+    flush()
+    check("...and the rest in the next", SCHEMATIC_CALLS == callsBefore + 70 and queued(0.12) == 0, SCHEMATIC_CALLS - callsBefore)
+    -- 12 (continued). More than 25 things.
+    search("gadget")
+    local itemRows = 0
+    for _, row in ipairs(csRows()) do if row.kind == "item" then itemRows = itemRows + 1 end end
+    check("craft: more than 25 things: 25 shown, and the line says how many there are",
+        o.info.text == E.CS_MORE_ITEMS:format(25, 70) and itemRows == 25 and #csRows() == 50, o.info.text)
+
+    -- 8. Remembered answers: a new build asks the game nothing.
+    callsBefore = SCHEMATIC_CALLS
+    roReceive(("C\tPlayer-1-Eira\tTailoring\t%d\t1\t1\t%s"):format(T, ids({ 920001 })), "Eira-Stormrage")
+    flush()
+    flush()
+    check("craft: building again asks the game nothing (answers are remembered, failures not asked again in the session)",
+        SCHEMATIC_CALLS == callsBefore and queued(0.12) == 0, SCHEMATIC_CALLS - callsBefore)
+
+    -- 13. A new list for Eira is found after the build.
+    roReceive(("C\tPlayer-1-Eira\tBlacksmithing\t%d\t1\t1\t%s"):format(T, ids({ 910001, 910002 })), "Eira-Stormrage")
+    flush()
+    flush()
+    groups = ns.SearchCrafts("sword")
+    check("craft: Eira's new recipes are found after the next build; the whole name first, then names that start with it, then the rest",
+        groupNames(groups) == "Sword,Swordfish Steak,Iron Sword" and names(groups[1]) == "Eira" and groups[1].rank == 1 and groups[2].rank == 2 and groups[3].rank == 3, groupNames(groups))
+    search("swo")
+    check("...and the open window follows", csRows()[1].name.text == "Sword")
+
+    -- 15. Roster's search points to Who crafts?
+    o:Hide()
+    typeInto(roPanel.searchBox, "mana")
+    check("craft: a Roster search that matches no member but matches recipes points to Who crafts?",
+        roPanel.empty:IsShown() and roPanel.empty.text == E.RO_EMPTY_CRAFT:format(1), roPanel.empty.text)
+    click(roPanel.craftChip)
+    check("...and the button opens the search with that text", o:IsShown() and o.searchBox:GetText() == "mana" and #csRows() == 2)
+    o:Hide()
+    typeInto(roPanel.searchBox, "")
+    ro.professions["Player-1-Borin"] = { list = { { name = "Tailoring", level = 10, max = 75 } }, updated = SERVER_NOW }
+    click(roPanel.statusChips.online)
+    lastMenu = nil
+    click(roPanel.professionChip)
+    for _, radio in ipairs(lastMenu and lastMenu.radios or {}) do if radio.text == "Tailoring" then radio.click() end end
+    check("...a list that is empty only because of the filters still says no members match",
+        #roRows() == 0 and roPanel.empty:IsShown() and roPanel.empty.text == E.RO_EMPTY, roPanel.empty.text)
+    click(roPanel.professionChip)
+    lastMenu.radios[1].click()
+    click(roPanel.statusChips.all)
+    ro.professions["Player-1-Borin"] = savedProfessions
+
+    -- 16. Other overlays close it.
+    ns.ShowCraftSearch()
+    ns.OpenDungeonPicker()
+    check("craft: the dungeon picker closes the search", not o:IsShown() and DragonworldDungeonPicker:IsShown())
+    click(DragonworldDungeonPicker.cancel)
+    ns.ShowCraftSearch()
+    ns.ShowMemberCard(ns.AltCardRow(ns.ReadGuildRoster()[2]))
+    check("...and so does the member card", not o:IsShown() and DragonworldMemberCard:IsShown())
+    click(DragonworldMemberCard.close)
+
+    -- 14. /dw craft.
+    click(rsChip)
+    dw("craft potion")
+    check("craft: /dw craft potion opens Roster with the search for 'potion'",
+        roPanel:IsVisible() and o:IsVisible() and o.searchBox:GetText() == "potion" and csRows()[1] ~= nil and csRows()[1].name.text == "Minor Mana Potion")
+    o:Hide()
+    win:Hide()
+    local savedLanguage = DragonworldDB.language
+    DragonworldDB.language = nil
+    dw("craft mana")
+    check("...while the language question is waiting, nothing opens over it", win:IsShown() and not o:IsShown())
+    DragonworldDB.language = savedLanguage
+    ns.OpenModule("roster")
+    o:Hide()
+    setGuild("Other Guild")
+    clearChat()
+    dw("craft mana")
+    check("...not a member: locked, and nothing opens", has(E.LOCKED:format("Dragonworld")) and not o:IsShown(), chatText())
+    check("...and no tooltip line", tipLine(7) == nil)
+    setGuild("Dragonworld")
+    flush()
+    ns.OpenModule("roster")
+    clearChat()
+
+    -- 17. /dw debug.
+    dw("debug")
+    check("craft: /dw debug has a [craft] part", has("[craft]") and has("index: ") and has("enchants (0): 1") and has("GetRecipeSchematic: true")
+        and has("cache v: 1") and has("tooltip: on"), chatText())
+    clearChat()
+
+    -- 18. Linked characters: an offline crafter with a linked character online can be asked.
+    local function k(name, time, list)
+        fire("CHAT_MSG_ADDON", "DragonworldPf", ("K\tPlayer-1-%s\t%d\tS\t%s"):format(name, time, list), "GUILD", name .. "-Stormrage")
+    end
+    k("Altine", SERVER_NOW, "1-Altine,1-Dagny")
+    k("Dagny", SERVER_NOW, "1-Altine,1-Dagny")
+    fire("GUILD_ROSTER_UPDATE")
+    flush()
+    groups = ns.SearchCrafts("dagny dye")
+    local dagny = groups and groups[1] and groups[1].crafters[1]
+    check("craft: Dagny (offline) linked with Altine (online) counts as reachable, through Altine",
+        dagny ~= nil and dagny.member.name == "Dagny" and dagny.reachable and dagny.via ~= nil and dagny.via.name == "Altine")
+    ns.ShowCraftSearch("dagny dye")
+    local row = crafterRow("Dagny")
+    check("...the window says online as Altine, with a Whisper button", row ~= nil and row.last.text == E.CS_ONLINE_AS:format("Altine") and row.whisper:IsShown())
+    do
+        local told
+        local savedTell = ChatFrame_SendTell
+        ChatFrame_SendTell = function(name) told = name end
+        click(row.whisper)
+        ChatFrame_SendTell = savedTell
+        check("...Whisper goes to Altine", told == "Altine-Stormrage", told)
+    end
+    check("...and the tooltip marks Dagny online", tipLine(61) == E.CS_TIP_LINE:format(green("Dagny")), (tipLine(61)))
+    o:Hide()
+
+    -- 18b. Your own linked characters count as you: never asked through you.
+    do
+        local mine = DragonworldDB.profiles["Player-1-Tester"] or {}
+        DragonworldDB.profiles["Player-1-Tester"] = mine
+        mine.alts = { time = SERVER_NOW, state = "S", list = { "Player-1-Tester", "Player-1-Borin" } }
+        k("Borin", SERVER_NOW, "1-Tester,1-Borin")
+        fire("GUILD_ROSTER_UPDATE")
+        flush()
+        local found = ns.SearchCrafts("test brew")
+        local borin
+        for _, crafter in ipairs(found and found[1] and found[1].crafters or {}) do
+            if crafter.member.name == "Borin" then borin = crafter end
+        end
+        check("craft: your offline alt Borin counts as you, not as reachable through you",
+            borin ~= nil and borin.isMe and not borin.reachable and borin.via == nil and names(found[1]):find("^Tester,Borin,") ~= nil, names(found and found[1]))
+        ns.ShowCraftSearch("test brew")
+        local row = crafterRow("Borin")
+        check("...the window marks Borin (you), with no Whisper and no 'online as'",
+            row ~= nil and row.who.text == "Borin |cff999999" .. E.CS_YOU .. "|r" and not row.whisper:IsShown() and row.last.text == E.RO_DAYS:format(3), row and row.last.text)
+        o:Hide()
+        local line = tipLine(60)
+        check("...and the item tooltip leaves Borin out", line ~= nil and not line:find("Borin", 1, true), line)
+    end
+
+    -- 18c. The member list asked for on opening comes back inside the few
+    -- seconds it is not read again: the window refreshes once they are over.
+    do
+        fire("GUILD_ROSTER_UPDATE")
+        flush()
+        ns.ShowCraftSearch("mana")             -- reads the member list now
+        local altine = ROSTER[2]
+        altine[9], altine.last = false, { 0, 0, 0, 1 }
+        clock = clock + 1
+        fire("GUILD_ROSTER_UPDATE")
+        runTimers(0.15)
+        local late
+        for _, timer in ipairs(timers) do if timer.delay > 4 and timer.delay < 4.1 then late = timer end end
+        local stale = crafterRow("Altine")
+        check("craft: a member list answer inside those seconds plans one more refresh for when they are over",
+            late ~= nil and stale ~= nil and stale.last.text == E.RO_ONLINE)
+        clock = clock + 5
+        if late then runTimers(late.delay) end
+        runTimers(0.15)
+        local row = crafterRow("Altine")
+        check("...which shows that Altine has gone offline: no Whisper", row ~= nil and row.last.text == E.RO_HOURS:format(1) and not row.whisper:IsShown(), row and row.last.text)
+        altine[9], altine.last = true, nil
+        o:Hide()
+        fire("GUILD_ROSTER_UPDATE")
+        flush()
+    end
+
+    -- 12 (end). Nothing shared at all.
+    ro.crafts = {}
+    ns.modules.craft:OnLoad(craftDB)
+    ns.ShowCraftSearch("mana")
+    check("craft: with no recipe lists at all it says how recipes get shared", o.empty:IsShown() and o.empty.text == E.CS_NOTHING_SHARED and #csRows() == 0)
+    o:Hide()
+
+    -- 8 (end). A new cache version starts over.
+    craftDB.items[123] = 4
+    craftDB.v = 0
+    ns.modules.craft:OnLoad(craftDB)
+    check("craft: a different cache version empties the remembered answers", craftDB.v == 1 and next(craftDB.items) == nil)
+
+    -- Put things back.
+    for _, profile in pairs(DragonworldDB.profiles) do
+        if type(profile) == "table" then profile.alts = nil end
+    end
+    ro.crafts = savedCrafts
+    ro.professions["Player-1-Borin"] = savedProfessions
+    C_Spell, C_TradeSkillUI = savedSpell, savedTrade
+    SCHEMATIC, SCHEMATIC_CALLS = nil, nil
+    ITEMS[60], ITEMS[61] = nil, nil
+    typeInto(roPanel.searchBox, "")
+    ns.modules.craft:OnLoad(craftDB)
+    fire("GUILD_ROSTER_UPDATE")
+    flush()
+    DrainBanners()
+    for prefix in pairs(prefixes) do sentNow(prefix) end
+    ns.SetLanguage(language, true)
+    clearChat()
+    click(rsChip)
+end)()
+
+-- ================== Quest together (Modules\QuestTogether.lua, F10) ==================
+;(function()
+    local QT = "DragonworldQt"
+    local N = ns.strings.nb
+    local function click(button) button.scripts.OnClick(button) end
+    local function qtReceive(text, sender) fire("CHAT_MSG_ADDON", QT, text, "GUILD", sender or "Altine-Stormrage") end
+    local function qtSent() return sentNow(QT) end
+    local function all(list) return table.concat(list, " ; ") end
+    local function fieldsOf(message)
+        local out = {}
+        for field in (message .. "\t"):gmatch("(.-)\t") do out[#out + 1] = field end
+        return out
+    end
+    -- The quest IDs in a Q's quest field, and which are marked completed.
+    local function decode(text)
+        local ids, done = {}, {}
+        for token in text:gmatch("[^,]+") do
+            local base, star = token:match("^(%w+)(%*?)$")
+            local id = tonumber(base, 36)
+            ids[#ids + 1] = id
+            if star == "*" then done[id] = true end
+        end
+        return ids, done
+    end
+    local function buddies() return ns.QuestBuddies() end
+    local function find(lines, text)
+        for _, line in ipairs(lines) do
+            if line == text then return true end
+        end
+        return false
+    end
+    local language = ns.GetLanguage()
+    ns.SetLanguage("nb", true)
+    local qtDB = DragonworldDB.modules.quest
+    local savedOrder = DragonworldDB.tabOrder
+    local savedStatus = ns.GetMyStatus()
+    local savedRoster = {}
+    for index, row in ipairs(ROSTER) do savedRoster[index] = { zone = row[6], online = row[9], last = row.last } end
+    local savedLog = {}
+    for index, q in ipairs(LOG) do savedLog[index] = q end
+    local savedTell, savedInsert = ChatFrame_SendTell, ChatEdit_InsertLink
+    local savedInstance = INSTANCE
+
+    -- 1. A tab of its own, loaded right after Dungeons, placed after it in the order.
+    local qtAt
+    for i, file in ipairs(ADDON_FILES) do if file.name == "Modules\\QuestTogether.lua" then qtAt = i end end
+    check("quest: a tab of its own ('Quest sammen'), loaded right after Dungeons",
+        ns.modules.quest ~= nil and ns.modules.quest.CreatePanel ~= nil and ns.modules.quest.titleKey == "QT_TITLE"
+        and ns.modules.quest.icon == "Interface\\GossipFrame\\AvailableQuestIcon" and N.QT_TITLE == "Quest sammen"
+        and chipByID.quest ~= nil and chipByID.quest.label.text == "Quest sammen"
+        and qtAt ~= nil and ADDON_FILES[qtAt - 1].name == "Modules\\Dungeons.lua")
+    local function orderNames()
+        click(rsChip)
+        click(win.settingsChip)
+        local names = {}
+        for _, row in ipairs(settings.orderRows) do
+            if row:IsShown() then names[#names + 1] = row.id end
+        end
+        return table.concat(names, ",")
+    end
+    DragonworldDB.tabOrder = nil
+    check("quest: with no saved order it comes right after Dungeons", orderNames():find("^home,roster,guildchat,dungeons,quest,guildbank,") ~= nil, orderNames())
+    DragonworldDB.tabOrder = { "roster", "guildchat", "dungeons", "guildbank", "events", "achievements", "professions", "materialer", "ryddesekk", "keybinds", "forslag" }
+    check("quest: an order saved before it existed gets it right after Dungeons", orderNames():find("^home,roster,guildchat,dungeons,quest,guildbank,") ~= nil, orderNames())
+    DragonworldDB.tabOrder = savedOrder
+    -- 16. The Settings page with 5 alert kinds and 14 tabs.
+    check("quest: Settings has five blink kinds, the last one for quests, all above the action bar part",
+        #settings.blink.kinds == 5 and settings.blink.kinds[5].label.text == N.AL_QUEST and settings.blink.kinds[5].checked
+        and select(5, settings.blink.kinds[5]:GetPoint(1)) > select(5, settings.actionLabel:GetPoint(1)))
+    click(rsChip)
+
+    -- 2. The login message: Q, my key, map 0 (no map yet), ask 1 and the quest IDs.
+    -- It goes out on the first flush after login, which comes after the Ryddesekk
+    -- section's QUEST_REMOVED 200: so the log then holds 201 and 202.
+    do
+        local f = fieldsOf(QT_LOGIN[1] or "")
+        local ids = decode(f[5] or "")
+        check("quest: the login message asks the zone for theirs, with my quests in base 36, ascending",
+            #f == 5 and f[1] == "Q" and f[2] == "Player-1-Tester" and f[3] == "0" and f[4] == "1"
+            and table.concat(ids, ",") == "201,202" and f[5] == "5l,5m", all(QT_LOGIN))
+        local later = #QT_LOGIN >= 2
+        for index = 2, #QT_LOGIN do
+            later = later and QT_LOGIN[index]:find("^Q\tPlayer%-1%-Tester\t0\t0\t[%w,%*]*$") ~= nil and QT_LOGIN[index] ~= QT_LOGIN[index - 1]
+        end
+        check("quest: each later quest change in the Ryddesekk section sent one Q without ask, each different", later, all(QT_LOGIN))
+    end
+
+    -- This section's quest log (changed in place: LOG is a main-chunk local).
+    while #LOG > 0 do table.remove(LOG) end
+    for _, q in ipairs({
+        { isHeader = true, title = "Elwynn Forest" },
+        { questID = 300, title = "Hidden Thing", isHidden = true, objectives = {} },
+        { questID = 301, title = "Elite Ogres", level = 24, elite = true, objectives = {} },
+        { questID = 302, title = "Group Hunt", level = 22, suggestedGroup = 5, objectives = {} },
+        { questID = 303, title = "Done Deal", level = 20, complete = true, objectives = {} },
+        { questID = 304, title = "Plain Errand", level = 18, objectives = {} },
+        { questID = 305, title = "Bonus Task", isTask = true, objectives = {} },
+        { questID = 306, title = "Deadmines Run", level = 20, tag = 81, objectives = {} },
+        { questID = 999, title = "Uncached Quest", level = 12, objectives = {} },
+    }) do table.insert(LOG, q) end
+    QT_PLAYER_MAP, QT_ZONE_TEXT = 1429, "Elwynn Forest"
+    ROSTER[2][6] = "Elwynn Forest"
+    fire("GUILD_ROSTER_UPDATE")
+    flush()
+    qtSent()
+
+    -- 3/5. Arriving in a zone: Q with ask 1 after 8 s.
+    fire("ZONE_CHANGED_NEW_AREA")
+    check("quest: a zone change waits 8 s for the map to settle", queued(8) >= 1, queued(8))
+    flush()
+    local sent = qtSent()
+    local f = fieldsOf(sent[1] or "")
+    local ids, done = decode(f[5] or "")
+    check("quest: a new zone sends Q with ask 1: headers, hidden and task quests left out, '*' on the completed one",
+        #sent == 1 and f[1] == "Q" and f[2] == "Player-1-Tester" and f[3] == "1429" and f[4] == "1" and f[5] == "8d,8e,8f*,8g,8i,rr"
+        and table.concat(ids, ",") == "301,302,303,304,306,999" and done[303] and not done[301], all(sent))
+    QT_PLAYER_MAP = 9001
+    fire("ZONE_CHANGED_NEW_AREA")
+    flush()
+    check("quest: going into a cave inside the zone sends nothing (the cave counts as the zone)", #qtSent() == 0)
+    table.insert(LOG, { questID = 310, title = "Mine Rats", level = 19, objectives = {} })
+    fire("QUEST_ACCEPTED", 310)
+    check("quest: a new quest waits 6 s for more changes", queued(6) >= 1, queued(6))
+    flush()
+    sent = qtSent()
+    f = fieldsOf(sent[1] or "")
+    check("quest: accepting a quest sends one Q with ask 0, and the cave is sent as its zone (1429)",
+        #sent == 1 and f[3] == "1429" and f[4] == "0" and f[5] == "8d,8e,8f*,8g,8i,8m,rr", all(sent))
+    QT_PLAYER_MAP = 9003
+    fire("ZONE_CHANGED_NEW_AREA")
+    flush()
+    sent = qtSent()
+    f = fieldsOf(sent[1] or "")
+    check("quest: a cave that is not directly inside a zone keeps its own map (9003, not 9004)", #sent == 1 and f[3] == "9003" and f[4] == "1", all(sent))
+    INSTANCE = { inside = true, type = "party", name = "The Deadmines", map = 36 }
+    QT_PLAYER_MAP = 9002
+    fire("ZONE_CHANGED_NEW_AREA")
+    flush()
+    sent = qtSent()
+    f = fieldsOf(sent[1] or "")
+    check("quest: inside an instance the map is sent as it is", #sent == 1 and f[3] == "9002" and f[4] == "1", all(sent))
+    INSTANCE = savedInstance
+    QT_PLAYER_MAP = 1429
+    fire("ZONE_CHANGED_NEW_AREA")
+    flush()
+    qtSent()
+
+    -- 4. Quest changes.
+    fire("QUEST_LOG_UPDATE")
+    flush()
+    check("quest: a quest log update that changes nothing sends nothing", #qtSent() == 0)
+    table.insert(LOG, { questID = 311, title = "Two A", level = 19, objectives = {} })
+    fire("QUEST_ACCEPTED", 311)
+    table.insert(LOG, { questID = 312, title = "Two B", level = 19, objectives = {} })
+    fire("QUEST_ACCEPTED", 312)
+    flush()
+    sent = qtSent()
+    check("quest: two quest changes close together give one message", #sent == 1 and sent[1]:find(",8n,8o,", 1, true) ~= nil, all(sent))
+    table.insert(LOG, { questID = 313, title = "Right After", level = 19, objectives = {} })
+    fire("QUEST_ACCEPTED", 313)
+    local gapTimer
+    for _, timer in ipairs(timers) do if timer.delay > 29.9 and timer.delay < 30.2 then gapTimer = timer end end
+    check("quest: a quest change right after a message waits for the 30 s gap", gapTimer ~= nil and #qtSent() == 0)
+    flush()
+    sent = qtSent()
+    check("quest: ...and then it is sent", #sent == 1 and sent[1]:find(",8p,", 1, true) ~= nil, all(sent))
+    for _ = 1, 4 do table.remove(LOG) end    -- 310-313 again
+    fire("QUEST_REMOVED", 313)
+    flush()
+    qtSent()
+
+    -- 5. Rapid zone events give one message; a new zone asks.
+    QT_PLAYER_MAP, QT_ZONE_TEXT = 1436, "Westfall"
+    fire("ZONE_CHANGED_NEW_AREA")
+    fire("ZONE_CHANGED_NEW_AREA")
+    fire("ZONE_CHANGED_NEW_AREA")
+    flush()
+    sent = qtSent()
+    f = fieldsOf(sent[1] or "")
+    check("quest: several zone events give one Q, with ask 1 for the new zone", #sent == 1 and f[3] == "1436" and f[4] == "1", all(sent))
+    QT_PLAYER_MAP, QT_ZONE_TEXT = 1429, "Elwynn Forest"
+    fire("ZONE_CHANGED_NEW_AREA")
+    flush()
+    qtSent()
+
+    -- On a flight path nothing is sent for the zones flown over; one Q when it lands.
+    UnitOnTaxi = function(unit) return unit == "player" and QT_TAXI == true end
+    QT_TAXI = true
+    QT_PLAYER_MAP, QT_ZONE_TEXT = 1436, "Westfall"
+    fire("ZONE_CHANGED_NEW_AREA")
+    flush()
+    flush()
+    check("quest: on a flight path a zone flown over is not asked", #qtSent() == 0)
+    QT_TAXI = false
+    flush()
+    sent = qtSent()
+    f = fieldsOf(sent[1] or "")
+    check("quest: ...and once landed one Q goes out, asking the new zone", #sent == 1 and f[3] == "1436" and f[4] == "1", all(sent))
+    QT_PLAYER_MAP, QT_ZONE_TEXT = 1429, "Elwynn Forest"
+    fire("ZONE_CHANGED_NEW_AREA")
+    flush()
+    qtSent()
+
+    -- 6. Answering others who arrive.
+    flush()
+    local before3 = queued(3.2)
+    qtReceive("Q\tPlayer-1-Altine\t1429\t1\t8d*,8e,8g")
+    check("quest: an ask from someone in my zone plans one answer after 3.2 s", queued(3.2) == before3 + 1, queued(3.2))
+    qtReceive("Q\tPlayer-1-Altine\t1429\t1\t8d*,8e,8g")
+    check("quest: ...a second ask plans no second answer", queued(3.2) == before3 + 1, queued(3.2))
+    flush()
+    sent = qtSent()
+    f = fieldsOf(sent[1] or "")
+    check("quest: one answer goes out, with ask 0", #sent == 1 and f[3] == "1429" and f[4] == "0", all(sent))
+    flush()
+    qtReceive("Q\tPlayer-1-Altine\t1436\t1\t8d")
+    flush()
+    check("quest: an ask from another zone gets no answer", #qtSent() == 0)
+    qtReceive("Q\tPlayer-1-Altine\t1429\t0\t8d*,8e,8g")
+    flush()
+    check("quest: a message without ask gets no answer", #qtSent() == 0)
+    table.insert(LOG, { questID = 314, title = "Fresh One", level = 19, objectives = {} })
+    fire("QUEST_ACCEPTED", 314)
+    flush()
+    check("quest: (a new quest is sent)", #qtSent() == 1)
+    local beforeFresh = queued(3.2)
+    qtReceive("Q\tPlayer-1-Altine\t1429\t1\t8d*,8e,8g")
+    check("quest: an ask within 60 s of my last message, on the same map, gets no answer", queued(3.2) == beforeFresh and #qtSent() == 0)
+    qtReceive("Q\tPlayer-1-Dagny\t1429\t1\tzz", "Dagny-Stormrage")
+    flush()
+    sent = qtSent()
+    f = fieldsOf(sent[1] or "")
+    check("quest: ...but someone not heard from before (just logged in) gets an answer", #sent == 1 and f[3] == "1429" and f[4] == "0", all(sent))
+    table.remove(LOG)
+    fire("QUEST_REMOVED", 314)
+    flush()
+    qtSent()
+
+    -- 7. In cities (resting) only the zone is sent.
+    QT_RESTING = true
+    table.insert(LOG, { questID = 315, title = "City Errand", level = 19, objectives = {} })
+    fire("QUEST_ACCEPTED", 315)
+    flush()
+    check("quest: while resting, quest changes send nothing", #qtSent() == 0)
+    QT_PLAYER_MAP = 1436
+    fire("ZONE_CHANGED_NEW_AREA")
+    flush()
+    sent = qtSent()
+    f = fieldsOf(sent[1] or "")
+    check("quest: while resting, a zone change sends Q with no quests and no ask", #sent == 1 and f[3] == "1436" and f[4] == "0" and f[5] == "" and #f == 5, all(sent))
+    flush()
+    qtReceive("Q\tPlayer-1-Altine\t1436\t1\t8d")
+    flush()
+    check("quest: while resting, asks get no answer", #qtSent() == 0)
+    QT_RESTING = false
+    fire("PLAYER_UPDATE_RESTING")
+    flush()
+    sent = qtSent()
+    f = fieldsOf(sent[1] or "")
+    check("quest: leaving the city sends the quests again, and asks the zone (that was held back in the city)",
+        #sent == 1 and f[3] == "1436" and f[4] == "1" and (f[5] or ""):find("8r", 1, true) ~= nil, all(sent))
+    table.remove(LOG)
+    QT_PLAYER_MAP = 1429
+    fire("QUEST_REMOVED", 315)
+    fire("ZONE_CHANGED_NEW_AREA")
+    flush()
+    qtSent()
+
+    -- 9. Only the player a message is about may send it.
+    qtReceive("Q\tPlayer-1-Altine\t1429\t0\t8d*,8e,8g", "Borin-Stormrage")
+    check("quest: a Q about Altine sent by Borin is ignored", #buddies() == 0)
+
+    -- 8. Matching: Altine in my zone with three quests in common.
+    qtReceive("Q\tPlayer-1-Altine\t1429\t0\t8d*,8e,8g")
+    local list = buddies()
+    check("quest: Altine is listed with the shared quests, groupish first",
+        #list == 1 and list[1].member.name == "Altine" and table.concat(list[1].shared, ",") == "301,302,304" and list[1].groupCount == 2,
+        list[1] and table.concat(list[1].shared, ","))
+    ns.OpenModule("quest")
+    local panel = DragonworldQuestScroll.parent
+    local function refresh() panel:Hide(); panel:Show() end
+    local function rowsOf(kind)
+        local out = {}
+        for _, row in ipairs(DragonworldQuestScroll.scrollChild.children) do
+            if row:IsShown() and row.entry and row.kind == kind then out[#out + 1] = row end
+        end
+        table.sort(out, function(a, b) return select(5, a:GetPoint(1)) > select(5, b:GetPoint(1)) end)
+        return out
+    end
+    check("quest: the tab has its title, your zone and a list",
+        panel:IsVisible() and panel.title.text == N.QT_TITLE and panel.zone.text == N.QT_ZONE:format("Elwynn Forest")
+        and select(4, panel.zone:GetPoint(1)) == 14 and select(5, panel.zone:GetPoint(1)) == -44
+        and select(4, DragonworldQuestScroll:GetPoint(1)) == 10 and select(5, DragonworldQuestScroll:GetPoint(1)) == -68
+        and panel.content:GetWidth() == 572 and panel.shareCheck.checked and panel.shareLabel.text == N.QT_SHARE_CHECK, panel.zone.text)
+    local row = rowsOf("member")[1]
+    check("quest: Altine's row: name, level, '3 felles quests' and the quests, groupish in orange first, '(ferdig)' in green",
+        row ~= nil and row.name.text:find("Altine", 1, true) ~= nil and row.level.text == "58" and row.info.text == N.QT_SHARED_MANY:format(3)
+        and row.quests.text == "|cffff9933[24+] Elite Ogres|r |cff40ff40(" .. N.QT_DONE .. ")|r, |cffff9933[22] Group Hunt|r, [18] Plain Errand"
+        and panel.sameHeader:IsShown() and panel.sameHeader.text == N.QT_SAME_HEADER:format(1)
+        and row.whisper.label.text == N.DG_WHISPER and row.invite.label.text == N.DG_INVITE, row and row.quests.text)
+    row.scripts.OnEnter(row)
+    local lines = GameTooltip.lines
+    check("quest: the row's tooltip has level and rank, and each shared quest with its tags",
+        lines[2] == N.MC_INFO:format(58, "Officer") and find(lines, N.QT_TIP_HEADER)
+        and find(lines, "[24+] Elite Ogres = " .. N.QT_TAG_ELITE) and find(lines, "[22] Group Hunt = " .. N.QT_TAG_GROUP:format(5))
+        and find(lines, "[18] Plain Errand = ") and find(lines, "  " .. N.QT_TIP_THEY_DONE:format("Altine")), table.concat(lines, " / "))
+    row.scripts.OnLeave(row)
+
+    -- 9 (cont.). A forged X, the roster lagging behind, and a real X.
+    qtReceive("X\tPlayer-1-Altine", "Borin-Stormrage")
+    check("quest: an X for Altine sent by Borin is ignored", #buddies() == 1)
+    ROSTER[2][9] = false
+    fire("GUILD_ROSTER_UPDATE")
+    qtReceive("Q\tPlayer-1-Dagny\t1429\t0\t8g", "Dagny-Stormrage")
+    list = buddies()
+    check("quest: members the roster still shows offline count as online right after a message, best match first",
+        #list == 2 and list[1].member.name == "Altine" and list[2].member.name == "Dagny", #list)
+    qtReceive("X\tPlayer-1-Altine")
+    list = buddies()
+    check("quest: after Altine's own X she is gone", #list == 1 and list[1].member.name == "Dagny")
+    ROSTER[2][9] = true
+    fire("GUILD_ROSTER_UPDATE")
+    flush()
+    flush()
+    flush()
+    check("quest: ...and someone offline in the roster drops out two minutes after their last message", #buddies() == 0)
+    qtReceive("Q\tPlayer-1-Altine\t1429\t0\t8d*,8e,8g")
+
+    -- 10. The others in the zone.
+    ROSTER[4][9] = true                                    -- Cedric, Elwynn Forest, no addon (and no GUID)
+    ROSTER[6][9], ROSTER[6][6] = true, "Elwynn Forest"     -- Eira, roster says Elwynn
+    ROSTER[3][9] = true                                    -- Borin, roster says Westfall
+    fire("GUILD_ROSTER_UPDATE")
+    qtReceive("Q\tPlayer-1-Eira\t1436\t0\t8d", "Eira-Stormrage")
+    qtReceive("Q\tPlayer-1-Borin\t1429\t0\tzz", "Borin-Stormrage")
+    refresh()
+    local small = rowsOf("small")
+    check("quest: 'Also in Elwynn Forest': Borin (addon, nothing shared) first, then Cedric (no addon); Eira's map says Westfall, so she is not listed",
+        #small == 2 and small[1].entry.member.name == "Borin" and small[1].info.text == N.QT_NO_SHARED
+        and small[2].entry.member.name == "Cedric" and small[2].info.text == N.QT_NO_ADDON
+        and panel.alsoHeader:IsShown() and panel.alsoHeader.text == N.QT_ALSO_HEADER:format("Elwynn Forest", 2)
+        and #rowsOf("member") == 1 and select(5, small[1]:GetPoint(1)) < select(5, rowsOf("member")[1]:GetPoint(1)),
+        #small .. " " .. (small[1] and small[1].entry.member.name or "-"))
+
+    -- 11. The violet blink.
+    local alert
+    for _, a in ipairs(ns.ALERTS) do if a.kind == "quest" then alert = a end end
+    local items = alert.Items(0)
+    check("quest: the blink knows a guild member here has the same quest, and names the quests",
+        alert.Check(0) == true and #items == 1 and items[1]:find("^Altine") ~= nil
+        and items[1]:find(": Elite Ogres, Group Hunt, Plain Errand", 1, true) ~= nil and alert.color[1] == 0.65, items[1])
+    ns.SetMyStatus("C")
+    check("quest: ...but not while you are set to Do not disturb", alert.Check(0) == false)
+    ns.SetMyStatus(savedStatus)
+    click(rsChip)
+    DragonworldDB.alerts.seen.quest = 0
+    ns.RefreshAlerts()
+    local active = false
+    for _, a in ipairs(ns.ActiveAlerts()) do active = active or a.kind == "quest" end
+    check("quest: with the tab closed it is new", active)
+    ns.OpenModule("quest")
+    ns.RefreshAlerts()
+    active = false
+    for _, a in ipairs(ns.ActiveAlerts()) do active = active or a.kind == "quest" end
+    check("quest: opening the tab counts it as seen", not active and DragonworldDB.alerts.seen.quest == SERVER_NOW)
+
+    -- 14. Whisper and Invite.
+    local told, inserted
+    ChatFrame_SendTell = function(name) told = name end
+    ChatEdit_InsertLink = function(text) inserted = text; return true end
+    refresh()
+    row = rowsOf("member")[1]
+    click(row.whisper)
+    check("quest: Whisper opens a whisper to the member and puts the first shared quest's link in the chat line",
+        told == "Altine-Stormrage" and inserted == GetQuestLink(301), tostring(told) .. " " .. tostring(inserted))
+    told, inserted = nil, nil
+    qtReceive("Q\tPlayer-1-Altine\t1429\t0\trr")
+    refresh()
+    row = rowsOf("member")[1]
+    local okWhisper = pcall(click, row.whisper)
+    check("quest: a shared quest the game has no link for yet inserts nothing, and gives no error", okWhisper and told == "Altine-Stormrage" and inserted == nil)
+    told = nil
+    click(rowsOf("small")[2].whisper)
+    check("quest: Whisper on someone without shared quests only opens the whisper", told == "Cedric-Stormrage" and inserted == nil)
+    local invitesBefore = #GROUP.invites
+    click(row.invite)
+    check("quest: Invite invites the member", #GROUP.invites == invitesBefore + 1 and GROUP.invites[#GROUP.invites] == "Altine-Stormrage")
+    GROUP.members = { { name = "Altine", realm = "Stormrage", guid = "Player-1-Altine", class = "MAGE", level = 58 } }
+    fire("GROUP_ROSTER_UPDATE")
+    refresh()
+    row = rowsOf("member")[1]
+    check("quest: someone already in your group shows 'I gruppen din' instead of Invite",
+        not row.invite:IsShown() and row.inGroup:IsShown() and row.inGroup.text == N.QT_IN_GROUP and row.inGroup.fontTemplate == "GameFontDisableSmall")
+    GROUP.members = {}
+    GROUP.canInvite = false
+    fire("GROUP_ROSTER_UPDATE")
+    refresh()
+    row = rowsOf("member")[1]
+    row.invite:Fire("OnEnter")
+    check("quest: when you may not invite, Invite is greyed out and says why",
+        row.invite:IsShown() and not row.invite:IsEnabled() and GameTooltip.lines[1] == N.QT_CANT_INVITE)
+    row.invite:Fire("OnLeave")
+    GROUP.canInvite = nil
+    fire("GROUP_ROSTER_UPDATE")
+    click(row)
+    check("quest: a click on the row opens the member card, with the member's professions",
+        DragonworldMemberCard ~= nil and DragonworldMemberCard:IsShown() and DragonworldMemberCard.name.text == "Altine"
+        and DragonworldMemberCard.professionChips[1]:IsShown())
+    DragonworldMemberCard:Hide()
+    ChatFrame_SendTell, ChatEdit_InsertLink = savedTell, savedInsert
+    qtReceive("Q\tPlayer-1-Altine\t1429\t0\t8d*,8e,8g")
+    flush()
+    qtSent()
+
+    -- 12. Off and on.
+    refresh()
+    panel.shareCheck.checked = false
+    click(panel.shareCheck)
+    sent = qtSent()
+    check("quest: unticking sends X once, saves it, and forgets the others",
+        #sent == 1 and sent[1] == "X\tPlayer-1-Tester" and qtDB.off == true and #buddies() == 0 and not ns.IsQuestTogetherOn(), all(sent))
+    check("quest: turned off, the tab explains it and offers to turn it on",
+        panel.offText:IsShown() and panel.offText.text == N.QT_OFF_TEXT and panel.turnOn:IsShown() and panel.turnOn.label.text == N.QT_TURN_ON
+        and not DragonworldQuestScroll:IsShown() and not panel.zone:IsShown() and not panel.shareCheck.checked)
+    qtReceive("Q\tPlayer-1-Altine\t1429\t1\t8d*,8e,8g")
+    table.insert(LOG, { questID = 316, title = "While Off", level = 19, objectives = {} })
+    fire("QUEST_ACCEPTED", 316)
+    fire("ZONE_CHANGED_NEW_AREA")
+    flush()
+    check("quest: while off nothing is sent, shown or blinked", #qtSent() == 0 and #buddies() == 0 and alert.Check(0) == false)
+    panel.shareCheck.checked = true
+    click(panel.shareCheck)
+    check("quest: ticking turns it on again, with nothing remembered from while it was off", qtDB.off == nil and ns.IsQuestTogetherOn() and #buddies() == 0)
+    flush()
+    sent = qtSent()
+    f = fieldsOf(sent[1] or "")
+    check("quest: ...and sends Q with ask 1", #sent == 1 and f[1] == "Q" and f[4] == "1" and f[3] == "1429", all(sent))
+    panel.shareCheck.checked = false
+    click(panel.shareCheck)
+    qtSent()
+    click(panel.turnOn)
+    check("quest: the Turn on button does the same as the box", qtDB.off == nil and panel.shareCheck.checked and DragonworldQuestScroll:IsShown())
+    flush()
+    qtSent()
+    table.remove(LOG)
+    fire("QUEST_REMOVED", 316)
+    flush()
+    qtSent()
+    panel.shareCheck:Fire("OnEnter")
+    check("quest: the box's tooltip says what is sent, to whom, and that nothing is saved", GameTooltip.lines[2] == N.QT_FOOTER)
+    panel.shareCheck:Fire("OnLeave")
+
+    -- 13. Broken messages are dropped.
+    qtReceive("Q\tPlayer-1-Altine\t1429\t0\t8d*,8e,8g")
+    local function sharedCount() local b = buddies(); return b[1] and #b[1].shared or 0 end
+    local ok = pcall(function()
+        qtReceive("Q\t" .. string.rep("x", 61) .. "\t1429\t0\t8d")
+        qtReceive("Q\tPlayer-1-Altine\tabc\t0\t8d")
+        qtReceive("Q\tPlayer-1-Altine\t1000001\t0\t8d")
+        qtReceive("Q\tPlayer-1-Altine\t1429\t2\t8d")
+        qtReceive("Q\tPlayer-1-Altine\t1429\t0\t" .. string.rep("8d,", 40) .. "8d")
+        qtReceive("Q\tPlayer-1-Altine\t1429\t0\t1234567")
+        qtReceive("Q\tPlayer-1-Altine\t1429\t0\t8d!")
+        qtReceive("Q\tPlayer-1-Altine\t1429\t0\t8d,,8e")
+        qtReceive("Q\tPlayer-1-Altine\t1429\t0")
+        qtReceive("Q")
+        qtReceive("X")
+        qtReceive("Z\tPlayer-1-Altine")
+    end)
+    check("quest: a long key, a bad map, ask 2, 41 quests, a 7-character ID, bad characters or empty parts drop the message without errors",
+        ok and sharedCount() == 3, sharedCount())
+    local bigLog = {}
+    for i = 1, 40 do bigLog[i] = { questID = 2000000000 + i, title = "Big " .. i, level = 30, complete = (i % 2 == 0), objectives = {} } end
+    for _, q in ipairs(bigLog) do table.insert(LOG, q) end
+    fire("QUEST_ACCEPTED", 2000000001)
+    flush()
+    sent = qtSent()
+    f = fieldsOf(sent[1] or "")
+    local bigIDs = decode(f[5] or "")
+    local ascending = true
+    for i = 2, #bigIDs do ascending = ascending and bigIDs[i] > bigIDs[i - 1] end
+    check("quest: with many quests with big IDs the message stays within 255 bytes, ascending",
+        #sent == 1 and #sent[1] <= 255 and #bigIDs > 20 and #bigIDs < 35 and ascending, sent[1] and #sent[1])
+    for _ = 1, 40 do table.remove(LOG) end
+    fire("QUEST_REMOVED", 2000000001)
+    flush()
+    qtSent()
+
+    -- A quest the game tags 'Group' (tag 1) is a group quest, not an elite one.
+    table.insert(LOG, { questID = 319, title = "Group Tagged", level = 21, tag = 1, objectives = {} })
+    qtReceive("Q\tPlayer-1-Altine\t1429\t0\t8d*,8e,8g,8v")
+    refresh()
+    row = rowsOf("member")[1]
+    row.scripts.OnEnter(row)
+    lines = GameTooltip.lines
+    check("quest: a quest tagged Group is orange and counts as a group quest, without '+' or Elite",
+        row.quests.text:find("|cffff9933[21] Group Tagged|r", 1, true) ~= nil and row.quests.text:find("[21+]", 1, true) == nil
+        and find(lines, "[21] Group Tagged = " .. N.QT_TAG_GROUP_ANY) and buddies()[1].groupCount == 3, row.quests.text)
+    row.scripts.OnLeave(row)
+    table.remove(LOG)
+
+    -- 15. Secret values.
+    QT_PLAYER_MAP = SECRET
+    table.insert(LOG, { questID = 317, title = SECRET, level = 10, objectives = {} })
+    qtReceive("Q\tPlayer-1-Altine\t1429\t0\t8d*,8e,8g,8t")
+    refresh()
+    row = rowsOf("member")[1]
+    small = rowsOf("small")
+    check("quest: a secret map falls back to the zone name; a secret title shows '?'",
+        panel.zone.text == N.QT_ZONE:format("Elwynn Forest") and row ~= nil and row.quests.text:find("[10] ?", 1, true) ~= nil
+        and #small >= 1, row and row.quests.text)
+    table.remove(LOG)
+    QT_PLAYER_MAP = 1429
+    refresh()
+    -- A non-member sends and keeps nothing.
+    guild.inGuild, guild.name = false, nil
+    fire("PLAYER_GUILD_UPDATE")
+    local outside = not ns.IsMember()
+    qtReceive("Q\tPlayer-1-Altine\t1429\t1\t8d*,8e,8g")
+    table.insert(LOG, { questID = 318, title = "Outside", level = 19, objectives = {} })
+    fire("QUEST_ACCEPTED", 318)
+    fire("ZONE_CHANGED_NEW_AREA")
+    flush()
+    check("quest: outside the guild nothing is sent or kept", outside and #qtSent() == 0 and #buddies() == 0)
+    guild.inGuild, guild.name = true, "Dragonworld"
+    fire("PLAYER_GUILD_UPDATE")
+    check("quest: ...back in the guild, nothing from then is there", ns.IsMember() and #buddies() == 0)
+    flush()
+    sent = qtSent()
+    f = fieldsOf(sent[1] or "")
+    check("quest: ...and it says hello again, asking the zone", #sent == 1 and f[1] == "Q" and f[3] == "1429" and f[4] == "1", all(sent))
+    table.remove(LOG)
+
+    -- Debug.
+    clearChat()
+    dw("debug")
+    check("quest: /dw debug has a part for it", has("[quest]") and has("kart: 1429"), chatText():match("%[quest%][^%[]*"))
+
+    -- Put things back.
+    while #LOG > 0 do table.remove(LOG) end
+    for _, q in ipairs(savedLog) do table.insert(LOG, q) end
+    QT_PLAYER_MAP, QT_ZONE_TEXT, QT_RESTING = nil, nil, false
+    UnitOnTaxi, QT_TAXI = nil, nil
+    INSTANCE = savedInstance
+    GROUP.members, GROUP.canInvite = {}, nil
+    for index, saved in ipairs(savedRoster) do
+        ROSTER[index][6], ROSTER[index][9], ROSTER[index].last = saved.zone, saved.online, saved.last
+    end
+    DragonworldDB.tabOrder = savedOrder
+    qtDB.off = nil
+    fire("QUEST_LOG_UPDATE")
+    fire("GUILD_ROSTER_UPDATE")
+    flush()
+    DrainBanners()
+    for prefix in pairs(prefixes) do sentNow(prefix) end
+    ns.SetLanguage(language, true)
+    clearChat()
+    -- Leaving the guild closed the main window: open it again where the next part expects it.
+    ns.OpenModule("ryddesekk")
+end)()
+
+-- ============================== home ("While you were away") =========================
+;(function()
+    local N = ns.strings.nb
+    local HOME = ns.modules.home
+    local DAY = 86400
+    local function click(button) button.scripts.OnClick(button) end
+    local function homeDB() return DragonworldDB.modules.home end
+    local function load() HOME.OnLoad(HOME, homeDB()) end
+    local function evDB() return DragonworldDB.modules.events end
+    local function sugDB() return DragonworldDB.modules.forslag end
+    local function annDB() return DragonworldDB.modules.kunngjoringer end
+    local function achDB() return DragonworldDB.modules.achievements end
+    local function gbDB() return DragonworldDB.modules.guildbank end
+    local function ach(text, sender) fire("CHAT_MSG_ADDON", "DragonworldAch", text, "GUILD", sender or "Altine-Stormrage") end
+    local function drainWire() for prefix in pairs(prefixes) do sentNow(prefix) end end
+    local function size(set) local n = 0; for _ in pairs(set or {}) do n = n + 1 end; return n end
+    local function bannerShown() return DragonworldMilestoneBanner ~= nil and DragonworldMilestoneBanner:IsShown() end
+    local function homeRows()
+        local out = {}
+        for _, row in ipairs(DragonworldHomeScroll.scrollChild.children) do
+            if row:IsShown() then out[#out + 1] = row end
+        end
+        return out
+    end
+    local function headers()
+        local ids = {}
+        for _, row in ipairs(homeRows()) do if row.kind == "header" then ids[#ids + 1] = row.section end end
+        return table.concat(ids, ",")
+    end
+    -- The rows under a section's heading (lines and the "more" row).
+    local function sectionRows(id)
+        local out, inside = {}, false
+        for _, row in ipairs(homeRows()) do
+            if row.kind == "header" then
+                inside = row.section == id
+            elseif inside then
+                out[#out + 1] = row
+            end
+        end
+        return out
+    end
+    local function lineRow(text, id)
+        for _, row in ipairs(id and sectionRows(id) or homeRows()) do
+            if row.kind == "line" and row.text.text:find(text, 1, true) then return row end
+        end
+    end
+    local function header(id)
+        for _, row in ipairs(homeRows()) do if row.kind == "header" and row.section == id then return row end end
+    end
+    local function refresh() ns.RefreshHome(); flush() end
+    local function reopen() click(rsChip); ns.OpenModule("home") end
+    local function homeChat()
+        local n, line = 0, nil
+        for _, text in ipairs(chat) do
+            if text:find(N.HOME_CHAT:match("^(.-)%("), 1, true) then n, line = n + 1, text end
+        end
+        return n, line
+    end
+    -- A new login on the same account: PLAYER_ENTERING_WORLD plans the chat line 30 s later.
+    local function login()
+        clearChat()
+        fire("PLAYER_ENTERING_WORLD")
+        flush()
+        flush()
+        drainWire()
+        DrainBanners()
+    end
+
+    DrainBanners()
+    drainWire()
+    local language = ns.GetLanguage()
+    ns.SetLanguage("nb", true)
+    local savedNow, savedMotd, savedEpoch = SERVER_NOW, GUILD_MOTD_TEXT, ns.FIRSTS_EPOCH
+    local savedRows = {}
+    for index, row in ipairs(ROSTER) do savedRows[index] = row end
+    local savedBorinLevel, savedDagnyOnline = ROSTER[3][4], ROSTER[5][9]
+    local savedHome = {}
+    for key, value in pairs(homeDB()) do savedHome[key] = value end
+    local savedSynced = DragonworldDB.syncedUntil
+    local saved = {
+        events = evDB().events, items = sugDB().items, polls = sugDB().polls, ann = annDB().items,
+        feed = achDB().feed, firsts = achDB().firsts, money = gbDB().money,
+        fridaLevel = achDB().levels["Player-1-Frida"], fridaName = achDB().levels["name:frida"],
+    }
+    local profiles = DragonworldDB.profiles or {}
+    DragonworldDB.profiles = profiles
+    local savedAlts = {}
+    for _, guid in ipairs({ "Player-1-Altine", "Player-1-Dagny" }) do savedAlts[guid] = profiles[guid] and profiles[guid].alts end
+    evDB().events, sugDB().items, sugDB().polls, annDB().items = {}, {}, {}, {}
+    achDB().feed, achDB().firsts = {}, {}
+    achDB().levels["Player-1-Frida"], achDB().levels["name:frida"] = nil, nil
+    ROSTER[3][4] = 42
+    local T = SERVER_NOW + DAY
+    SERVER_NOW = T
+    gbDB().money = { amount = 5000000, time = T - 100, by = "Altine" }
+
+    -- 1. The first tab.
+    check("home: a module with a tab, not personal, first in the default order, called Hjem",
+        HOME ~= nil and HOME.CreatePanel ~= nil and not HOME.personal and HOME.titleKey == "HOME_TITLE"
+        and HOME.icon == "Interface\\Icons\\INV_Misc_PocketWatch_01" and chipByID.home ~= nil and chipByID.home.label.text == "Hjem"
+        and ns.strings.en.HOME_TITLE == "Home" and ns.strings.nl.HOME_TITLE == "Start" and ns.strings.de.HOME_TITLE == "Übersicht"
+        and ns.strings.da.HOME_TITLE == "Hjem" and ns.strings.sv.HOME_TITLE == "Hem" and ns.strings.fr.HOME_TITLE == "Accueil")
+    local homeAt
+    for i, file in ipairs(ADDON_FILES) do if file.name == "Modules\\Home.lua" then homeAt = i end end
+    check("home: loaded right after Achievements, before the member card",
+        homeAt ~= nil and ADDON_FILES[homeAt - 1].name == "Modules\\Achievements.lua" and ADDON_FILES[homeAt + 1].name == "MemberCard.lua")
+    check("home: the shared parts exist", type(ns.RegisterHomeSection) == "function" and type(ns.HOME_SECTIONS) == "table"
+        and type(ns.ColoredName) == "function" and type(ns.RefreshHome) == "function"
+        and ns.ColoredName("Altine", "MAGE") == "|cff40c7ebAltine|r" and ns.ColoredName("Nobody", "NOPE") == "Nobody")
+    local sectionCount = #ns.HOME_SECTIONS
+    check("home: a duplicate section id is ignored, one without Lines is refused",
+        ns.RegisterHomeSection({ id = "levels", Lines = function() return {} end }).order == 40 and #ns.HOME_SECTIONS == sectionCount
+        and not pcall(ns.RegisterHomeSection, { id = "nolines" }) and not pcall(ns.RegisterHomeSection, "x") and #ns.HOME_SECTIONS == sectionCount)
+    do
+        local ids = {}
+        for _, section in ipairs(ns.HOME_SECTIONS) do ids[section.id] = (ids[section.id] or 0) + 1 end
+        check("home: every module registered its section once",
+            ids.ann == 1 and ids.motd == 1 and ids.events == 1 and ids.polls == 1 and ids.milestones == 1 and ids.levels == 1
+            and ids.members == 1 and ids.suggestions == 1 and ids.guildbank == 1 and ids.online == 1)
+    end
+    click(rsChip)
+    ns.OpenModule("nothing-like-this")
+    check("home: a window opened on nothing in particular shows the first tab, Home", ns.IsModuleShown("home") and chipByID.home.selected)
+
+    -- 2. The first time.
+    homeDB().lastActive, homeDB().snap, homeDB().before, homeDB().chatFor, homeDB().chat = nil, nil, nil, nil, nil
+    DragonworldDB.syncedUntil = nil
+    load()
+    reopen()
+    local panel = DragonworldHomeScroll.parent
+    check("home: the first time it says what the page is for, with the title and the chat box",
+        homeDB().since == nil and panel.title.text == N.HOME_PANEL_TITLE and panel.since.text == N.HOME_FIRST
+        and panel.chatCheck:GetChecked() and panel.chatLabel.text == N.HOME_CHAT_OPTION:format(3))
+    local altineRow = lineRow("Altine", "online")
+    check("home: ...no level or member sections, and Online lists Altine with level and zone, not me",
+        header("levels") == nil and header("members") == nil and header("online") ~= nil
+        and header("online").text.text == N.HOME_SEC_COUNT:format(N.HOME_SEC_ONLINE, 1)
+        and altineRow ~= nil and altineRow.text.text:find(N.HOME_ONLINE_ROW:format(ns.ColoredName("Altine", "MAGE"), 58, "Stormwind"), 1, true) ~= nil
+        and lineRow("Tester") == nil and #sectionRows("online") == 1, altineRow and altineRow.text.text)
+    check("home: ...nothing new counts the first time (no 'Nothing new' line either)", homeRows()[1].kind == "header")
+    altineRow:Fire("OnEnter")
+    check("home: hovering a member says the card opens", altineRow.hover:IsShown() and GameTooltip.lines[1] == N.HOME_TIP_CARD)
+    altineRow:Fire("OnLeave")
+    click(altineRow)
+    check("home: clicking Altine opens her card", DragonworldMemberCard:IsShown() and DragonworldMemberCard.name.text == "Altine")
+    click(DragonworldMemberCard.close)
+    drainWire()
+
+    -- 3. Logging out saves what to compare with next time.
+    fire("PLAYER_LOGOUT")
+    local snap = homeDB().snap
+    check("home: logging out saves the time, the member list (level, name, class) and the sections' values",
+        homeDB().lastActive == T and type(snap) == "table" and snap.at == T and size(snap.roster) == 6
+        and snap.roster["name:cedric"] ~= nil and snap.roster["name:cedric"][1] == 20 and snap.roster["name:cedric"][2] == "Cedric"
+        and snap.roster["name:cedric"][3] == "ROGUE" and snap.roster["Player-1-Borin"][1] == 42
+        and snap.sections.guildbank == 5000000 and snap.sections.motd == GUILD_MOTD_TEXT, snap and size(snap.roster))
+
+    -- 4. A /reload (or a quick relog) is the same session.
+    SERVER_NOW = T + 60
+    load()
+    clearChat()
+    dw("debug")
+    check("home: a reload a minute later keeps the session (no since yet, no new session)",
+        homeDB().since == nil and homeDB().before == nil and has("ny økt: false"), chatText():match("%[hjem%][^%[]*"))
+    login()
+    check("home: ...and prints nothing in chat", homeChat() == 0)
+
+    -- 5. Four days and an hour later.
+    local L1 = homeDB().lastActive
+    SERVER_NOW = L1 + 4 * DAY + 3600
+    ROSTER[3][4] = 45                                     -- Borin went up
+    table.remove(ROSTER, 6)                               -- Eira left
+    ROSTER[#ROSTER + 1] = { "Frida-Stormrage", "Initiate", 4, 12, "Warrior", "Elwynn Forest", "Ny", "", true, 0, "WARRIOR", guid = "Player-1-Frida" }
+    GUILD_MOTD_TEXT = "Ny melding: raid lørdag"
+    local eventWhen = time() + 2 * DAY
+    local eventID = "Altine-Stormrage:" .. time() .. ":77"
+    receive(table.concat({ "E", eventID, time(), eventWhen, "0", "Raid lørdag", "MC" }, "\t"))
+    local sugID = "Altine-Stormrage:" .. (SERVER_NOW - 100) .. ":5"
+    fire("CHAT_MSG_ADDON", "DragonworldSug", "F\t" .. sugID .. "\t" .. (SERVER_NOW - 100) .. "\t0\tN\t\t0\tFlere raid", "GUILD", "Altine-Stormrage")
+    ach("M\tPlayer-1-Borin\t" .. (SERVER_NOW - 600) .. "\tA\t2\tBorin\tWARRIOR\t7801\tHjemmeutfordring", "Borin-Stormrage")
+    fire("CHAT_MSG_ADDON", "DragonworldGB", "M\t" .. (SERVER_NOW - 50) .. "\t6000000\tCedric", "GUILD", "Cedric-Stormrage")
+    DrainBanners()
+    load()
+    fire("GUILD_ROSTER_UPDATE")
+    flush()
+    flush()
+    check("home: Frida's arrival also makes a join in Achievements, with the welcome banner",
+        achDB().feed["Player-1-Frida:J"] ~= nil and bannerShown())
+    DrainBanners()
+    drainWire()
+    reopen()
+    check("home: a new session compares with the last logout", homeDB().since == L1 and homeDB().before == snap
+        and panel.since.text == N.HOME_SINCE:format("DATE(" .. L1 .. ")", N.GC_AGO_DAYS:format(4)), panel.since.text)
+    check("home: the sections in order: message of the day, events, milestones, levels, members, suggestions, guild bank, online",
+        headers() == "motd,events,milestones,levels,members,suggestions,guildbank,online", headers())
+    check("home: headings have their icon and the number of lines",
+        header("members").text.text == N.HOME_SEC_COUNT:format(N.HOME_SEC_MEMBERS, 2) and header("members").icon.texture == "Interface\\Icons\\INV_Banner_02"
+        and header("levels").text.text == N.HOME_SEC_COUNT:format(N.HOME_SEC_LEVELS, 1) and header("motd").icon.texture == "Interface\\GossipFrame\\GossipGossipIcon",
+        header("members").text.text)
+    local borinRow = sectionRows("levels")[1]
+    check("home: Borin went from 42 to 45", borinRow ~= nil and borinRow.text.text == N.HOME_LEVEL:format(ns.ColoredName("Borin", "WARRIOR"), "42", "45"),
+        borinRow and borinRow.text.text)
+    local members = sectionRows("members")
+    local fridaRow, eiraRow = members[1], members[2]
+    check("home: Frida joined (with her level and the Welcome! button), then Eira left (grey, not clickable)",
+        #members == 2 and fridaRow.text.text == N.HOME_JOINED:format(ns.ColoredName("Frida", "WARRIOR"), 12) and fridaRow.button:IsShown()
+        and fridaRow.button.label.text == N.WEL_BUTTON and eiraRow.text.text == N.HOME_LEFT:format(ns.ColoredName("Eira", "HUNTER"))
+        and eiraRow.line.muted and not eiraRow.clickable and eiraRow.text.color[1] == 0.6, fridaRow and fridaRow.text.text)
+    fridaRow:Fire("OnEnter")
+    check("home: ...her tooltip shows rank and note", GameTooltip.lines[1] == "Initiate Ny", GameTooltip.lines[1])
+    fridaRow:Fire("OnLeave")
+    check("home: ...and Frida's join is not repeated under Milestones", lineRow("Frida", "milestones") == nil and #sectionRows("milestones") == 1
+        and lineRow("Hjemmeutfordring", "milestones") ~= nil)
+    local eventRow = sectionRows("events")[1]
+    check("home: the new event from Altine, with when it came and a tooltip",
+        eventRow ~= nil and eventRow.text.text == N.HOME_EV_NEW:format("Raid lørdag", "DATE(" .. eventWhen .. ")", "Altine")
+        and eventRow.when.text == N.GC_AGO_NOW and eventRow.line.changed and eventRow.line.tip == N.HOME_EV_NEW_TIP, eventRow and eventRow.text.text)
+    local bankRow = sectionRows("guildbank")[1]
+    check("home: the guild bank gold, what it was, and a green +",
+        bankRow ~= nil and bankRow.text.text:find("^Gull i guildbanken: 600") ~= nil and bankRow.text.text:find(", var 500", 1, true) ~= nil
+        and bankRow.text.text:find("(|cff40ff40+|r100", 1, true) ~= nil and bankRow.line.tip == N.HOME_GB_TIP:format("Cedric"), bankRow and bankRow.text.text)
+    local motdRow = sectionRows("motd")[1]
+    check("home: the new message of the day", motdRow ~= nil and motdRow.text.text == N.HOME_MOTD:format("Ny melding: raid lørdag"))
+    local sugRow = sectionRows("suggestions")[1]
+    check("home: Altine's new suggestion", sugRow ~= nil and sugRow.text.text == N.HOME_SUG_NEW:format("Altine", "Flere raid"))
+    check("home: something changed, so there is no 'Nothing new' line", lineRow(N.HOME_NOTHING) == nil and homeRows()[1].kind == "header")
+
+    -- 6. Every line opens the right place.
+    sugRow:Fire("OnEnter")
+    check("home: hovering a line says which tab opens", GameTooltip.lines[1] == N.HOME_TIP_TAB:format(N.SUG_TITLE), GameTooltip.lines[1])
+    sugRow:Fire("OnLeave")
+    click(eventRow)
+    check("home: the event line opens Guild events on that event", ns.IsModuleShown("events") and detail:IsVisible() and detail.title.text == "Raid lørdag")
+    reopen()
+    click(sectionRows("suggestions")[1])
+    local sp = DragonworldForslagScroll.parent
+    check("home: the suggestion line opens Forslag on it, in Suggestions", ns.IsModuleShown("forslag") and sp.modes.suggestions.selected
+        and sp.detail:IsShown() and sp.detail.title.text == "Flere raid")
+    reopen()
+    click(sectionRows("guildbank")[1])
+    check("home: the gold line opens the guild bank", ns.IsModuleShown("guildbank"))
+    reopen()
+    click(sectionRows("motd")[1])
+    local gc = DragonworldWhisperScroll.parent
+    check("home: the message of the day opens Chat & Log on the guild chat", ns.IsModuleShown("guildchat") and gc.motd:IsVisible()
+        and gc.motd.text:find("Ny melding: raid lørdag", 1, true) ~= nil)
+    reopen()
+    click(sectionRows("members")[1])
+    check("home: Frida opens her card", DragonworldMemberCard:IsShown() and DragonworldMemberCard.name.text == "Frida")
+    click(DragonworldMemberCard.close)
+    drainWire()
+
+    -- 7. Gratz! on a recent milestone.
+    reopen()
+    local mileRow = lineRow("Hjemmeutfordring", "milestones")
+    local before = #guildChat
+    check("home: a milestone under 3 hours old has Gratz!, its icon and when it was",
+        mileRow ~= nil and mileRow.button:IsShown() and mileRow.button.label.text == N.ACH_GRATZ and mileRow.icon:IsShown()
+        and mileRow.when.text == N.ACH_AGO_MINUTES:format(10))
+    click(mileRow.button)
+    mileRow = lineRow("Hjemmeutfordring", "milestones")
+    check("home: ...one line in guild chat, then the button is gone", #guildChat == before + 1 and guildChat[#guildChat].chatType == "GUILD"
+        and guildChat[#guildChat].text:find("Hjemmeutfordring", 1, true) ~= nil and not mileRow.button:IsShown(), guildChat[#guildChat] and guildChat[#guildChat].text)
+
+    -- 8. The chat summary.
+    login()
+    local count, line = homeChat()
+    check("home: after 4 days away, one line in chat 30 s after login, with an Open link",
+        count == 1 and line:find("Mens du var borte (4 dager): " .. N.HOME_SUM:format(N.HOME_SEC_MOTD, 1) .. ", " .. N.HOME_SUM:format(N.HOME_SEC_EVENTS, 1)
+            .. ", " .. N.HOME_SUM:format(N.HOME_SEC_MILESTONES, 1) .. ", " .. N.HOME_SUM:format(N.HOME_SEC_LEVELS, 1)
+            .. ", " .. N.HOME_SUM:format(N.HOME_SEC_MEMBERS, 2) .. ". |cffffd100|Haddon:Dragonworld:home|h[" .. N.HOME_CHAT_OPEN .. "]|h|r", 1, true) ~= nil
+        and homeDB().chatFor == L1, line)
+    load()
+    login()
+    check("home: ...a second load in the same absence prints nothing", homeChat() == 0)
+    homeDB().chatFor, homeDB().chat = nil, false
+    load()
+    login()
+    check("home: ...nothing with the box off", homeChat() == 0)
+    homeDB().chat = nil
+    reopen()
+    check("home: ...the box shows it off and on", panel.chatCheck:GetChecked() == true)
+    panel.chatCheck.checked = false
+    click(panel.chatCheck)
+    check("home: ...unticking stores false, ticking again stores nothing (on)", homeDB().chat == false and (function()
+        panel.chatCheck.checked = true
+        click(panel.chatCheck)
+        return homeDB().chat == nil
+    end)())
+    homeDB().lastActive, homeDB().before = SERVER_NOW - 2 * DAY, snap
+    load()
+    login()
+    check("home: ...nothing after 2 days away", homeDB().since == SERVER_NOW - 2 * DAY and homeChat() == 0)
+    -- A reload inside a session keeps since and the baseline.
+    homeDB().lastActive, homeDB().snap = L1, snap
+    load()
+    local sinceNow, beforeNow = homeDB().since, homeDB().before
+    fire("PLAYER_LOGOUT")
+    SERVER_NOW = SERVER_NOW + 60
+    load()
+    check("home: a reload keeps since and the baseline", homeDB().since == sinceNow and homeDB().before == beforeNow and sinceNow == L1)
+    -- Four days later with nothing new.
+    fire("PLAYER_LOGOUT")
+    local L2 = homeDB().lastActive
+    SERVER_NOW = L2 + 4 * DAY + 3600
+    load()
+    login()
+    reopen()
+    check("home: four days with nothing new prints nothing, and the page says so first",
+        homeChat() == 0 and homeDB().since == L2 and homeRows()[1].kind == "nothing" and homeRows()[1].text.text == N.HOME_NOTHING
+        and header("levels") == nil and header("members") == nil, headers())
+
+    -- 9. The chat link.
+    click(rsChip)
+    EventRegistry:TriggerEvent("SetItemRef", "addon:Other:home", "x", "LeftButton", nil)
+    check("home: another addon's link does nothing", not ns.IsModuleShown("home"))
+    EventRegistry:TriggerEvent("SetItemRef", "addon:Dragonworld:home", "x", "LeftButton", nil)
+    check("home: clicking [Open] in chat opens Home", ns.IsModuleShown("home"))
+
+    -- 10. A member list that is not all there.
+    local keep = {}
+    for index, row in ipairs(ROSTER) do keep[index] = row end
+    while #ROSTER > 0 do table.remove(ROSTER) end
+    fire("GUILD_ROSTER_UPDATE")
+    flush()
+    refresh()
+    check("home: an empty member list makes nobody leave", header("members") == nil)
+    fire("PLAYER_LOGOUT")
+    check("home: ...and logging out keeps the saved list", size(homeDB().snap.roster) == 6 and homeDB().snap.roster["Player-1-Frida"] ~= nil)
+    for index, row in ipairs(keep) do ROSTER[index] = row end
+    fire("GUILD_ROSTER_UPDATE")
+    flush()
+    local base = homeDB().before.roster
+    for index = 1, 20 do base["Player-9-Gone" .. index] = { 30, "Gone" .. index, "MAGE" } end
+    refresh()
+    clearChat()
+    dw("debug")
+    check("home: with 20 of 26 missing it is taken as a list still loading: no left lines", header("members") == nil and has("forlot skjult: true"),
+        chatText():match("%[hjem%][^%[]*"))
+    for index = 2, 20 do base["Player-9-Gone" .. index] = nil end
+    refresh()
+    check("home: one missing shows the left line", #sectionRows("members") == 1
+        and sectionRows("members")[1].text.text == N.HOME_LEFT:format(ns.ColoredName("Gone1", "MAGE")))
+    base["Player-9-Gone1"] = nil
+    do
+        -- Saved under a GUID, read now without one: the same member, not joined + left.
+        local cedric = base["name:cedric"]
+        base["name:cedric"] = nil
+        base["Player-9-Cedric"] = { 18, "Cedric", "ROGUE" }
+        refresh()
+        check("home: a member saved with a GUID and read without one is matched by name (no joined/left, the level-up shows)",
+            header("members") == nil and lineRow("Cedric", "levels") ~= nil
+            and lineRow("Cedric", "levels").text.text == N.HOME_LEVEL:format(ns.ColoredName("Cedric", "ROGUE"), "18", "20"), headers())
+        base["Player-9-Cedric"], base["name:cedric"] = nil, cedric
+        -- Nobody else online: the heading counts 0, not the placeholder line.
+        local online = {}
+        for index, row in ipairs(ROSTER) do online[index] = row[9]; if not row[1]:find("^Tester") then row[9] = false end end
+        fire("GUILD_ROSTER_UPDATE")
+        flush()
+        flush()
+        reopen()
+        check("home: with nobody else online the heading says 0 above the placeholder",
+            header("online") ~= nil and header("online").text.text == N.HOME_SEC_COUNT:format(N.HOME_SEC_ONLINE, 0)
+            and #sectionRows("online") == 1 and sectionRows("online")[1].text.text == N.HOME_NONE_ONLINE,
+            header("online") and header("online").text.text)
+        for index, row in ipairs(ROSTER) do row[9] = online[index] end
+        fire("GUILD_ROSTER_UPDATE")
+        flush()
+        flush()
+        -- A refresh under a resting mouse keeps the highlight and the tooltip.
+        reopen()
+        local row = lineRow("Altine", "online")
+        row.mouseOver = true
+        row:Fire("OnEnter")
+        refresh()
+        check("home: a refresh under the mouse keeps the highlight and the tooltip",
+            row.hover:IsShown() and GameTooltip:IsOwned(row) and GameTooltip.lines[1] == N.HOME_TIP_CARD)
+        row.mouseOver = nil
+        row:Fire("OnLeave")
+        -- A provider with nothing at logout keeps the last session's value.
+        ns.RegisterHomeSection({ id = "zzkeep", order = 96, titleKey = "HOME_TITLE", Lines = function() return {} end, Snapshot = function() return nil end })
+        homeDB().snap.sections.zzkeep = "old"
+        fire("PLAYER_LOGOUT")
+        check("home: a section with no value at logout keeps the old one", homeDB().snap.sections.zzkeep == "old")
+        homeDB().snap.sections.zzkeep = nil
+        for index = #ns.HOME_SECTIONS, 1, -1 do
+            if ns.HOME_SECTIONS[index].id == "zzkeep" then table.remove(ns.HOME_SECTIONS, index) end
+        end
+    end
+
+    -- 11. At most six lines per section.
+    for index = 1, 8 do
+        ROSTER[#ROSTER + 1] = { "Ny" .. index .. "-Stormrage", "Initiate", 4, 5 + index, "Mage", "Elwynn Forest", "", "", false, 0, "MAGE",
+            last = { 0, 0, 0, 1 }, guid = "Player-1-Ny" .. index }
+    end
+    fire("GUILD_ROSTER_UPDATE")
+    flush()
+    flush()
+    DrainBanners()
+    reopen()
+    local rows = sectionRows("members")
+    check("home: 8 joiners show 6 lines and '...and 2 more'", #rows == 7 and rows[6].kind == "line" and rows[7].kind == "more"
+        and rows[7].text.text == N.HOME_MORE:format(2) and header("members").text.text == N.HOME_SEC_COUNT:format(N.HOME_SEC_MEMBERS, 8), #rows)
+    click(rows[7])
+    rows = sectionRows("members")
+    check("home: ...a click shows all 8", #rows == 8 and rows[8].kind == "line" and rows[8].text.text:find("Ny8", 1, true) ~= nil, #rows)
+    reopen()
+    check("home: ...and it folds again when the page is opened again", #sectionRows("members") == 7)
+    for _ = 1, 8 do table.remove(ROSTER) end
+    for index = 1, 8 do achDB().levels["Player-1-Ny" .. index] = nil end
+    fire("GUILD_ROSTER_UPDATE")
+    flush()
+    DrainBanners()
+    drainWire()
+
+    -- 12. A section that fails.
+    ns.RegisterHomeSection({ id = "zzboom", order = 95, titleKey = "HOME_TITLE", Lines = function() error("home kaboom") end })
+    clearChat()
+    reopen()
+    refresh()
+    local errors = 0
+    for _, text in ipairs(chat) do if text:find("home kaboom", 1, true) then errors = errors + 1 end end
+    check("home: a section that fails is left out, the others still show, and the error is printed once",
+        header("zzboom") == nil and header("online") ~= nil and errors == 1, chatText())
+    for index = #ns.HOME_SECTIONS, 1, -1 do
+        if ns.HOME_SECTIONS[index].id == "zzboom" then table.remove(ns.HOME_SECTIONS, index) end
+    end
+
+    -- 14. The other features.
+    local annID = "Altine-Stormrage:" .. (SERVER_NOW - 30) .. ":3"
+    fire("CHAT_MSG_ADDON", "DragonworldAnn", table.concat({ "A", annID, SERVER_NOW - 30, "p", 1, 0, "Altine-Stormrage", "Hjem-test" }, "\t"), "GUILD", "Altine-Stormrage")
+    local pollID = "Altine-Stormrage:" .. (SERVER_NOW - 20) .. ":4"
+    fire("CHAT_MSG_ADDON", "DragonworldPoll", table.concat({ "P", pollID, SERVER_NOW - 20, SERVER_NOW + 2 * DAY, "-", 2, "Altine-Stormrage", "Hjem-avstemning" }, "\t"), "GUILD", "Altine-Stormrage")
+    fire("CHAT_MSG_ADDON", "DragonworldPoll", table.concat({ "O", pollID, 1, "Ja", "Nei" }, "\t"), "GUILD", "Altine-Stormrage")
+    ns.FIRSTS_EPOCH = 0
+    ach(table.concat({ "F", "d7", tostring(SERVER_NOW - 10), "D", "2910", "48", "3", "Aku'mai", "Blackfathom Deeps", "Altine,Borin,Dagny" }, "\t"))
+    flush()
+    DrainBanners()
+    drainWire()
+    reopen()
+    local annRow = homeRows()[2]
+    check("home: Altine's pinned announcement comes first", headers():find("^ann,polls,milestones,") ~= nil and annRow.kind == "line"
+        and annRow.text.text == N.HOME_ANN_PINNED:format("Hjem-test") and annRow.line.changed, headers())
+    click(annRow)
+    check("home: ...and opens the announcements on it", DragonworldAnnouncements ~= nil and DragonworldAnnouncements:IsShown()
+        and DragonworldAnnouncements.detail.title.text == "Hjem-test")
+    DragonworldAnnouncements:Hide()
+    reopen()
+    local pollRow = sectionRows("polls")[1]
+    check("home: a new poll, with when it ends", pollRow ~= nil and pollRow.text.text == N.HOME_POLL_NEW:format("Hjem-avstemning", "DATE(" .. (SERVER_NOW + 2 * DAY) .. ")"),
+        pollRow and pollRow.text.text)
+    click(pollRow)
+    check("home: ...it opens the polls on it", ns.IsModuleShown("forslag") and sp.modes.polls.selected and sp.pollDetail:IsShown()
+        and sp.pollDetail.question.text == "Hjem-avstemning")
+    reopen()
+    local firstRow = lineRow("Aku'mai", "milestones")
+    check("home: Altine's guild first is under Milestones with the guild-first text",
+        firstRow ~= nil and firstRow.text.text == N.ACH_FIRST_ROW:format(ns.ColoredName("Altine", "MAGE") .. ", " .. ns.ColoredName("Borin", "WARRIOR")
+            .. ", " .. ns.ColoredName("Dagny", "PRIEST"), "|cffffd100Aku'mai|r", "Blackfathom Deeps"), firstRow and firstRow.text.text)
+    -- Altine and Dagny linked as one player, both online.
+    for _, name in ipairs({ "Altine", "Dagny" }) do
+        fire("CHAT_MSG_ADDON", "DragonworldPf", ("K\tPlayer-1-%s\t%d\tS\t1-Altine,1-Dagny"):format(name, SERVER_NOW), "GUILD", name .. "-Stormrage")
+    end
+    ROSTER[5][9] = true
+    fire("GUILD_ROSTER_UPDATE")
+    flush()
+    flush()
+    drainWire()
+    reopen()
+    local altineMain = ns.MainOf({ guid = "Player-1-Altine", key = "Altine-Stormrage", name = "Altine" })
+    local mainName = altineMain and altineMain.name
+    local altName = mainName == "Altine" and "Dagny" or "Altine"
+    local function onlineRowOf(name)
+        for _, row in ipairs(sectionRows("online")) do
+            if row.line and row.line.member and row.line.member.name == name then return row end
+        end
+    end
+    local altRow, mainRow = onlineRowOf(altName), onlineRowOf(mainName)
+    check("home: an online alt reads 'alt of' its main",
+        mainName ~= nil and altRow ~= nil and mainRow ~= nil
+        and altRow.text.text:find(N.HOME_ALT_OF:format(ns.ColoredName(altName, altName == "Dagny" and "PRIEST" or "MAGE"), mainName), 1, true) ~= nil
+        and mainRow.text.text:find("(alt", 1, true) == nil, altRow and altRow.text.text)
+
+    -- 15. The message of the day goes through DW.GuildMOTD (C_GuildInfo.GetMOTD first).
+    C_GuildInfo.GetMOTD = function() return "Fra GetMOTD" end
+    refresh()
+    check("home: the message of the day is read with C_GuildInfo.GetMOTD first", lineRow(N.HOME_MOTD:format("Fra GetMOTD"), "motd") ~= nil)
+    C_GuildInfo.GetMOTD = nil
+
+    -- 13. Older saved data: only the last sync time.
+    homeDB().lastActive, homeDB().snap, homeDB().before = nil, nil, nil
+    DragonworldDB.syncedUntil = SERVER_NOW - 5 * DAY
+    ach("M\tPlayer-1-Altine\t" .. (SERVER_NOW - 300) .. "\tL\t60\tAltine\tMAGE\t\t")
+    DrainBanners()
+    load()
+    reopen()
+    local milestones = sectionRows("milestones")
+    if milestones[#milestones] and milestones[#milestones].kind == "more" then click(milestones[#milestones]) end
+    check("home: without a last logout, the last sync time is used, and level milestones and joins show (no member list to compare)",
+        homeDB().since == SERVER_NOW - 5 * DAY and homeDB().before == nil and header("levels") == nil and header("members") == nil
+        and lineRow(N.ACH_ROW:format(ns.ColoredName("Altine", "MAGE"), ""), "milestones") ~= nil and lineRow("Ny1", "milestones") ~= nil,
+        tostring(homeDB().since == SERVER_NOW - 5 * DAY) .. " " .. headers() .. " / " .. (function()
+            local t = {}; for _, r in ipairs(sectionRows("milestones")) do t[#t + 1] = r.text.text end; return table.concat(t, " | ") end)())
+
+    -- Debug.
+    clearChat()
+    dw("debug")
+    check("home: /dw debug has a part for it", has("[hjem]") and has("linkSupported: true") and has("seksjoner (nye/linjer):"),
+        chatText():match("%[hjem%][^%[]*"))
+
+    -- Put things back.
+    for _, guid in ipairs({ "Player-1-Altine", "Player-1-Dagny" }) do
+        if profiles[guid] then profiles[guid].alts = savedAlts[guid] end
+    end
+    if ns.InvalidateAltRoster then ns.InvalidateAltRoster() end
+    while #ROSTER > 0 do table.remove(ROSTER) end
+    for index, row in ipairs(savedRows) do ROSTER[index] = row end
+    ROSTER[3][4], ROSTER[5][9] = savedBorinLevel, savedDagnyOnline
+    evDB().events, sugDB().items, sugDB().polls, annDB().items = saved.events, saved.items, saved.polls, saved.ann
+    achDB().feed, achDB().firsts, gbDB().money = saved.feed, saved.firsts, saved.money
+    achDB().levels["Player-1-Frida"], achDB().levels["name:frida"] = saved.fridaLevel, saved.fridaName
+    ns.FIRSTS_EPOCH = savedEpoch
+    GUILD_MOTD_TEXT = savedMotd
+    DragonworldDB.syncedUntil = savedSynced
+    for key in pairs(homeDB()) do homeDB()[key] = nil end
+    for key, value in pairs(savedHome) do homeDB()[key] = value end
+    SERVER_NOW = savedNow
+    load()
+    fire("GUILD_ROSTER_UPDATE")
+    flush()
+    flush()
+    DrainBanners()
+    drainWire()
+    ns.SetLanguage(language, true)
+    clearChat()
+    ns.OpenModule("ryddesekk")
+end)()
+
+-- ============ review fixes: who is who, relays, firsts, sign-ups, banners ============
+;(function()
+    local DAY = 86400
+    local ANN, POLL, ACH, ST = "DragonworldAnn", "DragonworldPoll", "DragonworldAch", "DragonworldSt"
+    local function click(button) button.scripts.OnClick(button) end
+    local function rebuild() fire("GUILD_ROSTER_UPDATE"); flush(); flush() end
+    local function bannerShown() return DragonworldMilestoneBanner ~= nil and DragonworldMilestoneBanner:IsShown() end
+    local function annDB() return DragonworldDB.modules.kunngjoringer end
+    local function evDB() return DragonworldDB.modules.events end
+    local function achDB() return DragonworldDB.modules.achievements end
+    local function polls() return DragonworldDB.modules.forslag.polls end
+    local function send(prefix, text, sender) fire("CHAT_MSG_ADDON", prefix, text, "GUILD", sender) end
+    local function all(list) return table.concat(list, " ; ") end
+    local function esc(text) return (text:gsub("%p", "%%%0")) end
+    local function A(id, updated, by, title) return table.concat({ "A", id, updated, "-", 1, 0, by, title }, "\t") end
+    local function E(id, updated, when, deleted, title, actor)
+        local fields = { "E", id, updated, when, deleted and "1" or "0", title, "", "0:A" }
+        if actor then fields[9] = actor end
+        return table.concat(fields, "\t")
+    end
+    local function F(key, t, kind, enc, map, n, boss, instance, names)
+        return table.concat({ "F", key, tostring(t), kind, tostring(enc), tostring(map), tostring(n), boss, instance, names }, "\t")
+    end
+    local function startsWith(list, pattern)
+        for _, message in ipairs(list) do if message:find(pattern) then return true end end
+        return false
+    end
+    local AKRO_POLIS = { "Akro Polis-Stormrage", "Officer", 1, 60, "Warrior", "Orgrimmar", "", "", true, 0, "WARRIOR", guid = "Player-1-AkroPolis" }
+    local AKRO_SMITH = { "Akro Smith-Stormrage", "Member", 3, 60, "Rogue", "Orgrimmar", "", "", true, 0, "ROGUE", guid = "Player-1-AkroSmith" }
+
+    DrainBanners()
+    for _, prefix in ipairs({ ANN, POLL, ACH, ST, EV_PREFIX }) do sentNow(prefix) end
+    local language = ns.GetLanguage()
+    ns.SetLanguage("nb", true)
+    local savedRank, savedCharacter, savedRows = guild.rankIndex, character, #ROSTER
+    local T = SERVER_NOW
+    table.insert(ROSTER, AKRO_POLIS)
+    table.insert(ROSTER, AKRO_SMITH)
+    guild.rankIndex = nil
+    rebuild()
+
+    -- 1. Who is who: Forever can give first and last name as name and realm.
+    check("who: an officer named in first-last form is an officer, however the name is written",
+        ns.IsOfficerKey("Akro-Polis") == true and ns.IsOfficerKey("Akro Polis-Stormrage") == true and ns.IsOfficerKey("AkroPolis-Stormrage") == true
+        and ns.RankIndexOf("Akro-Polis") == 1 and ns.SameCharacter("Akro-Polis", "akro polis-Stormrage"))
+    check("who: a member who only shares the first name is someone else",
+        ns.RankIndexOf("Akro-Smith") == 3 and ns.IsOfficerKey("Akro-Smith") == false and not ns.SameCharacter("Akro-Smith", "Akro-Polis"))
+    check("who: Akro Smith may not act for Akro Polis, Akro Polis may act for himself",
+        ns.MayActFor("Akro Smith-Stormrage", "Akro-Polis") == false and ns.MayActFor("Akro Polis-Stormrage", "Akro-Polis") == true)
+    check("who: a first name alone that two members have names nobody",
+        ns.RankIndexOf("Akro-Stormrage") == nil and not ns.SameCharacter("Akro-Stormrage", "Akro-Polis"))
+    table.remove(ROSTER)
+    rebuild()
+    check("who: with one Akro left, his first name with our realm is him, but not with another realm",
+        ns.RankIndexOf("Akro-Stormrage") == 1 and ns.SameCharacter("Akro-Stormrage", "Akro-Polis") and not ns.SameCharacter("Akro-Argent Dawn", "Akro-Polis"))
+    table.insert(ROSTER, AKRO_SMITH)
+    rebuild()
+    character = { name = "Akro", realm = "Polis", class = "WARRIOR", guid = "Player-1-AkroPolis" }
+    fakeNormalizedRealm = "Stormrage"
+    check("who: playing Akro Polis, whose name comes as Akro and Polis, the key keeps the whole name",
+        ns.CharacterKey() == "Akro-Polis" and ns.IdentityKey((ns.CharacterKey())) == "akropolis"
+        and ns.SameCharacter((ns.CharacterKey()), "Akro Polis-Stormrage") and not ns.SameCharacter((ns.CharacterKey()), "Akro Smith-Stormrage"))
+    character, fakeNormalizedRealm = savedCharacter, nil
+
+    -- Announcements by him.
+    local akroAnn = "Akro-Polis:" .. T .. ":1"
+    send(ANN, A(akroAnn, T, "Akro-Polis", "Fra Akro"), "Akro Polis-Stormrage")
+    check("who: an announcement by Akro Polis, written Akro-Polis, is taken in from him", annDB().items[akroAnn] ~= nil and annDB().items[akroAnn].title == "Fra Akro")
+    local passedAnn = "Akro-Polis:" .. T .. ":2"
+    send(ANN, A(passedAnn, T, "Akro-Polis", "Videresendt"), "Akro Smith-Stormrage")
+    check("who: ...and passed on by Akro Smith too (any member may pass on an officer's announcement)", annDB().items[passedAnn] ~= nil)
+    local fakeAnn = "Akro-Smith:" .. T .. ":2"
+    send(ANN, A(fakeAnn, T, "Akro-Smith", "Falsk"), "Akro Smith-Stormrage")
+    check("who: ...but one by Akro Smith, who only shares his first name with the officer, is not taken in", annDB().items[fakeAnn] == nil and annDB().held[fakeAnn] ~= nil)
+    DrainBanners()
+
+    -- Votes of two members who share a first name.
+    local pollId = "Altine-Stormrage:" .. T .. ":9"
+    send(POLL, table.concat({ "P", pollId, T, T + DAY, "-", 2, "Altine-Stormrage", "Navnetest" }, "\t"), "Altine-Stormrage")
+    send(POLL, table.concat({ "O", pollId, 1, "Ja", "Nei" }, "\t"), "Altine-Stormrage")
+    send(POLL, "V\t" .. pollId .. "\tAkro Polis-Stormrage,1," .. (T + 1), "Akro Polis-Stormrage")
+    send(POLL, "V\t" .. pollId .. "\tAkro Smith-Stormrage,2," .. (T + 2), "Akro Smith-Stormrage")
+    local votes = polls()[pollId] and polls()[pollId].votes or {}
+    check("who: two members who share a first name both keep their vote", votes["Akro Polis-Stormrage"] ~= nil and votes["Akro Polis-Stormrage"].c == 1
+        and votes["Akro Smith-Stormrage"] ~= nil and votes["Akro Smith-Stormrage"].c == 2)
+    send(POLL, "V\t" .. pollId .. "\tAkro-Polis,2," .. (T + 3), "Akro Smith-Stormrage")
+    check("who: ...and Akro Smith cannot vote for Akro Polis", votes["Akro Polis-Stormrage"].c == 1 and votes["Akro-Polis"] == nil)
+    DrainBanners()
+
+    -- 2. Announcements are passed on by every member; officers answer first.
+    flush()
+    sentNow(ANN)
+    send(ANN, "G\t" .. akroAnn, "Nykommer-Stormrage")
+    flush()
+    local sent = sentNow(ANN)
+    check("relay: a member asked for an announcement waits longer than an officer would", not startsWith(sent, "^A\t"), all(sent))
+    flush()
+    sent = sentNow(ANN)
+    check("relay: ...then passes it on (the others take it from any member)", startsWith(sent, "^A\t" .. esc(akroAnn) .. "\t"), all(sent))
+    guild.rankIndex = 1
+    rebuild()
+    send(ANN, "G\t" .. akroAnn, "Nykommer-Stormrage")
+    flush()
+    sent = sentNow(ANN)
+    check("relay: ...an officer sends it at once after the short wait", startsWith(sent, "^A\t" .. esc(akroAnn) .. "\t"), all(sent))
+    guild.rankIndex = nil
+    rebuild()
+    -- A version by an officer from someone not in the roster waits; it is not
+    -- held, since a copy from anyone else is taken.
+    local waitAnn = "Altine-Stormrage:" .. T .. ":7"
+    local pendingBefore = ns.PendingOfficerChecks()
+    send(ANN, A(waitAnn, T, "Altine-Stormrage", "Venter"), "Fremmed-Stormrage")
+    check("relay: a version by an officer from someone not in the roster waits, but is not held",
+        annDB().items[waitAnn] == nil and annDB().held[waitAnn] == nil and ns.PendingOfficerChecks() == pendingBefore + 1)
+    sentNow(ANN)
+    send(ANN, "H\t" .. waitAnn .. "," .. T .. ",zz", "Borin-Stormrage")
+    flush()
+    sent = sentNow(ANN)
+    check("relay: ...so a member listing it makes us ask for it", startsWith(sent, "^G\t.*" .. esc(waitAnn)), all(sent))
+    send(ANN, A(waitAnn, T, "Altine-Stormrage", "Venter"), "Borin-Stormrage")
+    check("relay: ...and that member's copy is taken in", annDB().items[waitAnn] ~= nil and annDB().items[waitAnn].title == "Venter")
+    -- A version that is refused for what it is (by a member) is held, and
+    -- asked for from nobody.
+    local heldAnn = "Borin-Stormrage:" .. T .. ":7"
+    send(ANN, A(heldAnn, T, "Borin-Stormrage", "Holdt"), "Borin-Stormrage")
+    check("relay: a version by a member is held", annDB().items[heldAnn] == nil and annDB().held[heldAnn] ~= nil)
+    sentNow(ANN)
+    send(ANN, "H\t" .. heldAnn .. "," .. T .. ",zz", "Eira-Stormrage")
+    send(ANN, "H\t" .. heldAnn .. "," .. T .. ",zz", "Altine-Stormrage")
+    flush()
+    sent = sentNow(ANN)
+    check("relay: ...and nobody listing it makes us ask for it, not even an officer (the copy would be held again)", not startsWith(sent, "^G\t.*" .. esc(heldAnn)), all(sent))
+    DrainBanners()
+
+    -- 3. Events: deletions from the future, and who passes deletions on.
+    local when = NOW + 2 * DAY
+    local evX = "Cedric-Stormrage:" .. (NOW - 100) .. ":91"
+    send(EV_PREFIX, E(evX, NOW - 100, when, false, "Review event"), "Cedric-Stormrage")
+    local ahead = math.max(NOW, SERVER_NOW) + 3600
+    send(EV_PREFIX, E(evX, ahead, when, true, "Review event", "Altine-Stormrage"), "Borin-Stormrage")
+    check("events: a deletion stamped an hour ahead is not taken in, nor held", evDB().events[evX] ~= nil and not evDB().events[evX].deleted
+        and evDB().held[evX] == nil)
+    local deletedAt = math.max(NOW, evDB().events[evX].updated) + 1
+    send(EV_PREFIX, E(evX, deletedAt, when, true, "Review event", "Altine-Stormrage"), "Altine-Stormrage")
+    check("events: Altine's own deletion is taken in", evDB().events[evX].deleted == true and evDB().events[evX].deletedBy == "Altine-Stormrage")
+    flush()
+    sentNow(EV_PREFIX)
+    send(EV_PREFIX, "G\t" .. evX, "Nykommer-Stormrage")
+    flush()
+    sent = sentNow(EV_PREFIX)
+    check("events: a member asked for a deletion made by an officer sends nothing (the others would refuse it)",
+        not startsWith(sent, "^E\t" .. esc(evX) .. "\t"), all(sent))
+    guild.rankIndex = 1
+    rebuild()
+    send(EV_PREFIX, "G\t" .. evX, "Nykommer-Stormrage")
+    flush()
+    sent = sentNow(EV_PREFIX)
+    check("events: ...an officer sends it", startsWith(sent, "^E\t" .. esc(evX) .. "\t"), all(sent))
+    guild.rankIndex = nil
+    rebuild()
+
+    -- 4. Sign-ups: from the player, or passed on by the creator or an officer.
+    local evS = "Cedric-Stormrage:" .. (NOW - 50) .. ":92"
+    local function signup(player) return evDB().events[evS] and evDB().events[evS].signups[player] end
+    send(EV_PREFIX, E(evS, NOW - 50, when, false, "Påmeldingstest"), "Cedric-Stormrage")
+    send(EV_PREFIX, "S\t" .. evS .. "\tEira-Stormrage,Y," .. (NOW - 40) .. ",HUNTER", "Eira-Stormrage")
+    send(EV_PREFIX, "S\t" .. evS .. "\tEira-Stormrage,N," .. (NOW - 30) .. ",HUNTER", "Borin-Stormrage")
+    check("sign-ups: Borin cannot change Eira's answer", signup("Eira-Stormrage") ~= nil and signup("Eira-Stormrage").status == "Y")
+    send(EV_PREFIX, "S\t" .. evS .. "\tDagny-Stormrage,Y," .. (NOW + DAY - 100) .. ",PRIEST", "Borin-Stormrage")
+    check("sign-ups: ...an answer for someone we have none from is taken from anyone, but as weak",
+        signup("Dagny-Stormrage") ~= nil and signup("Dagny-Stormrage").status == "Y" and signup("Dagny-Stormrage").weak == true)
+    send(EV_PREFIX, "S\t" .. evS .. "\tDagny-Stormrage,N," .. (NOW - 20) .. ",PRIEST", "Dagny-Stormrage")
+    check("sign-ups: ...Dagny's own answer replaces it, even with an earlier time",
+        signup("Dagny-Stormrage").status == "N" and signup("Dagny-Stormrage").weak == nil)
+    send(EV_PREFIX, "S\t" .. evS .. "\tEira-Stormrage,M," .. (NOW - 10) .. ",HUNTER", "Altine-Stormrage")
+    check("sign-ups: a newer answer passed on by an officer is taken", signup("Eira-Stormrage").status == "M")
+    send(EV_PREFIX, "S\t" .. evS .. "\tCedric-Stormrage,Y," .. (NOW - 10) .. "," .. string.rep("X", 30) .. ";;;", "Cedric-Stormrage")
+    check("sign-ups: a class that is not a short token is dropped (a relayed sign-up must fit in a message)",
+        signup("Cedric-Stormrage") ~= nil and signup("Cedric-Stormrage").class == nil)
+
+    -- 5. Guild firsts.
+    local savedFirsts, savedEpoch = achDB().firsts, ns.FIRSTS_EPOCH
+    achDB().firsts = {}
+    ns.FIRSTS_EPOCH = SERVER_NOW - 30 * DAY
+    send(ACH, F("d7", SERVER_NOW - 5000, "D", 2910, 48, 3, "Falsk Boss", "Falskt sted", "Altine,Borin,Dagny"), "Altine-Stormrage")
+    local d7 = achDB().firsts.d7
+    check("firsts: a dungeon first takes the dungeon's and the boss's names from our own data, not from the message",
+        d7 ~= nil and d7.instance == "Blackfathom Deeps" and d7.boss == "Aku'mai" and d7.trusted == true, d7 and (d7.boss .. " / " .. d7.instance))
+    send(ACH, F("d7", SERVER_NOW - 9000, "D", 2910, 48, 2, "Aku'mai", "Blackfathom Deeps", "Eira,Cedric"), "Borin-Stormrage")
+    check("firsts: an earlier time from someone not in its names does not rewrite it", d7.time == SERVER_NOW - 5000 and d7.names[1] == "Altine")
+    send(ACH, F("d7", SERVER_NOW - 9000, "D", 2910, 48, 2, "Aku'mai", "Blackfathom Deeps", "Eira,Cedric"), "Eira-Stormrage")
+    check("firsts: ...from someone who was there it does", d7.time == SERVER_NOW - 9000 and d7.names[1] == "Eira")
+    for n = 1, 200 do
+        achDB().firsts["e" .. (1000 + n)] = { key = "e" .. (1000 + n), kind = "F", type = "R", enc = 1000 + n, map = 1, boss = "Junk " .. n,
+            instance = "Junk", names = {}, count = 1, time = SERVER_NOW - 100, heardAt = SERVER_NOW - 300 + n }
+    end
+    send(ACH, F("e5000", SERVER_NOW - 60, "R", 5000, 409, 1, "Ekte", "Molten Core", "Borin"), "Borin-Stormrage")
+    check("firsts: with the store full, a first told by someone who was there pushes out the newest one that was not",
+        achDB().firsts.e5000 ~= nil and achDB().firsts.e1200 == nil and achDB().firsts.e1199 ~= nil and achDB().firsts.d7 ~= nil)
+    send(ACH, F("e5001", SERVER_NOW - 60, "R", 5001, 409, 1, "Annen", "Molten Core", "Borin"), "Altine-Stormrage")
+    check("firsts: ...one from someone not in its names is not stored then", achDB().firsts.e5001 == nil)
+    DrainBanners()
+    achDB().firsts, ns.FIRSTS_EPOCH = savedFirsts, savedEpoch
+
+    -- 6. Status: only for yourself.
+    local eiraRow
+    for _, member in ipairs(ns.ReadGuildRoster()) do if member.guid == "Player-1-Eira" then eiraRow = member end end
+    send(ST, "S\tPlayer-1-Eira\t-\t" .. (SERVER_NOW + 5) .. "\t\t", "Eira-Stormrage")
+    send(ST, "S\tPlayer-1-Eira\tD\t" .. (SERVER_NOW + 6) .. "\t\tL", "Borin-Stormrage")
+    check("status: Borin cannot set Eira's status", ns.StatusOf(eiraRow) == nil)
+    send(ST, "S\tPlayer-1-Eira\tD\t" .. (SERVER_NOW + 7) .. "\t\tL", "Eira-Stormrage")
+    check("status: ...Eira can", ns.StatusOf(eiraRow) == "D")
+    send(ST, "S\tPlayer-1-Eira\t-\t" .. (SERVER_NOW + 8) .. "\t\t", "Eira-Stormrage")
+
+    -- 7. Banners: announcements and polls have their own box; reminders go first.
+    local panel = DragonworldAchievementsScroll.parent
+    if panel.Refresh then panel:Refresh() end
+    ns.OpenModule("achievements")
+    check("banners: the Achievements tab has a box for announcement and poll banners, and the milestone box says what it covers",
+        panel.newsCheck ~= nil and panel.newsCheck.label.text == ns.strings.nb.ACH_NEWS_BANNER and panel.newsCheck.checked
+        and panel.bannerCheck.label.text == ns.strings.nb.ACH_SHOW_BANNER, panel.newsCheck and panel.newsCheck.label.text)
+    panel.newsCheck:SetChecked(false)
+    click(panel.newsCheck)
+    DrainBanners()
+    local quietAnn = "Altine-Stormrage:" .. T .. ":8"
+    send(ANN, A(quietAnn, SERVER_NOW, "Altine-Stormrage", "Stille"), "Altine-Stormrage")
+    check("banners: with that box off, a new announcement is stored but gives no banner", annDB().items[quietAnn] ~= nil and not bannerShown()
+        and achDB().newsBanner == false)
+    panel.newsCheck:SetChecked(true)
+    click(panel.newsCheck)
+    check("banners: ...ticked again it is on", achDB().newsBanner == true)
+    DrainBanners()
+    for n = 1, 8 do ns.ShowBanner({ key = "fill" .. n, always = true, title = "Fyll", text = "Fyll " .. n, button = "OK" }) end
+    local full = ns.BannerQueueLength()
+    local queued = ns.ShowBanner({ key = "urgent", always = true, urgent = true, title = "Nå", text = "Haster", button = "OK" })
+    click(DragonworldMilestoneBanner.close)
+    flush()
+    check("banners: an urgent banner (an event reminder) goes first, even with the queue full",
+        full == 6 and queued == true and ns.BannerQueueLength() == 5 and DragonworldMilestoneBanner.item ~= nil and DragonworldMilestoneBanner.item.key == "urgent",
+        full .. " / " .. tostring(DragonworldMilestoneBanner.item and DragonworldMilestoneBanner.item.key))
+    DrainBanners()
+
+    -- 8. The tab icons stay inside the smaller tabs.
+    local inside = true
+    for _, chip in pairs(chipByID) do
+        if chip.icon and chip:IsShown() and chip.icon:GetHeight() > chip:GetHeight() - 10 then inside = false end
+    end
+    check("tabs: with many tabs the icons shrink with the tabs", inside)
+
+    -- Put things back.
+    polls()[pollId] = nil
+    annDB().items[akroAnn], annDB().items[quietAnn], annDB().held[heldAnn] = nil, nil, nil
+    evDB().events[evX], evDB().events[evS] = nil, nil
+    while #ROSTER > savedRows do table.remove(ROSTER) end
+    guild.rankIndex = savedRank
+    rebuild()
+    flush()
+    DrainBanners()
+    for _, prefix in ipairs({ ANN, POLL, ACH, ST, EV_PREFIX }) do sentNow(prefix) end
+    ns.SetLanguage(language, true)
+    clearChat()
+    ns.OpenModule("ryddesekk")
+end)()
+
+-- ===== announcements and polls: passed on by every member, without a flood, fakes removed =====
+;(function()
+    local ANN, POLL, DAY = "DragonworldAnn", "DragonworldPoll", 86400
+    local L = ns.L
+    local function click(button) button.scripts.OnClick(button) end
+    local function all(list) return table.concat(list, " ; ") end
+    local function esc(text) return (text:gsub("%p", "%%%0")) end
+    local function annDB() return DragonworldDB.modules.kunngjoringer end
+    local function sugDB() return DragonworldDB.modules.forslag end
+    local function polls() return DragonworldDB.modules.forslag.polls end
+    local function send(prefix, text, sender) fire("CHAT_MSG_ADDON", prefix, text, "GUILD", sender) end
+    local function rebuild() fire("GUILD_ROSTER_UPDATE"); flush(); flush() end
+    local function A(id, updated, flags, by, title) return table.concat({ "A", id, updated, flags, 1, 0, by, title }, "\t") end
+    local function P(id, updated, endsAt, flags, by, question) return table.concat({ "P", id, updated, endsAt, flags, 2, by, question }, "\t") end
+    local function O(id) return table.concat({ "O", id, 1, "Ja", "Nei" }, "\t") end
+    local function timersOf(delay)
+        local n = 0
+        for _, timer in ipairs(timers) do if math.abs(timer.delay - delay) < 1e-9 then n = n + 1 end end
+        return n
+    end
+    local function idFor(list, field, text) for id, item in pairs(list) do if item[field] == text then return id end end end
+
+    DrainBanners()
+    local language = ns.GetLanguage()
+    ns.SetLanguage("nb", true)
+    local savedRank, savedNow = guild.rankIndex, SERVER_NOW
+    guild.rankIndex = nil
+    rebuild()
+    flush()
+    sentNow(ANN); sentNow(POLL)
+    -- Start from empty lists (put back at the end), so the answers below hold only what this section adds.
+    local keptAnn, keptAuthored = annDB().items, annDB().authored
+    local keptPolls, keptPollAuthored = sugDB().polls, sugDB().pollAuthored
+    annDB().items, annDB().authored = {}, {}
+    sugDB().polls, sugDB().pollAuthored = {}, {}
+    local T = SERVER_NOW
+
+    -- 1. No flood: a newcomer misses three announcements.
+    local ids = {}
+    for index = 1, 3 do
+        ids[index] = "Altine-Stormrage:" .. (T - 10 + index) .. ":" .. (60 + index)
+        send(ANN, A(ids[index], T - 10 + index, "-", "Altine-Stormrage", "Flom " .. index), "Altine-Stormrage")
+    end
+    DrainBanners()
+    flush()
+    sentNow(ANN)
+    send(ANN, "Q", "Nykommer-Stormrage")
+    flush()
+    local sent = sentNow(ANN)
+    check("flood: a member asked by a newcomer waits longer than an officer would (15 s more in the tests)", #sent == 0 and timersOf(15) == 1, all(sent))
+    flush()
+    sent = sentNow(ANN)
+    check("flood: ...and when nobody else has answered by then, sends the three, once each",
+        count(sent, "^A\t") == 3 and count(sent, "^A\t" .. esc(ids[1]) .. "\t") == 1 and count(sent, "^A\t" .. esc(ids[3]) .. "\t") == 1, all(sent))
+    send(ANN, "Q", "Nykommer2-Stormrage")
+    flush()
+    for index = 1, 3 do send(ANN, A(ids[index], T - 10 + index, "-", "Altine-Stormrage", "Flom " .. index), "Eira-Stormrage") end
+    flush()
+    flush()
+    sent = sentNow(ANN)
+    check("flood: a member whose answer waits hears another member send them first, and sends nothing", #sent == 0, all(sent))
+    send(ANN, "Q", "Nykommer3-Stormrage")
+    flush()
+    send(ANN, A(ids[3], T - 7, "-", "Altine-Stormrage", "Flom 3"), "Eira-Stormrage") -- the newest goes first
+    flush()
+    sent = sentNow(ANN)
+    check("flood: when another member has started answering, the rest waits for them", #sent == 0 and timersOf(7) == 1, all(sent))
+    send(ANN, A(ids[2], T - 8, "-", "Altine-Stormrage", "Flom 2"), "Eira-Stormrage")
+    flush()
+    sent = sentNow(ANN)
+    check("flood: ...as long as they keep sending", #sent == 0 and timersOf(7) == 1, all(sent))
+    flush()
+    sent = sentNow(ANN)
+    check("flood: ...and when they stop, only what is still missing is sent", count(sent, "^A\t") == 1 and count(sent, "^A\t" .. esc(ids[1]) .. "\t") == 1, all(sent))
+    guild.rankIndex = 1
+    rebuild()
+    flush()
+    sentNow(ANN)
+    send(ANN, "Q", "Nykommer4-Stormrage")
+    check("flood: an officer waits the same short time before the exchange...", timersOf(2.9) == 1)
+    flush()
+    sent = sentNow(ANN)
+    check("flood: ...and then answers at once, before any member would", count(sent, "^A\t") == 3 and timersOf(15) == 0, all(sent))
+
+    -- 2. Fakes in my name (I am an officer now).
+    clearChat()
+    local fake = "Tester-Stormrage:" .. (T + 5) .. ":91"
+    send(ANN, A(fake, T + 5, "p", "Tester-Stormrage", "Falsk i mitt navn"), "Borin-Stormrage")
+    sent = sentNow(ANN)
+    check("fakes: an announcement in my name that I never wrote, passed on by a member, is deleted at once",
+        annDB().items[fake] ~= nil and annDB().items[fake].deleted == true and count(sent, "^A\t" .. esc(fake) .. "\t%d+\td\t1\t0\tTester%-Stormrage\t$") == 1
+        and #ns.Announcements() == 3, all(sent))
+    check("fakes: ...and says so in chat", #chat == 1 and has(L.ANN_FAKE_REMOVED), chatText())
+    send(ANN, A(ids[1], T + 7, "-", "Tester-Stormrage", "Endret i mitt navn"), "Eira-Stormrage")
+    sent = sentNow(ANN)
+    check("fakes: a change in my name to an officer's announcement is deleted too, without a second chat line right after",
+        annDB().items[ids[1]].deleted == true and count(sent, "^A\t" .. esc(ids[1]) .. "\t%d+\td\t") == 1 and #chat == 1, all(sent))
+    send(ANN, A(fake, T + 9, "-", "Tester-Stormrage", "Igjen"), "Borin-Stormrage")
+    check("fakes: ...the deletion is final, so it cannot go back and forth", annDB().items[fake].deleted == true and #sentNow(ANN) == 0)
+    local early = "Tester-Stormrage:" .. (annDB().authoredSince - 50) .. ":93"
+    send(ANN, A(early, annDB().authoredSince - 50, "-", "Tester-Stormrage", "Fra før"), "Borin-Stormrage")
+    check("fakes: one in my name from before the list of what I wrote was started is left alone (it cannot be told apart)",
+        annDB().items[early] ~= nil and not annDB().items[early].deleted and #sentNow(ANN) == 0)
+    -- Taken in while another character on this account was logged in: found at the next hello.
+    local alt = "Tester-Stormrage:" .. (T + 11) .. ":94"
+    annDB().items[alt] = { id = alt, author = "Tester-Stormrage", created = T + 11, updated = T + 11, title = "Mens jeg var på en alt", body = "", round = 1, by = "Tester-Stormrage" }
+    clock = clock + 60
+    ns.RestartAnnouncementHello()
+    flush()
+    sent = sentNow(ANN)
+    check("fakes: one that came in while another character was logged in is deleted at the next hello",
+        annDB().items[alt].deleted == true and count(sent, "^A\t" .. esc(alt) .. "\t%d+\td\t") == 1, all(sent))
+
+    -- 3. My own announcements stay, also after a /reload.
+    ns.ShowAnnouncements()
+    local o = DragonworldAnnouncements
+    click(o.newButton)
+    o.form.titleBox:TypeText("Ekte")
+    o.form.pinCheck:SetChecked(false)
+    click(o.form.send)
+    o:Hide()
+    local mine = idFor(annDB().items, "title", "Ekte")
+    local mineUpdated = mine and annDB().items[mine].updated
+    check("fakes: what I write is remembered as mine", mine ~= nil and annDB().authored[mine] ~= nil and annDB().authored[mine][mineUpdated] == true)
+    sentNow(ANN)
+    ns.modules.kunngjoringer:OnLoad(annDB()) -- as after a /reload
+    local copy = annDB().items[mine]
+    annDB().items[mine] = nil
+    send(ANN, A(mine, mineUpdated, "-", "Tester-Stormrage", "Ekte"), "Borin-Stormrage")
+    check("fakes: my own announcement passed back to me after a /reload is taken in and left alone",
+        annDB().items[mine] ~= nil and not annDB().items[mine].deleted and #sentNow(ANN) == 0)
+    annDB().items[mine] = copy
+    -- The list of what I wrote is lost (a new saved file): it starts again, and older ones are left alone.
+    annDB().authored, annDB().authoredSince = nil, nil
+    SERVER_NOW = T + 100
+    ns.modules.kunngjoringer:OnLoad(annDB())
+    annDB().items[mine] = nil
+    send(ANN, A(mine, mineUpdated, "-", "Tester-Stormrage", "Ekte"), "Borin-Stormrage")
+    check("fakes: with the list lost, it starts again, and my older announcement passed back is left alone",
+        annDB().authoredSince == T + 100 and annDB().items[mine] ~= nil and not annDB().items[mine].deleted and #sentNow(ANN) == 0)
+    clock = clock + 60
+    ns.RestartAnnouncementHello()
+    flush()
+    check("fakes: ...also at the next hello", not annDB().items[mine].deleted and count(sentNow(ANN), "\td\t") == 0)
+    SERVER_NOW = T
+
+    -- 4. Polls: passed on by members, the author answers at once, fakes removed.
+    guild.rankIndex = nil
+    rebuild()
+    DrainBanners()
+    sentNow(POLL)
+    local altP = "Altine-Stormrage:" .. (T - 20) .. ":70"
+    send(POLL, P(altP, T - 20, T - 20 + DAY, "-", "Altine-Stormrage", "Flom-avstemning"), "Altine-Stormrage")
+    send(POLL, O(altP), "Altine-Stormrage")
+    DrainBanners()
+    flush()
+    sentNow(POLL)
+    send(POLL, "G\t" .. altP, "Nykommer-Stormrage")
+    flush()
+    check("flood: a member asked for someone else's poll waits the members' time", #sentNow(POLL) == 0 and timersOf(15) == 1)
+    send(POLL, P(altP, T - 20, T - 20 + DAY, "-", "Altine-Stormrage", "Flom-avstemning"), "Eira-Stormrage")
+    send(POLL, O(altP), "Eira-Stormrage")
+    flush()
+    sent = sentNow(POLL)
+    check("flood: ...and hearing another member send it first, sends nothing", #sent == 0, all(sent))
+    clearChat()
+    local fakePoll = "Tester-Stormrage:" .. (T + 5) .. ":92"
+    send(POLL, P(fakePoll, T + 5, T + 5 + DAY, "-", "Tester-Stormrage", "Falsk avstemning"), "Eira-Stormrage")
+    sent = sentNow(POLL)
+    check("fakes: a poll in my name that I never made, passed on by a member, is deleted at once (I am not an officer)",
+        not ns.IsOfficer() and polls()[fakePoll] ~= nil and polls()[fakePoll].deleted == true
+        and count(sent, "^P\t" .. esc(fakePoll) .. "\t%d+\t%d+\td\t2\tTester%-Stormrage\t$") == 1, all(sent))
+    check("fakes: ...and says so in chat", #chat == 1 and has(L.POLL_FAKE_REMOVED), chatText())
+    click(chipByID.forslag)
+    local p = DragonworldForslagScroll.parent
+    local pf = p.pollForm
+    click(p.modes.polls)
+    click(p.newPoll)
+    pf.qBox:SetText("Ekte avstemning")
+    pf.optBoxes[1]:SetText("Ja")
+    pf.optBoxes[2]:SetText("Nei")
+    for index = 3, 6 do pf.optBoxes[index]:SetText("") end
+    click(pf.send)
+    local minePoll = idFor(polls(), "question", "Ekte avstemning")
+    local minePollUpdated = minePoll and polls()[minePoll].updated
+    check("fakes: a poll I make is remembered as mine", minePoll ~= nil and sugDB().pollAuthored[minePoll] ~= nil and sugDB().pollAuthored[minePoll][minePollUpdated] == true)
+    sentNow(POLL)
+    send(POLL, "G\t" .. minePoll, "Nykommer-Stormrage")
+    flush()
+    sent = sentNow(POLL)
+    check("flood: asked for my own poll, I answer at once, like an officer", count(sent, "^P\t" .. esc(minePoll) .. "\t") == 1 and timersOf(15) == 0, all(sent))
+    ns.modules.forslag:OnLoad(sugDB()) -- as after a /reload
+    polls()[minePoll] = nil
+    send(POLL, P(minePoll, minePollUpdated, minePollUpdated + 3 * DAY, "-", "Tester-Stormrage", "Ekte avstemning"), "Eira-Stormrage")
+    send(POLL, O(minePoll), "Eira-Stormrage")
+    check("fakes: my own poll passed back to me after a /reload is taken in and left alone",
+        polls()[minePoll] ~= nil and not polls()[minePoll].deleted and polls()[minePoll].optionParts == nil and #sentNow(POLL) == 0)
+    sugDB().pollAuthored, sugDB().pollAuthoredSince = nil, nil
+    SERVER_NOW = T + 100
+    ns.modules.forslag:OnLoad(sugDB())
+    ns.RestartPollHello()
+    flush()
+    check("fakes: with the list of my polls lost, it starts again, and my older poll is left alone at the hello",
+        sugDB().pollAuthoredSince == T + 100 and not polls()[minePoll].deleted and count(sentNow(POLL), "\td\t") == 0)
+    SERVER_NOW = T
+
+    -- Leave things as the remaining tests expect.
+    annDB().items, annDB().authored = keptAnn, keptAuthored
+    sugDB().polls, sugDB().pollAuthored = keptPolls, keptPollAuthored
+    SERVER_NOW = savedNow
+    guild.rankIndex = savedRank
+    rebuild()
+    clock = clock + 300
+    flush()
+    DrainBanners()
+    sentNow(ANN); sentNow(POLL); sentNow("DragonworldSug"); sentNow("DragonworldOff"); sentNow("DragonworldPf"); sentNow(EV_PREFIX)
+    ns.SetLanguage(language, true)
+    clearChat()
+    ns.OpenModule("ryddesekk")
 end)()
 
 -- ============================== error handling ==================================

@@ -36,6 +36,10 @@
 --
 -- "Active" means online within the last 30 days.
 --
+-- Characters a player has linked (Alts.lua) share one row, with a gold "+2"
+-- that shows the others under it. Active and Inactive then go by the most
+-- recent login on any of them.
+--
 -- All text is in Locales.lua (the names that start with RO_).
 
 local ADDON_NAME, DW = ...
@@ -1259,26 +1263,48 @@ local function KnownProfessions()
     return sorted
 end
 
+-- Linked characters (Alts.lua) whose "+N" has been clicked open, by group key.
+-- Only for this session.
+local expanded = {}
+
 -- The members who match the filters, sorted by name. Also returns how many
--- there are in the guild in total.
+-- there are in the guild in total, how many players that is (linked
+-- characters count once), how many characters, and whether any characters
+-- are linked.
+--
+-- Linked characters (Alts.lua) become one row: the first of them that is
+-- online and matches the filters, else the main, else the highest level.
+-- That row (the head) gets altGroup and altKept (the others that match); when
+-- its "+N" is open, they follow it with altChild set. Active and Inactive
+-- go by the most recent login on any of the characters.
 local function Collect()
     local members = DW.ReadGuildRoster()
+    local groups, groupList = {}, {}
+    if DW.AltGroups then
+        groups, groupList = DW.AltGroups(members)
+    end
 
     local needle = searchText:lower()
     needle = needle:gsub("^%s+", "")
     needle = needle:gsub("%s+$", "")
 
-    local list = {}
+    local list, kept = {}, {}
     for _, member in ipairs(members) do
         member.professions, member.source, member.shared, member.storeKey = ProfessionsOf(member)
+        member.altGroup, member.altKept, member.altChild = nil, nil, nil
+        local group = member.guid and groups[member.guid]
+        local online, days = member.online, member.days
+        if group then
+            online, days = group.online, group.days
+        end
 
         local keep = true
         if filterStatus == "online" then
             keep = member.online
         elseif filterStatus == "active" then
-            keep = member.online or member.days < ACTIVE_DAYS
+            keep = online or days < ACTIVE_DAYS
         elseif filterStatus == "inactive" then
-            keep = not member.online and member.days >= ACTIVE_DAYS
+            keep = not online and days >= ACTIVE_DAYS
         end
 
         if keep and filterProfession then
@@ -1304,7 +1330,36 @@ local function Collect()
         end
 
         if keep then
-            list[#list + 1] = member
+            if group then
+                kept[member] = true
+            else
+                list[#list + 1] = member
+            end
+        end
+    end
+
+    -- One row per group, for the characters that matched.
+    for _, group in ipairs(groupList) do
+        local head
+        for _, member in ipairs(group.members) do
+            if kept[member] and member.online and not head then
+                head = member
+            end
+        end
+        for _, member in ipairs(group.members) do -- main first, then level, then name
+            if kept[member] and not head then
+                head = member
+            end
+        end
+        if head then
+            head.altGroup = group
+            head.altKept = {}
+            for _, member in ipairs(group.members) do
+                if kept[member] and member ~= head then
+                    head.altKept[#head.altKept + 1] = member
+                end
+            end
+            list[#list + 1] = head
         end
     end
 
@@ -1314,7 +1369,25 @@ local function Collect()
         end
         return a.key < b.key
     end)
-    return list, #members
+    local heads = #list
+    if next(expanded) then
+        local open = {}
+        for _, member in ipairs(list) do
+            open[#open + 1] = member
+            if member.altGroup and expanded[member.altGroup.key] then
+                for _, child in ipairs(member.altKept) do
+                    child.altChild = true
+                    open[#open + 1] = child
+                end
+            end
+        end
+        list = open
+    end
+    local players = #members
+    for _, group in ipairs(groupList) do
+        players = players - (#group.members - 1)
+    end
+    return list, #members, players, heads, #groupList > 0
 end
 
 local function SetStatus(status)
@@ -1510,8 +1583,31 @@ local function GetRow(index)
     row.statusIcon:SetSize(14, 14)
     row.statusIcon:Hide()
 
+    -- "+2": the member's linked characters (Alts.lua). Click to show or hide them.
+    row.altsButton = CreateFrame("Button", nil, row)
+    row.altsButton:SetHeight(ROW_HEIGHT)
+    row.altsButton.text = row.altsButton:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    row.altsButton.text:SetPoint("LEFT", 2, 0)
+    row.altsButton.text:SetTextColor(1.00, 0.82, 0.00)
+    row.altsButton:SetScript("OnClick", function(self)
+        if self.key then
+            expanded[self.key] = not expanded[self.key] or nil
+            RefreshPanel()
+        end
+    end)
+    row.altsButton:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine((expanded[self.key] and L.RO_ALTS_TIP_HIDE or L.RO_ALTS_TIP):format(self.count or 0), 1, 1, 1, true)
+        GameTooltip:Show()
+    end)
+    row.altsButton:SetScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
+    row.altsButton:Hide()
+
+    -- Placed from the row, not from the name: the name column narrows for "+2".
     row.level = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    row.level:SetPoint("LEFT", row.name, "RIGHT", 4, 0)
+    row.level:SetPoint("LEFT", row, "LEFT", 4 + NAME_WIDTH + 4, 0)
     row.level:SetWidth(LEVEL_WIDTH)
     row.level:SetJustifyH("RIGHT")
 
@@ -1573,7 +1669,7 @@ local function GetRow(index)
         else
             GameTooltip:AddLine(member.name)
         end
-        GameTooltip:AddLine(("%s - %s"):format(L.RO_TIP_LEVEL:format(member.level), member.rank), 1, 1, 1)
+        GameTooltip:AddLine(("%s - %s"):format(L.RO_TIP_LEVEL:format(member.level), DW.OfficerBadge(member) .. member.rank), 1, 1, 1)
         local roles = DW.RolesOf and DW.RolesOf(member)
         if roles then
             GameTooltip:AddLine(DW.RoleNames(roles), 1, 1, 1)
@@ -1587,6 +1683,19 @@ local function GetRow(index)
         end
         if member.note ~= "" then
             GameTooltip:AddLine(member.note, 0.75, 0.75, 0.75, true)
+        end
+        -- Linked characters (Alts.lua) on a row that stands for all of them.
+        local group = member.altGroup
+        if group then
+            if group.main and group.main ~= member then
+                GameTooltip:AddLine(L.RO_TIP_MAIN:format(group.main.name), 1.00, 0.82, 0.00)
+            end
+            GameTooltip:AddLine(L.RO_TIP_ALSO, 1.00, 0.82, 0.00)
+            for _, other in ipairs(group.members) do
+                if other ~= member then
+                    GameTooltip:AddDoubleLine(("%s %d"):format(other.name, other.level), LastOnlineText(other), 1, 1, 1, 0.75, 0.75, 0.75)
+                end
+            end
         end
         GameTooltip:AddLine(" ")
         if #member.professions == 0 then
@@ -1625,6 +1734,8 @@ RefreshPanel = function()
     panel.title:SetText(L.RO_PANEL_TITLE)
     panel.searchLabel:SetText(L.RO_SEARCH)
     panel.mineChip.label:SetText(L.RO_MINE)
+    panel.craftChip.label:SetText(L.CS_OPEN)
+    panel.craftChip:SetShown(DW.ShowCraftSearch ~= nil)
     panel.headerName:SetText(L.RO_H_NAME)
     panel.headerLevel:SetText(L.RO_H_LEVEL)
     panel.headerLegacy:SetText(L.RO_H_LEGACY)
@@ -1644,11 +1755,18 @@ RefreshPanel = function()
     end
     panel.professionChip.label:SetText(L.RO_PROFESSION_LABEL:format(filterProfession or L.RO_ALL_PROFESSIONS))
 
-    local list, total = Collect()
+    local list, total, players, heads, linked = Collect()
     for index, member in ipairs(list) do
         local row = GetRow(index)
         local colour = RAID_CLASS_COLORS and RAID_CLASS_COLORS[member.class]
         row.member = member
+        -- A linked character under its head is moved in a little; a head
+        -- leaves room for its "+2".
+        local indent = member.altChild and 12 or 0
+        local nameWidth = NAME_WIDTH - indent - (member.altGroup and 26 or 0)
+        row.name:ClearAllPoints()
+        row.name:SetPoint("LEFT", 4 + indent, 0)
+        row.name:SetWidth(nameWidth)
         row.name:SetText(member.name)
         if colour then
             row.name:SetTextColor(colour.r, colour.g, colour.b)
@@ -1658,23 +1776,42 @@ RefreshPanel = function()
         -- Status is only shown for those who are online.
         local statusCode = member.online and DW.StatusOf and DW.StatusOf(member)
         local status = statusCode and DW.STATUS_BY_CODE[statusCode]
+        local afterName = math.min(row.name:GetStringWidth(), nameWidth) + 4
         if status then
+            local iconX = math.min(row.name:GetStringWidth(), nameWidth - 16) + 4
             row.statusIcon:SetTexture(status.icon)
             row.statusIcon:ClearAllPoints()
-            row.statusIcon:SetPoint("LEFT", row.name, "LEFT", math.min(row.name:GetStringWidth(), NAME_WIDTH - 16) + 4, 0)
+            row.statusIcon:SetPoint("LEFT", row.name, "LEFT", iconX, 0)
             row.statusIcon:Show()
+            afterName = iconX + 14 + 2
         else
             row.statusIcon:Hide()
         end
         row.statusCode = status and statusCode or nil
+        local group = member.altGroup
+        if group then
+            local count = #group.members - 1
+            row.altsButton.key, row.altsButton.count = group.key, count
+            row.altsButton.text:SetText(("+%d"):format(count))
+            row.altsButton:SetWidth(math.ceil(row.altsButton.text:GetStringWidth()) + 4)
+            row.altsButton:ClearAllPoints()
+            row.altsButton:SetPoint("LEFT", row.name, "LEFT", afterName, 0)
+            row.altsButton:Show()
+        else
+            row.altsButton.key, row.altsButton.count = nil, nil
+            row.altsButton:Hide()
+        end
         row.level:SetText(tostring(member.level))
         local points = DW.LegacyPointsOf and DW.LegacyPointsOf(member)
         row.legacy:SetText(points and tostring(points) or "")
-        row.rank:SetText(member.rank)
+        -- Officers get a small badge in front of the rank (Admin.lua).
+        row.rank:SetText(DW.OfficerBadge(member) .. member.rank)
         row.roles:SetText(DW.RoleIcons and DW.RoleIcons(DW.RolesOf and DW.RolesOf(member)) or "")
         LayoutProfessions(row, member)
-        row.last:SetText(LastOnlineText(member))
-        if member.online then
+        -- A head stands for all its characters: the most recent of them.
+        local seen = group and { online = group.online, days = group.days, hours = group.hours } or member
+        row.last:SetText(LastOnlineText(seen))
+        if seen.online then
             row.last:SetTextColor(0.25, 1.00, 0.25)
         else
             row.last:SetTextColor(0.75, 0.75, 0.75)
@@ -1687,8 +1824,25 @@ RefreshPanel = function()
     end
 
     panel.content:SetHeight(math.max(1, #list * ROW_HEIGHT))
+    -- A search that found no member may still be something members can make:
+    -- point to "Who crafts?" (CraftSearch.lua).
+    local trimmed = searchText:gsub("^%s+", ""):gsub("%s+$", "")
+    panel.searchFoundNobody = (#list == 0 and trimmed ~= "")
+    local craftMatches = 0
+    if #list == 0 and #trimmed >= 2 and DW.CountCraftMatches then
+        craftMatches = DW.CountCraftMatches(trimmed)
+    end
+    if craftMatches > 0 then
+        panel.empty:SetText(L.RO_EMPTY_CRAFT:format(craftMatches))
+    else
+        panel.empty:SetText(L.RO_EMPTY)
+    end
     panel.empty:SetShown(#list == 0)
-    panel.count:SetText(L.RO_COUNT:format(#list, total))
+    if linked then
+        panel.count:SetText(L.RO_COUNT_ALTS:format(heads, players, total))
+    else
+        panel.count:SetText(L.RO_COUNT:format(#list, total))
+    end
 end
 
 -- Called by the main window the first time the module is selected.
@@ -1723,7 +1877,7 @@ local function CreatePanel(parent)
     f.searchLabel:SetPoint("TOPLEFT", 14, -80)
 
     f.searchBox = CreateFrame("EditBox", nil, f, "InputBoxTemplate")
-    f.searchBox:SetSize(200, 22)
+    f.searchBox:SetSize(150, 22)
     f.searchBox:SetPoint("LEFT", f.searchLabel, "RIGHT", 12, 0)
     f.searchBox:SetAutoFocus(false)
     f.searchBox:SetMaxLetters(40)
@@ -1739,15 +1893,39 @@ local function CreatePanel(parent)
     end)
 
     -- Shows the reminder to open your professions, with what has been found.
-    f.mineChip = DW.CreateChip(f, 140, 24)
+    f.mineChip = DW.CreateChip(f, 128, 24)
     f.mineChip:SetPoint("LEFT", f.searchBox, "RIGHT", 14, 0)
     f.mineChip.label:SetJustifyH("CENTER")
     f.mineChip:SetScript("OnClick", function()
         ShowNotice()
     end)
 
+    -- "Who crafts?": searches everything members can make (CraftSearch.lua).
+    -- A search here that found no member is taken along.
+    f.craftChip = DW.CreateChip(f, 128, 24)
+    f.craftChip:SetPoint("LEFT", f.mineChip, "RIGHT", 8, 0)
+    f.craftChip.label:SetJustifyH("CENTER")
+    f.craftChip:SetShown(DW.ShowCraftSearch ~= nil)
+    f.craftChip:SetScript("OnClick", function()
+        if DW.ShowCraftSearch then
+            DW.ShowCraftSearch(f.searchFoundNobody and searchText or nil)
+        end
+    end)
+    f.craftChip:HookScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine(L.CS_OPEN_TIP, 1, 1, 1, true)
+        GameTooltip:Show()
+    end)
+    f.craftChip:HookScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
+
+    -- On the title line: row 2 is full with the search box and its chips. The
+    -- width keeps it off the centred title; a long text wraps to a second line.
     f.count = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    f.count:SetPoint("TOPRIGHT", -14, -82)
+    f.count:SetPoint("TOPRIGHT", -14, -12)
+    f.count:SetWidth(220)
+    f.count:SetJustifyH("RIGHT")
 
     -- The headers sit above their own column.
     f.headerName = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -1908,8 +2086,18 @@ DW.OnStatusChanged(function()
     QueueRefresh()
 end)
 
--- New legacy points (Profile.lua): redraw the column.
+-- New legacy points or linked characters (Profile.lua): redraw.
 DW.OnProfileChanged(function()
+    QueueRefresh()
+end)
+
+-- Your own choice of linked characters (Alts.lua) has changed.
+DW.OnAltsChanged(function()
+    QueueRefresh()
+end)
+
+-- A new officer limit (or promotions): redraw the badges in the rank column.
+DW.OnOfficersChanged(function()
     QueueRefresh()
 end)
 
@@ -1932,6 +2120,33 @@ DW.MemberRecipes = RecipesOf
 DW.IsGatheringProfession = IsGathering
 function DW.OnRecipesChanged(callback)
     recipeListeners[#recipeListeners + 1] = callback
+end
+
+-- Every shared recipe list we have (CraftSearch.lua): callback(guid, profession
+-- name, list of spellIDs, when the list was changed), in a fixed order.
+function DW.EachRecipeList(callback)
+    local keys = {}
+    for key in pairs(type(db.crafts) == "table" and db.crafts or {}) do
+        if type(key) == "string" then
+            keys[#keys + 1] = key
+        end
+    end
+    table.sort(keys)
+    for _, key in ipairs(keys) do
+        local names = {}
+        for name in pairs(CraftsOf(key, false) or {}) do
+            if type(name) == "string" then
+                names[#names + 1] = name
+            end
+        end
+        table.sort(names)
+        for _, name in ipairs(names) do
+            local entry = CraftsEntry(key, name)
+            if entry then
+                callback(key, name, DecodeRecipes(entry.ids), entry.t)
+            end
+        end
+    end
 end
 
 -- Debugging: what the game actually reports about professions on this character.
@@ -2028,6 +2243,21 @@ function DW.ProfessionsOfMember(member)
         return {}
     end
     return (ProfessionsOf(member))
+end
+
+-- A copy of a DW.ReadGuildRoster() row filled the way the Roster tab fills its
+-- own rows (professions, source, shared, storeKey), so the member card and the
+-- recipe window can open the member's professions from it.
+function DW.RosterRowOf(member)
+    local copy = {}
+    if type(member) ~= "table" then
+        return copy
+    end
+    for key, value in pairs(member) do
+        copy[key] = value
+    end
+    copy.professions, copy.source, copy.shared, copy.storeKey = ProfessionsOf(member)
+    return copy
 end
 
 -- Module -------------------------------------------------------------------------

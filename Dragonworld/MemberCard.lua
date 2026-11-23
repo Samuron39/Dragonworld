@@ -9,8 +9,11 @@
 --   * "about me": a text the member has written about themselves, which everyone
 --     with the addon sees. On your own card you write yours.
 --   * your own notes about the member. They are only saved on your side and not shared.
+--   * the member's other characters, when the player has linked them
+--     (Alts.lua): "Also plays: ...", and last online covers all of them.
 -- Buttons: Inspect (the game's own window, when the member is your target or in
--- the group and nearby), Whisper and Invite.
+-- the group and nearby), Whisper and Invite. On your own card: My characters,
+-- which opens the picker for linking your characters (Alts.lua).
 --
 -- Legacy points, talents and gear come from the member's own addon
 -- (Profile.lua). If the member doesn't have the addon, or you have never been
@@ -59,18 +62,69 @@ local function IsMe(member)
     if guid and member.guid then
         return member.guid == guid
     end
-    local _, name = DW.CharacterKey()
-    return name ~= nil and DW.NameKey(member.key) == DW.NameKey(name)
+    local name = DW.CharacterKey()
+    return name ~= nil and DW.SameCharacter(member.key, name)
+end
+
+-- How long since a roster row was online, in hours (-1 = online now).
+local function Age(row)
+    if row.online then
+        return -1
+    end
+    return (row.days or 0) * 24 + (row.hours or 0)
 end
 
 local function LastSeenText(member)
     if member.online then
         return member.zone ~= "" and L.MC_ONLINE_IN:format(member.zone) or L.MC_ONLINE
     end
+    -- Linked characters (Alts.lua): "Online now as Bob", or the most recent of them.
+    local group = DW.AltGroupOf and DW.AltGroupOf(member)
+    if group then
+        local best = member
+        for _, row in ipairs(group.members) do
+            if row.guid ~= member.guid and Age(row) < Age(best) then
+                best = row
+            end
+        end
+        if best ~= member then
+            if best.online then
+                return L.MC_ONLINE_AS:format(best.name)
+            elseif (best.days or 0) > 0 then
+                return L.MC_LAST_DAYS_AS:format(best.days, best.name)
+            end
+            return L.MC_LAST_HOURS_AS:format(best.hours or 0, best.name)
+        end
+    end
     if (member.days or 0) > 0 then
         return L.MC_LAST_DAYS:format(member.days)
     end
     return L.MC_LAST_HOURS:format(member.hours or 0)
+end
+
+-- The short "last online" text of the Roster tab: "Online", "3 d", "2 mo".
+local function ShortLastOnline(row)
+    if row.online then
+        return L.RO_ONLINE
+    end
+    local days = row.days or 0
+    if days >= 365 then
+        return L.RO_YEARS:format(math.floor(days / 365))
+    elseif days >= 30 then
+        return L.RO_MONTHS:format(math.floor(days / 30))
+    elseif days >= 1 then
+        return L.RO_DAYS:format(days)
+    end
+    return L.RO_HOURS:format(row.hours or 0)
+end
+
+-- A name in its class colour, for tooltips.
+local function ClassColoured(text, class)
+    local colour = RAID_CLASS_COLORS and RAID_CLASS_COLORS[class]
+    if not colour then
+        return text
+    end
+    return ("|cff%02x%02x%02x%s|r"):format(math.floor(colour.r * 255 + 0.5), math.floor(colour.g * 255 + 0.5), math.floor(colour.b * 255 + 0.5), text)
 end
 
 -- An item from the code in the profile: name, quality and icon (the name may
@@ -122,20 +176,11 @@ local function Inspect(member)
 end
 
 local function Whisper(name)
-    if ChatFrameUtil and ChatFrameUtil.SendTell then
-        ChatFrameUtil.SendTell(name)
-    elseif ChatFrame_SendTell then
-        ChatFrame_SendTell(name)
-    else
-        DW.Print("/w " .. name)
-    end
+    DW.WhisperTo(name)
 end
 
 local function Invite(name)
-    local invite = (C_PartyInfo and C_PartyInfo.InviteUnit) or InviteUnit
-    if invite then
-        invite(name)
-    end
+    DW.InviteToGroup(name)
 end
 
 -- Display ---------------------------------------------------------------------
@@ -246,7 +291,7 @@ local function RefreshCard()
     else
         card.name:SetTextColor(1, 1, 1)
     end
-    card.info:SetText(L.MC_INFO:format(member.level, member.rank))
+    card.info:SetText(L.MC_INFO:format(member.level, DW.OfficerBadge(member) .. member.rank))
 
     local statusCode = member.online and DW.StatusOf and DW.StatusOf(member)
     local status = statusCode and DW.STATUS_BY_CODE[statusCode]
@@ -256,6 +301,37 @@ local function RefreshCard()
     local points, max = DW.LegacyPointsOf(member)
     local pointsText = points and (max and ("%d / %d"):format(points, max) or tostring(points)) or L.MC_UNKNOWN
     card.legacy:SetText(L.MC_LEGACY:format(pointsText))
+
+    -- Linked characters (Alts.lua), on the line of the legacy points.
+    local me = IsMe(member)
+    local legacyWidth = math.ceil(card.legacy:GetStringWidth())
+    card.alts:ClearAllPoints()
+    card.alts:SetPoint("TOPLEFT", 16 + legacyWidth + 16, -82)
+    card.alts:SetWidth(math.max(40, LEFT_WIDTH - (legacyWidth + 16)))
+    card.altsHover:ClearAllPoints()
+    card.altsHover:SetPoint("TOPLEFT", 16 + legacyWidth + 16, -78)
+    card.altsHover:SetSize(math.max(40, LEFT_WIDTH - (legacyWidth + 16)), 18)
+    local group = DW.AltGroupOf and DW.AltGroupOf(member)
+    card.altsHover.group = group
+    if group then
+        local names = {}
+        for _, row in ipairs(group.members) do
+            if row.guid ~= member.guid then
+                names[#names + 1] = row.guid == group.key and L.MC_MAIN_MARK:format(row.name) or row.name
+            end
+        end
+        card.alts:SetText(L.MC_ALSO_PLAYS:format(table.concat(names, ", ")))
+        card.alts:SetTextColor(1, 1, 1)
+        card.altsHover:Show()
+    else
+        local text = ""
+        if me then
+            text = DW.GetMyAltChoice and DW.GetMyAltChoice().on and L.MC_ALTS_PENDING or L.MC_ALTS_NONE_ME
+        end
+        card.alts:SetText(text)
+        card.alts:SetTextColor(0.55, 0.55, 0.55)
+        card.altsHover:Hide()
+    end
 
     -- The role.
     card.rolesLabel:SetText(L.MC_ROLE)
@@ -385,8 +461,9 @@ local function RefreshCard()
     card.notesLabel:SetText(L.MC_NOTES)
 
     -- Buttons.
-    local me = IsMe(member)
     card.inspect.label:SetText(L.MC_INSPECT)
+    card.altsButton.label:SetText(L.MC_ALTS_BUTTON)
+    card.altsButton:SetShown(me)
     card.whisper.label:SetText(L.MC_WHISPER)
     card.invite.label:SetText(L.MC_INVITE)
     card.close.label:SetText(L.MC_CLOSE)
@@ -428,6 +505,66 @@ local function CreateCard(window)
 
     c.legacy = c:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     c.legacy:SetPoint("TOPLEFT", 16, -80)
+
+    -- "Also plays: ..." (Alts.lua), right after the legacy points. Placed in
+    -- RefreshCard, since the legacy text changes width.
+    c.alts = c:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    c.alts:SetJustifyH("LEFT")
+    c.alts:SetWordWrap(false)
+    c.altsHover = CreateFrame("Button", nil, c)
+    c.altsHover:SetScript("OnEnter", function(self)
+        local group = self.group
+        if not group then
+            return
+        end
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine(L.MC_ALTS_TIP_TITLE, 1.00, 0.82, 0.00)
+        for _, row in ipairs(group.members) do
+            local name = row.guid == group.key and L.MC_MAIN_MARK:format(row.name) or row.name
+            GameTooltip:AddDoubleLine(ClassColoured(name .. " " .. tostring(row.level), row.class), ShortLastOnline(row), 1, 1, 1, 0.75, 0.75, 0.75)
+        end
+        GameTooltip:AddLine(L.MC_ALTS_TIP_CLICK, 0.60, 0.60, 0.60, true)
+        GameTooltip:Show()
+    end)
+    c.altsHover:SetScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
+    -- Click: open the card of one of the other characters.
+    c.altsHover:SetScript("OnClick", function(self)
+        local group = self.group
+        if not group or not current then
+            return
+        end
+        GameTooltip:Hide()
+        local others = {}
+        for _, row in ipairs(group.members) do
+            if row.guid ~= current.guid then
+                others[#others + 1] = row
+            end
+        end
+        if #others == 0 then
+            return
+        end
+        if MenuUtil and MenuUtil.CreateContextMenu then
+            MenuUtil.CreateContextMenu(self, function(_, root)
+                root:CreateTitle(L.MC_ALTS_TIP_TITLE)
+                for _, row in ipairs(others) do
+                    root:CreateButton(row.guid == group.key and L.MC_MAIN_MARK:format(row.name) or row.name, function()
+                        DW.ShowMemberCard(DW.AltCardRow(row))
+                    end)
+                end
+            end)
+            return
+        end
+        -- Without a menu: the next character in the group's order.
+        local nextRow = group.members[1]
+        for i, row in ipairs(group.members) do
+            if row.guid == current.guid then
+                nextRow = group.members[i % #group.members + 1]
+            end
+        end
+        DW.ShowMemberCard(DW.AltCardRow(nextRow))
+    end)
 
     -- The role: on your own card you pick it here (saved right away and
     -- sent to the guild), otherwise the role the member has chosen is shown.
@@ -579,6 +716,15 @@ local function CreateCard(window)
             Invite(current.key)
         end
     end)
+    -- Your own card: "My characters" (Alts.lua), where Inspect sits on others' cards.
+    c.altsButton = DW.CreateChip(c, 130, 26)
+    c.altsButton:SetPoint("BOTTOMLEFT", 16, 12)
+    c.altsButton.label:SetJustifyH("CENTER")
+    c.altsButton:SetScript("OnClick", function()
+        if DW.OpenAltPicker then
+            DW.OpenAltPicker()
+        end
+    end)
     c.close = DW.CreateChip(c, 100, 26)
     c.close:SetPoint("BOTTOMRIGHT", -16, 12)
     c.close.label:SetJustifyH("CENTER")
@@ -603,10 +749,8 @@ function DW.ShowMemberCard(member)
     if not card then
         CreateCard(window)
     end
-    -- Only one such window on top at a time.
-    if _G.DragonworldDungeonPicker then
-        _G.DragonworldDungeonPicker:Hide()
-    end
+    -- Only one such window on top at a time (MainWindow.lua's overlay registry).
+    DW.HideOverlays(CARD_NAME)
     current = member
     card.loadingNote = true
     card.notes:SetText(Notes()[NoteKey(member)] or "")
@@ -630,6 +774,8 @@ pcall(frame.RegisterEvent, frame, "GET_ITEM_INFO_RECEIVED")
 DW.OnProfileChanged(RefreshCard)
 DW.OnStatusChanged(RefreshCard)
 DW.OnLanguageChanged(RefreshCard)
+DW.OnOfficersChanged(RefreshCard)
+DW.OnAltsChanged(RefreshCard)
 DW.OnMembershipChanged(function(member)
     if not member and card then
         card:Hide()

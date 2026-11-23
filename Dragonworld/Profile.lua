@@ -41,10 +41,20 @@
 --   T key time no/count text          talents: "Navn~poeng~spell-rang,...;..."
 --   A key time no/count text          the "about me" text (empty text = deleted)
 --   O key time roles                  the role: "TH" (at most two of T, H, D; empty = none)
+--   K guid time state list            main and alts (Alts.lua): state S (shown; list = the
+--                                     characters that belong together, main first, as GUIDs
+--                                     without "Player-", comma-separated, 1-12 including
+--                                     the sender), H (this character hidden) or O (sharing
+--                                     off), with an empty list. Only sent by an account that
+--                                     has taken part; then at every login, after a change and
+--                                     in answers to R (since only the character itself can
+--                                     send it): to R for everything, when it is newer than
+--                                     asked for, or when not sent for K_REPEAT seconds.
+--                                     Accepted only from that character.
 --   R time                            send me what you have changed after time (server time)
 --   R                                 send me everything (the first time, and once a week)
--- The time in P/E/T/A/O is when that part was last changed. Older versions
--- do not know O and ignore it.
+-- The time in P/E/T/A/O/K is when that part was last changed. Older versions
+-- do not know O and K and ignore them.
 -- Long texts are split into pieces and put together again at the receiver.
 
 local ADDON_NAME, DW = ...
@@ -486,6 +496,45 @@ local function SendText(kind, key, when, text)
     end
 end
 
+local function CopyList(list)
+    local copy = {}
+    for i, value in ipairs(list) do
+        copy[i] = value
+    end
+    return copy
+end
+
+-- Main and alts: characters that have sent their record (K) in this session.
+-- A new character on the account is a new login, so it sends again.
+local altSentThisSession = {} -- [key] = GetTime() of the last K sent this session
+local K_REPEAT = 300          -- an unchanged K goes in an answer to R at most this often
+
+-- The K message for a record, at most 255 bytes: should long GUIDs not fit,
+-- characters are left out from the end, but never the sender.
+local function AltMessage(key, record)
+    if not key:find("^Player%-") then
+        return nil
+    end
+    local short = {}
+    for _, guid in ipairs(record.list) do
+        short[#short + 1] = guid:sub(8)
+    end
+    local function Build()
+        return table.concat({ "K", key, ("%d"):format(record.time), record.state, table.concat(short, ",") }, SEP)
+    end
+    local message = Build()
+    local mine = key:sub(8)
+    while #message > 255 and #short > 1 do
+        local drop = #short
+        if short[drop] == mine then
+            drop = drop - 1
+        end
+        table.remove(short, drop)
+        message = Build()
+    end
+    return #message <= 255 and message or nil
+end
+
 -- Reads your own character and keeps it. The time on each part is when it
 -- was last changed, not when it was last sent, so the same profile has the
 -- same time for everyone. Sends what has changed and not been sent yet, and
@@ -535,6 +584,18 @@ local function Publish(since)
         end
     end
 
+    -- Main and alts (Alts.lua): what this character says now. nil when the
+    -- account never took part; then nothing is kept or sent.
+    local altRecord = DW.MyAltRecord and DW.MyAltRecord()
+    if altRecord then
+        local old = type(profile.alts) == "table" and profile.alts or nil
+        if not old or old.time ~= altRecord.time or old.state ~= altRecord.state
+            or table.concat(type(old.list) == "table" and old.list or {}, ",") ~= table.concat(altRecord.list, ",") then
+            profile.alts = { time = altRecord.time, state = altRecord.state, list = CopyList(altRecord.list) }
+            changed = true
+        end
+    end
+
     -- Send each part that has not been sent with this time, or that is newer
     -- than what the one asking has.
     local sent = type(profile.sent) == "table" and profile.sent or {}
@@ -577,6 +638,21 @@ local function Publish(since)
         sent.O = roles.time
         Send(table.concat({ "O", key, ("%d"):format(roles.time), roles.text }, SEP))
     end
+    -- Main and alts: only this character can send its record. It goes out at
+    -- the first send of each character's session (its login), after a change,
+    -- and in answers to R: for everything, when newer than asked for, or when
+    -- not sent for K_REPEAT seconds (not in every answer of a login wave).
+    local lastK = altSentThisSession[key]
+    local askedK = since ~= nil and (since == 0 or (altRecord and altRecord.time > since)
+        or not lastK or GetTime() - lastK >= K_REPEAT)
+    if altRecord and (askedK or not lastK or sent.K ~= altRecord.time) then
+        local message = AltMessage(key, altRecord)
+        if message then
+            altSentThisSession[key] = GetTime()
+            sent.K = altRecord.time
+            Send(message)
+        end
+    end
 
     if changed then
         Changed()
@@ -610,12 +686,128 @@ local function Store(kind, key, when, text)
     Changed()
 end
 
-DW.OnGuildMessage(PREFIX, function(text, sender)
+-- Main and alts: K messages whose sender could not be checked yet, because
+-- the character is not in our copy of the guild roster. Retried when the
+-- roster changes; at most 50, each for 120 seconds. One per character and
+-- sender, so a message from someone else cannot push out the real one.
+local MAX_PENDING_K = 50
+local PENDING_K_SECONDS = 120
+local pendingK = {} -- [guid .. tab .. sender's name key] = { guid, text, sender, at = GetTime() }
+
+local function Fields(text)
     local fields = {}
     for field in (text .. SEP):gmatch("(.-)" .. SEP) do
         fields[#fields + 1] = field
     end
+    return fields
+end
+
+-- A K message's guid, time, state and list (full GUIDs), or nil when anything
+-- in it is wrong.
+local function ParseAltMessage(fields)
+    local guid, when, state, list = fields[2], tonumber(fields[3]), fields[4], fields[5]
+    if #fields ~= 5 or type(guid) ~= "string" or #guid > 60 or not guid:find("^Player%-[%w]+%-[%w]+$") then
+        return nil
+    end
+    if not when or when <= 0 or when ~= math.floor(when) or when > Now() + 600 then
+        return nil
+    end
+    if state ~= "S" and state ~= "H" and state ~= "O" then
+        return nil
+    end
+    local entries, seen = {}, {}
+    if list ~= "" then
+        for part in (list .. ","):gmatch("([^,]*),") do
+            local full = "Player-" .. part
+            if #part > 24 or not part:find("^[%w]+%-[%w]+$") or seen[full] then
+                return nil
+            end
+            seen[full] = true
+            entries[#entries + 1] = full
+        end
+    end
+    if state == "S" then
+        if #entries < 1 or #entries > (DW.ALT_MAX or 12) or not seen[guid] then
+            return nil
+        end
+    elseif #entries > 0 then
+        return nil
+    end
+    return guid, when, state, entries
+end
+
+local function DropOldPendingK()
+    local now = GetTime()
+    for slot, entry in pairs(pendingK) do
+        if now - entry.at > PENDING_K_SECONDS then
+            pendingK[slot] = nil
+        end
+    end
+end
+
+local function ReceiveAltMessage(fields, text, sender)
+    local guid, when, state, list = ParseAltMessage(fields)
+    if not guid then
+        return
+    end
+    local slot = guid .. SEP .. DW.NameKey(sender)
+    if not (DW.AltSenderMatches and DW.AltSenderMatches(guid, sender)) then
+        -- Maybe the roster has not got this character yet: wait for it.
+        DropOldPendingK()
+        if not pendingK[slot] then
+            local count, oldest = 0, nil
+            for other, entry in pairs(pendingK) do
+                count = count + 1
+                if not oldest or entry.at < pendingK[oldest].at or (entry.at == pendingK[oldest].at and other < oldest) then
+                    oldest = other
+                end
+            end
+            if count >= MAX_PENDING_K and oldest then
+                pendingK[oldest] = nil
+            end
+        end
+        pendingK[slot] = { guid = guid, text = text, sender = sender, at = GetTime() }
+        return
+    end
+    pendingK[slot] = nil
+    local profile = ProfileFor(guid, true)
+    if type(profile.alts) == "table" and (tonumber(profile.alts.time) or 0) >= when then
+        return
+    end
+    profile.alts = { time = when, state = state, list = list }
+    Changed()
+end
+
+-- The roster has changed: try the K messages that waited for it again.
+local function RetryPendingK()
+    DropOldPendingK()
+    if not next(pendingK) then
+        return
+    end
+    if DW.InvalidateAltRoster then
+        DW.InvalidateAltRoster()
+    end
+    local waiting = {}
+    for slot, entry in pairs(pendingK) do
+        waiting[#waiting + 1] = { slot = slot, entry = entry }
+    end
+    table.sort(waiting, function(a, b) return a.slot < b.slot end)
+    for _, item in ipairs(waiting) do
+        if DW.AltSenderMatches and DW.AltSenderMatches(item.entry.guid, item.entry.sender) then
+            pendingK[item.slot] = nil
+            ReceiveAltMessage(Fields(item.entry.text), item.entry.text, item.entry.sender)
+        end
+    end
+end
+
+DW.OnGuildMessage(PREFIX, function(text, sender)
+    local fields = Fields(text)
     local kind, key, when = fields[1], fields[2], tonumber(fields[3])
+
+    if kind == "K" then
+        ReceiveAltMessage(fields, text, sender)
+        return
+    end
 
     if kind == "R" then
         -- Someone asks for what has changed after a time (or everything).
@@ -689,8 +881,8 @@ local function IsMe(member)
     if guid and member.guid then
         return member.guid == guid
     end
-    local _, name = DW.CharacterKey()
-    return name ~= nil and DW.NameKey(member.key) == DW.NameKey(name)
+    local name = DW.CharacterKey()
+    return name ~= nil and DW.SameCharacter(member.key, name)
 end
 
 -- All we know about a member from DW.ReadGuildRoster(): { legacy, gear, talents },
@@ -751,6 +943,39 @@ function DW.SetMyAbout(text)
         return
     end
     profile.about = { text = text, time = math.max(Now(), old and ((old.time or 0) + 1) or 0) }
+end
+
+-- Main and alts: the record a character has published ({ time, state, list
+-- of full GUIDs }), or nil. For yourself it is what you send.
+function DW.AltRecordOf(guid)
+    if type(guid) ~= "string" then
+        return nil
+    end
+    local profile = ProfileFor(guid)
+    local record = profile and profile.alts
+    if type(record) == "table" and type(record.time) == "number" and type(record.list) == "table"
+        and (record.state == "S" or record.state == "H" or record.state == "O") then
+        return record
+    end
+    return nil
+end
+
+-- For /dw debug [alts]: the time of the K this character last sent, how many
+-- records are stored, and how many K messages wait for the roster.
+function DW.AltProfileStats()
+    local key = MyKey()
+    local profile = key and ProfileFor(key)
+    local stored = 0
+    for _, other in pairs(Profiles()) do
+        if type(other) == "table" and type(other.alts) == "table" then
+            stored = stored + 1
+        end
+    end
+    local buffered = 0
+    for _ in pairs(pendingK) do
+        buffered = buffered + 1
+    end
+    return profile and type(profile.sent) == "table" and profile.sent.K or nil, stored, buffered
 end
 
 -- Sends what has changed in your own profile now.
@@ -896,6 +1121,25 @@ PlanChange = function()
     end)
 end
 
+-- Main and alts: a character of an account that takes part sends its record
+-- at its login, also when the hello of this session has already been sent
+-- (another character logged in on the account since then).
+local altHelloQueued = false
+
+local function PlanAltHello()
+    local key = MyKey()
+    if altHelloQueued or not helloSent or not key or altSentThisSession[key] or not (DW.MyAltRecord and DW.MyAltRecord()) then
+        return
+    end
+    altHelloQueued = true
+    C_Timer.After(HELLO_DELAY, function()
+        altHelloQueued = false
+        if DW.IsMember() then
+            Publish()
+        end
+    end)
+end
+
 local frame = CreateFrame("Frame")
 frame:SetScript("OnEvent", function(self, event)
     if not DW.IsMember() then
@@ -903,6 +1147,7 @@ frame:SetScript("OnEvent", function(self, event)
     end
     if event == "PLAYER_ENTERING_WORLD" then
         PlanHello()
+        PlanAltHello()
     else
         PlanChange()
     end
@@ -919,9 +1164,19 @@ for _, event in ipairs({
     pcall(frame.RegisterEvent, frame, event)
 end
 
+-- Its own frame: the events above plan a send, this one must not.
+local rosterFrame = CreateFrame("Frame")
+rosterFrame:SetScript("OnEvent", function()
+    if next(pendingK) and DW.IsMember() then
+        RetryPendingK()
+    end
+end)
+rosterFrame:RegisterEvent("GUILD_ROSTER_UPDATE")
+
 DW.OnMembershipChanged(function(member)
     if member then
         PlanHello()
+        PlanAltHello()
     end
 end)
 

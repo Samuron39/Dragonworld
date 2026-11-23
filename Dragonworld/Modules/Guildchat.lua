@@ -211,11 +211,18 @@ local function AddMessage(message)
     end
 end
 
+-- The last message of the day we saw (plain text), kept for the Home page:
+-- it is saved at logout, so the next session can tell that it changed.
+local lastMotd
+
 local function RefreshMotd()
+    local motd = Plain(DW.GuildMOTD())
+    if motd then
+        lastMotd = motd
+    end
     if not panel then
         return
     end
-    local motd = Plain(GetGuildRosterMOTD and GetGuildRosterMOTD())
     panel.motd:SetText(motd and L.GC_MOTD:format(motd) or "")
 end
 
@@ -841,7 +848,15 @@ frame:SetScript("OnEvent", function(self, event, ...)
         end
     elseif event == "PLAYER_ENTERING_WORLD" then
         RestoreOnce()
+        -- The message of the day may not be loaded right at login.
+        C_Timer.After(6, function()
+            local motd = Plain(DW.GuildMOTD())
+            if motd then
+                lastMotd = motd
+            end
+        end)
     elseif event == "GUILD_MOTD" then
+        lastMotd = text or lastMotd
         if panel and panel:IsVisible() and view == "chat" then
             RefreshMotd()
         end
@@ -855,6 +870,13 @@ end
 DW.OnMembershipChanged(function(member)
     if member then
         RestoreOnce()
+        -- OnEvent ignores PLAYER_ENTERING_WORLD and GUILD_MOTD until the guild
+        -- name is known, so read the message of the day for Home here too.
+        if C_Timer and C_Timer.After then
+            C_Timer.After(6, function()
+                lastMotd = Plain(DW.GuildMOTD()) or lastMotd
+            end)
+        end
     end
 end)
 
@@ -1032,5 +1054,32 @@ DW.RegisterModule({
 
     CreatePanel = function(self, parent)
         return CreatePanel(parent)
+    end,
+})
+
+-- The Home page (Modules\Home.lua): a message of the day that is not the one
+-- you saw last time.
+DW.RegisterHomeSection({
+    id = "motd",
+    order = 15,
+    titleKey = "HOME_SEC_MOTD",
+    icon = "Interface\\GossipFrame\\GossipGossipIcon",
+    Snapshot = function()
+        return lastMotd
+    end,
+    Lines = function(ctx)
+        local motd = Plain(DW.GuildMOTD())
+        if motd then
+            lastMotd = motd
+        end
+        if type(ctx.before) ~= "string" or not motd or motd == ctx.before then
+            return {}
+        end
+        return { {
+            text = L.HOME_MOTD:format(motd), changed = true, tab = MODULE_ID,
+            onClick = function()
+                OpenView("chat")
+            end,
+        } }
     end,
 })

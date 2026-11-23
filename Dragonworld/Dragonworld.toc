@@ -10,6 +10,7 @@ Core.lua
 Comm.lua
 Status.lua
 Profile.lua
+Alts.lua
 Admin.lua
 Version.lua
 Update.lua
@@ -26,8 +27,12 @@ Modules\Guildchat.lua
 Modules\Guildbank.lua
 Modules\Forslag.lua
 Modules\Dungeons.lua
+Modules\QuestTogether.lua
 Modules\ProfessionData.lua
 Modules\Professions.lua
 Modules\Achievements.lua
+Modules\Home.lua
 MemberCard.lua
 RecipeWindow.lua
+CraftSearch.lua
+Modules\Kunngjoringer.lua

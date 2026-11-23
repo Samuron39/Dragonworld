@@ -275,7 +275,7 @@ end
 
 -- The order before the player has chosen (chosen by the guild leader).
 local DEFAULT_TAB_ORDER = {
-    "roster", "guildchat", "dungeons", "guildbank", "events", "achievements", "professions", "materialer", "ryddesekk", "keybinds", "forslag",
+    "home", "roster", "guildchat", "dungeons", "quest", "guildbank", "events", "achievements", "professions", "materialer", "ryddesekk", "keybinds", "forslag",
 }
 
 -- The modules that have a tab, in the chosen order (or the default order).
@@ -350,6 +350,11 @@ local function LayoutChips()
         chip:ClearAllPoints()
         chip:SetPoint("TOPLEFT", 0, -(index - 1) * step)
         chip:SetHeight(height)
+        -- The icon was sized for the full height: keep it inside the border.
+        if chip.icon then
+            local size = math.max(8, math.min(CHIP_HEIGHT - 14, height - 10))
+            chip.icon:SetSize(size, size)
+        end
     end
 end
 
@@ -393,19 +398,36 @@ end
 -- version on the left, the order of the tabs on the right.
 local RIGHT_COLUMN, RIGHT_WIDTH = 330, 266
 local ORDER_TOP, ORDER_ROW = -136, 24
+local SETTINGS_SCROLL_TOP, SETTINGS_LEFT_WIDTH = -118, 296 -- the scrolling part of the left column
+
+-- The height of a line in the list of tabs: smaller when there are many
+-- tabs, so the last one stays above the bottom edge.
+local function OrderRowHeight(count)
+    return math.min(ORDER_ROW, math.floor((BODY_HEIGHT + ORDER_TOP - 10) / math.max(1, count)))
+end
+
+-- Places a line in the list of tabs for the current number of tabs.
+local function PlaceOrderRow(row, index, rowH)
+    row:ClearAllPoints()
+    row:SetPoint("TOPLEFT", RIGHT_COLUMN, ORDER_TOP - (index - 1) * rowH)
+    row:SetSize(RIGHT_WIDTH, rowH - 2)
+    local size = math.min(20, rowH - 2)
+    row.icon:SetSize(size, size)
+    size = math.min(22, rowH - 2)
+    row.up:SetSize(size, size)
+    row.down:SetSize(size, size)
+end
 
 -- One line in the list of tabs: icon, name, and arrow up and down.
-local function GetOrderRow(panel, index)
+local function GetOrderRow(panel, index, rowH)
     local row = panel.orderRows[index]
     if row then
+        PlaceOrderRow(row, index, rowH or ORDER_ROW)
         return row
     end
     row = CreateFrame("Frame", nil, panel)
-    row:SetSize(RIGHT_WIDTH, ORDER_ROW - 2)
-    row:SetPoint("TOPLEFT", RIGHT_COLUMN, ORDER_TOP - (index - 1) * ORDER_ROW)
 
     row.icon = row:CreateTexture(nil, "ARTWORK")
-    row.icon:SetSize(20, 20)
     row.icon:SetPoint("LEFT", 0, 0)
     row.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
 
@@ -426,6 +448,7 @@ local function GetOrderRow(panel, index)
     row.name:SetJustifyH("LEFT")
     row.name:SetWordWrap(false)
 
+    PlaceOrderRow(row, index, rowH or ORDER_ROW)
     panel.orderRows[index] = row
     return row
 end
@@ -470,6 +493,13 @@ local function CreateBlinkChoices(parent, x, y, withKinds)
             check.swatch:SetColorTexture(color[1], color[2], color[3], 1)
             check.label:ClearAllPoints()
             check.label:SetPoint("LEFT", check.swatch, "RIGHT", 6, 0)
+            -- The label starts x + 64 in (box 24, gap 4, swatch 10, gap 6). In
+            -- the Settings scroll frame, which clips, a long label ends in "...".
+            local room = (parent:GetWidth() or 0) - (x + 64) - 6
+            if room > 50 then
+                check.label:SetWidth(room)
+                check.label:SetWordWrap(false)
+            end
             group.kinds[index] = check
         end
     end
@@ -554,35 +584,58 @@ local function CreateSettingsPanel(parent)
     end)
     panel.minimapLabel = panel.minimapCheck.label
 
-    panel.blink = CreateBlinkChoices(panel, 14, -122, true)
-    local y = -122 - #panel.blink.kinds * KIND_ROW - 32
+    -- Everything below the minimap box scrolls, so later blink kinds and
+    -- texts in long languages still fit above the bottom edge.
+    local scroll = CreateFrame("ScrollFrame", "DragonworldSettingsLeft", panel, "ScrollFrameTemplate")
+    scroll:SetPoint("TOPLEFT", 0, SETTINGS_SCROLL_TOP)
+    scroll:SetPoint("BOTTOMRIGHT", panel, "BOTTOMLEFT", RIGHT_COLUMN - 34, 6)
+    local left = CreateFrame("Frame", nil, scroll)
+    left:SetSize(SETTINGS_LEFT_WIDTH, 1)
+    scroll:SetScrollChild(left)
+    panel.leftScroll, panel.left = scroll, left
+
+    -- Positions in the scrolling column are relative to its top, which is
+    -- SETTINGS_SCROLL_TOP down the panel.
+    local top = SETTINGS_SCROLL_TOP
+    panel.blink = CreateBlinkChoices(left, 14, -122 - top, true)
+    local y = -122 - top - #panel.blink.kinds * KIND_ROW - 32
 
     -- The action bar button.
-    panel.actionLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    panel.actionLabel = left:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     panel.actionLabel:SetPoint("TOPLEFT", 16, y)
-    panel.actionSource = DW.CreateActionButtonSource(panel, 32)
+    panel.actionSource = DW.CreateActionButtonSource(left, 32)
     panel.actionSource:SetPoint("TOPLEFT", 16, y - 18)
-    panel.actionHint = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    panel.actionHint = left:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     panel.actionHint:SetPoint("TOPLEFT", panel.actionSource, "TOPRIGHT", 10, -2)
-    panel.actionHint:SetWidth(250)
+    -- The scroll frame clips its child, so every text must end inside
+    -- SETTINGS_LEFT_WIDTH (the hint starts at 16 + 32 + 10 = 58).
+    panel.actionHint:SetWidth(SETTINGS_LEFT_WIDTH - 58 - 6)
     panel.actionHint:SetJustifyH("LEFT")
     y = y - 18 - 32 - 14
 
-    -- The version, and whether a newer one exists (Update.lua).
-    panel.versionLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    -- The version, and whether a newer one exists (Update.lua). The texts
+    -- below the version wrap, so each one hangs from the one above it.
+    local textWidth = SETTINGS_LEFT_WIDTH - 16 - 6
+    local function WrappedText(font)
+        local text = left:CreateFontString(nil, "OVERLAY", font)
+        text:SetWidth(textWidth)
+        text:SetJustifyH("LEFT")
+        text:SetWordWrap(true)
+        return text
+    end
+    panel.versionLabel = left:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     panel.versionLabel:SetPoint("TOPLEFT", 16, y)
-    panel.versionText = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    panel.versionText = left:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
     panel.versionText:SetPoint("TOPLEFT", 16, y - 18)
-    panel.versionStatus = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    panel.versionStatus = WrappedText("GameFontHighlightSmall")
     panel.versionStatus:SetPoint("TOPLEFT", 16, y - 34)
-    panel.link = CreateLinkBox(panel, 270)
-    panel.link:SetPoint("TOPLEFT", 22, y - 50)
-    panel.linkHint = panel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    panel.linkHint:SetPoint("TOPLEFT", 16, y - 76)
-    panel.autoText = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    panel.autoText:SetPoint("TOPLEFT", 16, y - 92)
-    panel.autoText:SetWidth(290)
-    panel.autoText:SetJustifyH("LEFT")
+    panel.versionStatusY = y - 34
+    panel.link = CreateLinkBox(left, 270)
+    panel.link:SetPoint("TOPLEFT", panel.versionStatus, "BOTTOMLEFT", 6, -4)
+    panel.linkHint = WrappedText("GameFontDisableSmall")
+    panel.linkHint:SetPoint("TOPLEFT", panel.link, "BOTTOMLEFT", -6, -4)
+    panel.autoText = WrappedText("GameFontHighlightSmall")
+    panel.autoText:SetPoint("TOPLEFT", panel.linkHint, "BOTTOMLEFT", 0, -4)
 
     -- Right column: the order of the tabs on the left edge.
     panel.orderLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -621,11 +674,17 @@ local function CreateSettingsPanel(parent)
         self.link:SetText(DW.DOWNLOAD_URL or "")
         self.linkHint:SetText(L.UP_LINK_HINT)
         self.autoText:SetText(DW.IsAutoUpdate() and L.UP_AUTO_ON or L.UP_AUTO_OFF)
+        -- The scrolling part is as tall as what is in it: the chain from the
+        -- version status down to the automatic-update text.
+        self.left:SetHeight(math.ceil(-self.versionStatusY + self.versionStatus:GetStringHeight() + 4
+            + self.link:GetHeight() + 4 + self.linkHint:GetStringHeight() + 4
+            + self.autoText:GetStringHeight() + 8))
 
         self.orderLabel:SetText(L.TAB_ORDER)
         local ids = OrderedModuleIDs()
+        local rowH = OrderRowHeight(#ids)
         for index, id in ipairs(ids) do
-            local row = GetOrderRow(self, index)
+            local row = GetOrderRow(self, index, rowH)
             local module = DW.modules[id]
             row.id = id
             row.icon:SetTexture(module.icon or DW.ICON)
@@ -780,7 +839,8 @@ local function FinishSetup()
 end
 
 local INTRO_TIPS = { "INTRO_TIP_BANK", "INTRO_TIP_PROFESSIONS", "INTRO_TIP_GUILDBANK", "INTRO_TIP_STATUS", "INTRO_TIP_BUTTON" }
-local INTRO_ROW = 26
+local INTRO_ROW = 26  -- the full height of a row in the list of tabs
+local INTRO_TOP = -64 -- where the list starts
 
 -- The intro: the tabs on the left (icon, name and what they do, in tab order),
 -- "Getting started" on the right.
@@ -828,29 +888,59 @@ local function CreateIntroPrompt(parent)
         self.next.label:SetText(L.INTRO_NEXT)
 
         local ids = OrderedModuleIDs()
+        -- With many tabs the rows move closer together, so the last one stays
+        -- above the Next button. Below the full height a note gets one line,
+        -- with the whole text in a tooltip.
+        local introRow = math.min(INTRO_ROW, math.floor((BODY_HEIGHT + INTRO_TOP - 60) / math.max(1, #ids)))
+        local compact = introRow < INTRO_ROW
+        self.introRow = introRow
         for index, id in ipairs(ids) do
             local row = self.rows[index]
             if not row then
                 row = {}
                 row.icon = self:CreateTexture(nil, "ARTWORK")
-                row.icon:SetSize(20, 20)
-                row.icon:SetPoint("TOPLEFT", 20, -64 - (index - 1) * INTRO_ROW)
                 row.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
                 row.text = self:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
                 row.text:SetPoint("TOPLEFT", row.icon, "TOPRIGHT", 8, 0)
                 row.text:SetWidth(380)
                 row.text:SetJustifyH("LEFT")
+                row.hover = CreateFrame("Frame", nil, self)
+                row.hover:SetPoint("TOPLEFT", row.icon, "TOPLEFT", 0, 0)
+                row.hover:SetPoint("BOTTOMRIGHT", row.icon, "BOTTOMRIGHT", 388, 0)
+                row.hover:SetScript("OnEnter", function(hover)
+                    if not hover.title then
+                        return
+                    end
+                    GameTooltip:SetOwner(hover, "ANCHOR_RIGHT")
+                    GameTooltip:AddLine(hover.title)
+                    GameTooltip:AddLine(hover.notes or "", 1, 1, 1, true)
+                    GameTooltip:Show()
+                end)
+                row.hover:SetScript("OnLeave", function()
+                    GameTooltip:Hide()
+                end)
                 self.rows[index] = row
             end
+            row.icon:ClearAllPoints()
+            row.icon:SetPoint("TOPLEFT", 20, INTRO_TOP - (index - 1) * introRow)
+            local size = math.min(20, introRow - 2)
+            row.icon:SetSize(size, size)
+            row.text:SetWordWrap(not compact)
+            row.text:SetHeight(compact and (introRow - 2) or 0)
             local module = DW.modules[id]
             row.icon:SetTexture(module.icon or DW.ICON)
             row.text:SetText(("|cffffd100%s|r  %s"):format(DW.ModuleTitle(module), DW.ModuleNotes(module)))
+            row.hover.title = compact and DW.ModuleTitle(module) or nil
+            row.hover.notes = DW.ModuleNotes(module)
+            row.hover:EnableMouse(compact)
             row.icon:Show()
             row.text:Show()
+            row.hover:Show()
         end
         for index = #ids + 1, #self.rows do
             self.rows[index].icon:Hide()
             self.rows[index].text:Hide()
+            self.rows[index].hover:Hide()
         end
     end
 
@@ -1023,6 +1113,128 @@ end
 
 DW.OnStatusChanged(RefreshStatusPills)
 
+-- The pinned announcement under the status buttons ----------------------------------
+
+-- One line under the status buttons, on every tab: the newest pinned
+-- announcement (Modules\Kunngjoringer.lua), else the newest one kept (30
+-- days, as long as an unpinned one is shown, so members can always reach
+-- them), else for officers an invitation to write one. A click opens the
+-- announcements window.
+local STRIP_RECENT = 30 * 86400
+local STRIP_TIP_BYTES = 200
+local pinnedHooked = false
+
+-- Cuts a text to a number of bytes without splitting a letter.
+local function CutBytes(text, maxBytes)
+    local out = ""
+    for char in text:gmatch("[%z\1-\127\194-\244][\128-\191]*") do
+        if #out + #char > maxBytes then
+            return out .. "..."
+        end
+        out = out .. char
+    end
+    return out
+end
+
+local function RefreshPinnedStrip()
+    if not window or not window.pinned then
+        return
+    end
+    local strip = window.pinned
+    strip.id, strip.write = nil, nil
+    if not DW.IsMember() or not DW.PinnedAnnouncements then
+        strip:Hide()
+        return
+    end
+    local pinned = DW.PinnedAnnouncements()
+    if #pinned > 0 then
+        local text = L.ANN_STRIP_PINNED:format(pinned[1].title)
+        if #pinned > 1 then
+            text = L.ANN_STRIP_MORE:format(text, #pinned - 1)
+        end
+        strip.label:SetText(text)
+        strip.label:SetTextColor(1, 1, 1)
+        strip.id = pinned[1].id
+    else
+        local newest
+        for _, item in ipairs(DW.Announcements()) do
+            if not newest or item.created > newest.created then
+                newest = item
+            end
+        end
+        if newest and newest.created > DW.ServerNow() - STRIP_RECENT then
+            strip.label:SetText(L.ANN_STRIP_LATEST:format(newest.title))
+            strip.label:SetTextColor(0.75, 0.75, 0.75)
+            strip.id = newest.id
+        elseif DW.IsOfficer() then
+            strip.label:SetText(L.ANN_STRIP_WRITE)
+            strip.label:SetTextColor(0.75, 0.75, 0.75)
+            strip.write = true
+        else
+            strip:Hide()
+            return
+        end
+    end
+    strip:Show()
+end
+
+local function CreatePinnedStrip(f)
+    local strip = CreateFrame("Button", nil, f)
+    strip:SetSize(414, 18)
+    strip:SetPoint("TOPRIGHT", -46, -60)
+    strip.label = strip:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    strip.label:SetAllPoints()
+    strip.label:SetJustifyH("RIGHT")
+    strip.label:SetWordWrap(false)
+    strip:SetScript("OnClick", function(self)
+        GameTooltip:Hide()
+        if not DW.ShowAnnouncements then
+            return
+        end
+        if self.write then
+            DW.ShowAnnouncements(nil, true)
+        else
+            DW.ShowAnnouncements(self.id)
+        end
+    end)
+    strip:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_BOTTOM")
+        local item
+        for _, entry in ipairs(DW.Announcements and DW.Announcements() or {}) do
+            if entry.id == self.id then
+                item = entry
+            end
+        end
+        if item then
+            GameTooltip:AddLine(item.title)
+            GameTooltip:AddLine(DW.OfficerBadge(item.author) .. (item.author:match("^([^-]+)") or item.author), 0.80, 0.80, 0.80)
+            if item.body ~= "" then
+                GameTooltip:AddLine(CutBytes(item.body, STRIP_TIP_BYTES), 1, 1, 1, true)
+            end
+            GameTooltip:AddLine(L.ANN_STRIP_TIP, 0.60, 0.60, 0.60)
+        else
+            GameTooltip:AddLine(L.ANN_STRIP_WRITE)
+        end
+        GameTooltip:Show()
+    end)
+    strip:SetScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
+    strip:Hide()
+    f.pinned = strip
+
+    -- Kunngjoringer.lua loads after this file. Registered once, here, because
+    -- the window is made once (PLAYER_LOGIN can come more than once).
+    if not pinnedHooked and DW.OnAnnouncementsChanged then
+        pinnedHooked = true
+        DW.OnAnnouncementsChanged(RefreshPinnedStrip)
+    end
+end
+
+if DW.OnOfficersChanged then
+    DW.OnOfficersChanged(RefreshPinnedStrip)
+end
+
 -- The window ------------------------------------------------------------------
 
 local function CreateWindow()
@@ -1088,6 +1300,8 @@ local function CreateWindow()
 
     -- The status buttons at the top right, in line with the guild name.
     CreateStatusPills(f)
+    -- Under them, the pinned announcement.
+    CreatePinnedStrip(f)
 
     local line = f:CreateTexture(nil, "ARTWORK")
     line:SetColorTexture(1.00, 0.82, 0.00, 0.35)
@@ -1140,6 +1354,7 @@ local function ApplyLanguage()
     window.settingsChip.label:SetText(L.SETTINGS)
     window.subtitle:SetText(L.SUBTITLE:upper())
     RefreshStatusPills()
+    RefreshPinnedStrip()
     if panels[SETTINGS] then
         panels[SETTINGS]:Refresh()
     end
@@ -1161,6 +1376,7 @@ DW.OnMembershipChanged(function()
     end
     LayoutChips()
     RefreshStatusPills()
+    RefreshPinnedStrip()
     if window:IsShown() and window.body:IsShown() and selected and selected ~= SETTINGS
         and not DW.CanUseModule(selected) then
         Select(FirstModuleID())
@@ -1194,6 +1410,7 @@ ShowWindow = function(id)
     end
     LayoutChips()
     RefreshStatusPills()
+    RefreshPinnedStrip()
     window:Show()
 
     if not DW.HasChosenLanguage() then
@@ -1267,6 +1484,48 @@ ShowWindow = function(id)
     end
 end
 
+-- Overlays ----------------------------------------------------------------------
+
+-- Windows that lie over the main window (the member card, the dungeon picker,
+-- the recipe window, ...), by their global frame name. Only one should be on
+-- top at a time: a window that opens hides the others with DW.HideOverlays,
+-- naming itself and any it may lie over. Frame levels above the main window:
+-- craft search +30, recipes +40, announcements +50.
+local overlayNames = {}
+
+function DW.RegisterOverlay(globalName)
+    if type(globalName) ~= "string" or globalName == "" then
+        return
+    end
+    for _, name in ipairs(overlayNames) do
+        if name == globalName then
+            return
+        end
+    end
+    overlayNames[#overlayNames + 1] = globalName
+end
+
+DW.RegisterOverlay("DragonworldMemberCard")
+DW.RegisterOverlay("DragonworldDungeonPicker")
+DW.RegisterOverlay("DragonworldRecipes")
+
+-- Hides every registered overlay that exists and is shown, except the names given.
+function DW.HideOverlays(...)
+    local keep = {}
+    for index = 1, select("#", ...) do
+        local name = select(index, ...)
+        if type(name) == "string" then
+            keep[name] = true
+        end
+    end
+    for _, name in ipairs(overlayNames) do
+        local overlay = _G[name]
+        if not keep[name] and type(overlay) == "table" and overlay.IsShown and overlay:IsShown() then
+            overlay:Hide()
+        end
+    end
+end
+
 -- Public ------------------------------------------------------------------------
 
 -- Opens the main window, or closes it if it is open.
@@ -1305,6 +1564,12 @@ end
 
 function DW.IsMainWindowShown()
     return window ~= nil and window:IsShown()
+end
+
+-- Is the window open with its tabs showing (not the language choice, the
+-- intro or the role question)?
+function DW.IsMainBodyShown()
+    return window ~= nil and window:IsShown() and window.body:IsShown()
 end
 
 -- Is this module shown right now (window open, setup done, tab selected)?

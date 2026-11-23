@@ -1474,3 +1474,40 @@ DW.RegisterModule({
         return CreatePanel(parent)
     end,
 })
+
+-- The Home page (Modules\Home.lua): the gold in the bank, when someone has seen
+-- it since you last played. The amount at logout is kept to compare with.
+DW.RegisterHomeSection({
+    id = "guildbank",
+    order = 70,
+    titleKey = "HOME_SEC_GUILDBANK",
+    icon = "Interface\\Icons\\INV_Misc_Coin_02",
+    Snapshot = function()
+        local money = db.money
+        return type(money) == "table" and money.amount or nil
+    end,
+    Lines = function(ctx)
+        local money = db.money
+        if not ctx.since or type(money) ~= "table" or type(money.amount) ~= "number" or (money.time or 0) <= ctx.since then
+            return {}
+        end
+        local before = tonumber(ctx.before)
+        if before == money.amount then
+            return {}
+        end
+        local text
+        if before then
+            local diff = money.amount - before
+            local change = diff > 0 and ("|cff40ff40+|r" .. MoneyText(diff)) or ("|cffff4040-|r" .. MoneyText(-diff))
+            text = L.HOME_GB_CHANGE:format(MoneyText(money.amount), MoneyText(before), change)
+        else
+            text = L.HOME_GB_NOW:format(MoneyText(money.amount))
+        end
+        return { {
+            text = text, when = money.time, tip = L.HOME_GB_TIP:format(money.by or "?"), changed = true, tab = MODULE_ID,
+            onClick = function()
+                DW.OpenModule(MODULE_ID)
+            end,
+        } }
+    end,
+})
