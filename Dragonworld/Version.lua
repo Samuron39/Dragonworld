@@ -11,22 +11,22 @@
 
 local ADDON_NAME, DW = ...
 
-DW.RELEASE = "0.25.1"
+DW.RELEASE = "0.26.0"
 
 -- When RELEASE was released (seconds since 1970, UTC). With automatic updates
 -- it is downloaded a few minutes after this. Written by release.ps1.
-DW.RELEASED_AT = 1795350373
+DW.RELEASED_AT = 1795466428
 
 -- The newest version that added or removed files or images. With an older
 -- one than this, /reload is not enough; the game must be fully restarted.
 -- Written by release.ps1.
-DW.RESTART_RELEASE = "0.22.0"
+DW.RESTART_RELEASE = "0.26.0"
 
 -- What is new in RELEASE: a sentence or two per language. Shown in the update
 -- window of those who still have an older version (it travels to them over
 -- the guild channel, so each text must stay within 220 bytes), and once in
 -- chat after updating. Written by release.ps1 from -News.
-DW.RELEASE_NEWS = { en = "The welcome guide now tells you to log in and open the bank once on every character, alts outside the guild too, so Materials counts their items and gold.", nb = "Velkomstguiden ber deg nå logge inn og åpne banken én gang på hver karakter, også alter utenfor guilden, så Materialer teller tingene og gullet deres.", nl = "De welkomstgids vraagt je nu om op elk personage in te loggen en de bank te openen, ook alts buiten de guild, zodat Materialen hun spullen en goud telt.", de = "Die Einführung sagt jetzt, dass du dich auf jedem Charakter einloggen und die Bank öffnen sollst, auch bei Twinks, damit Materialien ihre Sachen und ihr Gold zählt.", da = "Velkomstguiden beder dig nu logge ind og åbne banken én gang på hver karakter, også alts uden for guilden, så Materialer tæller deres ting og guld.", sv = "Välkomstguiden ber dig nu logga in och öppna banken en gång på varje karaktär, även alts utanför guilden, så att Material räknar deras saker och guld.", fr = "Le guide de bienvenue te dit maintenant de te connecter et d'ouvrir la banque sur chaque personnage, rerolls compris, pour que Matériaux compte leurs objets et leur or." }
+DW.RELEASE_NEWS = { en = "Big update: new Home and Quest together tabs, Announcements, Polls, roles and reminders in Guild Events, Lead a group in Dungeons, Who can craft it?, a welcome banner and GUILD FIRST!", nb = "Stor oppdatering: nye tabs Hjem og Quest sammen, Kunngjøringer, Avstemninger, roller og påminnelser i Guild-events, Led en gruppe i Dungeons, Hvem kan lage det?, velkomst og FØRST I GUILDEN!", nl = "Grote update: nieuwe tabs Start en Samen questen, Mededelingen, Peilingen, rollen en herinneringen in Guild-events, Groep leiden in Dungeons, Wie kan het maken?, welkomstbanner en EERSTE IN DE GUILD!", de = "Großes Update: neue Tabs Übersicht und Gemeinsam questen, Ankündigungen, Umfragen, Rollen und Erinnerungen in Gilden-Events, Gruppe leiten, Wer kann es herstellen? und ERSTER SIEG DER GILDE!", da = "Stor opdatering: nye tabs Hjem og Quest sammen, Meddelelser, Afstemninger, roller og påmindelser i Guild-events, Led en gruppe i Dungeons, Hvem kan lave det?, velkomst og FØRST I GUILDEN!", sv = "Stor uppdatering: nya tabs Hem och Questa tillsammans, Meddelanden, Omröstningar, roller och påminnelser i Guild-events, Led en grupp i Dungeons, Vem kan tillverka det? och FÖRST I GUILDEN!", fr = "Grosse mise à jour : onglets Accueil et Quêtes ensemble, Annonces, Sondages, rôles et rappels dans Événements, Mener un groupe, Qui peut le fabriquer ? et PREMIER DE LA GUILDE !" }
 
 -- Set to true by the updater (Updater\update.ps1) on PCs where automatic
 -- updates are turned on. Then the addon knows that new versions download by
