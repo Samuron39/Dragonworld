@@ -39,6 +39,8 @@ From PowerShell:
 
 The script runs the tests, writes `Version.lua` (`DW.RELEASE`, `DW.RELEASED_AT`, `DW.RESTART_RELEASE`, `DW.RELEASE_NEWS`), commits, tags, pushes to `main`, creates the GitHub release and installs the version in the game.
 
+If the script stops after "Committer og pusher" (the tag is on GitHub, but `gh release view vX.Y.Z` finds no release), do not run it again: that would make the next version number. Finish by hand with `gh release create vX.Y.Z dist\Dragonworld.zip Installer-Dragonworld.cmd Dragonworld\Updater\update.ps1 --title "Dragonworld X.Y.Z" --notes-file <file>`. Until then nobody gets the version: the updater only looks at the latest release.
+
 From a worktree (`.claude\worktrees\...`): the script stops if GitHub's `main` has work the worktree lacks, which happens when another session released in the meantime. Then run `git merge origin/main`, run the tests and release again; never release around it, or that work disappears from the guild's addon. Set `$env:NODE_PATH` to the main checkout's `tests\node_modules` first (a worktree has none). Afterwards the main checkout's own `main` is behind GitHub: `git pull --ff-only` there when it has no unsaved work.
 
 ## A new PC

@@ -183,7 +183,12 @@ try {
     $updater = Join-Path $Addon 'Updater\update.ps1'
     if (-not $Notes) { $Notes = [string]$News['en'] }
     if (-not $Notes.Contains('First time:')) { $Notes += "`n`nFirst time: download Installer-Dragonworld.cmd (or Dragonworld.zip) and double-click Installer-Dragonworld.cmd. In game, the addon tells you when a newer version is out; then double-click Dragonworld Updater on your desktop." }
-    Invoke-Checked gh @('release', 'create', "v$version", $zip, $installer, $updater, '--title', "Dragonworld $version", '--notes', $Notes)
+    # The notes go to gh in a file. As an argument, Windows PowerShell 5.1 splits
+    # a text with double quotes in it into several arguments, and gh then fails
+    # after the tag is already pushed (0.27.0).
+    $notesFile = Join-Path $Dist 'release-notes.md'
+    Write-Utf8 $notesFile $Notes
+    Invoke-Checked gh @('release', 'create', "v$version", $zip, $installer, $updater, '--title', "Dragonworld $version", '--notes-file', $notesFile)
 
     # 6. Inn i spillet.
     if (-not $NoInstall -and (Test-Path -LiteralPath (Split-Path -Parent $Game))) {
