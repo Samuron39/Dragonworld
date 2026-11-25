@@ -1713,6 +1713,8 @@ function DW.ShowAnnouncements(id, openForm)
         DW.Guard()
         return
     end
+    -- Laid out for the full window: the compact view becomes it first.
+    DW.ExpandWindow()
     if not DW.IsMainWindowShown() and DW.ToggleMainWindow then
         DW.ToggleMainWindow()
     end

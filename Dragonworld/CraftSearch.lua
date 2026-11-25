@@ -1060,6 +1060,8 @@ function DW.ShowCraftSearch(text)
     if not _G.DragonworldFrame or not DW.IsMember() then
         return
     end
+    -- Laid out for the full window: the compact view becomes it first.
+    DW.ExpandWindow()
     if not overlay and not CreateOverlay() then
         return
     end

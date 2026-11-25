@@ -26,6 +26,29 @@ if (!tocLines.some((l) => /^## Interface:.*\b16001\b/.test(l))) {
   process.exit(1);
 }
 
+// The game's Lua 5.1 refuses to load a file in which one function reaches for
+// more than 60 names outside itself (upvalues). This VM is Lua 5.3, which
+// allows 255, so the harness would never notice. Count them here. (In Lua 5.3
+// a function that touches a global has one upvalue more, _ENV, than in the game.)
+const MAX_UPVALUES = 60;
+files.forEach((rel) => {
+  const full = path.join(addonDir, ...rel.split("\\"));
+  if (!fs.existsSync(full)) return; // reported below
+  const code = Uint8Array.from(readNoBom(full));
+  const C = lauxlib.luaL_newstate();
+  if (lauxlib.luaL_loadbuffer(C, code, code.length, to_luastring("@" + rel)) !== lua.LUA_OK) return; // the harness reports it
+  (function visit(proto) {
+    const hasEnv = proto.upvalues.some((u) => u.name && typeof u.name.getstr === "function" && to_jsstring(u.name.getstr()) === "_ENV");
+    const count = proto.upvalues.length - (hasEnv ? 1 : 0);
+    if (count > MAX_UPVALUES) {
+      console.error("FAIL: " + rel + ": the function at line " + proto.linedefined + " uses " + count +
+        " names from outside itself; the game's Lua allows " + MAX_UPVALUES + " (keep them in a table instead)");
+      process.exit(1);
+    }
+    proto.p.forEach(visit);
+  })(lua.lua_topointer(C, -1).p);
+});
+
 const L = lauxlib.luaL_newstate();
 lualib.luaL_openlibs(L);
 

@@ -1175,10 +1175,12 @@ local function ShowNotice()
 end
 
 -- The first time the main window is opened on a character: show the reminder.
-DW.OnWindowOpened(function(window)
+-- Not over the compact view (one pane beside a game window): it waits until
+-- the full window opens.
+DW.OnWindowOpened(function(window, compact)
     mainWindow = window
     local key = DW.CharacterKey()
-    if key and not (type(db.reminded) == "table" and db.reminded[key]) then
+    if not compact and key and not (type(db.reminded) == "table" and db.reminded[key]) then
         ShowNotice()
     elseif notice then
         notice:Hide()

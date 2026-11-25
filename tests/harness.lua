@@ -268,9 +268,28 @@ QT_MAPS = {
     [1436] = { name = "Westfall", mapType = 3, parentMapID = 1415 },
     [9002] = { name = "The Deadmines", mapType = 4, parentMapID = 1436 },
 }
+-- The game's own map pictures (Tactics): MAP_ART[uiMapID] = { layerWidth,
+-- layerHeight, tileWidth, tileHeight, textures = { fileID, ... } }. A map that
+-- is not here has no art: the game gives nothing. MAP_ART_CALLS counts the questions.
+MAP_ART = {}
+MAP_ART_CALLS = 0
 C_Map = {
     GetBestMapForUnit = function(unit) assert(unit == "player", "GetBestMapForUnit is only modelled for the player"); return QT_PLAYER_MAP end,
     GetMapInfo = function(id) assert(type(id) == "number", "GetMapInfo needs a map ID"); return QT_MAPS[id] end,
+    GetMapArtLayers = function(id)
+        assert(type(id) == "number", "GetMapArtLayers needs a map ID")
+        MAP_ART_CALLS = MAP_ART_CALLS + 1
+        local art = MAP_ART[id]
+        if not art then return nil end
+        return { { layerWidth = art.layerWidth, layerHeight = art.layerHeight, tileWidth = art.tileWidth, tileHeight = art.tileHeight,
+                   minScale = 0, maxScale = 1, additionalZoomSteps = 0 } }
+    end,
+    GetMapArtLayerTextures = function(id, layer)
+        assert(type(id) == "number" and layer == 1, "GetMapArtLayerTextures needs a map ID and layer 1")
+        local art = MAP_ART[id]
+        if not art then return nil end
+        return { table.unpack(art.textures) }
+    end,
 }
 QT_ZONE_TEXT = nil
 function GetRealZoneText() return QT_ZONE_TEXT end
@@ -360,14 +379,70 @@ function UnitFullName(unit) assert(unit == "player"); return character.name, cha
 fakeMoney = 1234567                                      -- copper the character has (GetMoney)
 function GetMoney() return fakeMoney end
 -- The player's group (globals: the main chunk is out of locals). members are
--- the OTHER people in it: { name, realm (or nil), guid, class, level }.
--- GROUP.canInvite, when not nil, is what C_PartyInfo.CanInvite answers.
+-- the OTHER people in it: { name, realm (or nil), guid, class, level }, and
+-- for the raid roster and the Tactics tests also leader, assistant (true),
+-- subgroup (1 to 8, the raid group; 1 when left out), role ("TANK", "HEALER",
+-- "DAMAGER"), online (false = offline) and rosterName (how GetRaidRosterInfo
+-- writes the name, when that differs from UnitName).
+-- GROUP.leader and GROUP.assistant are the player's own; GROUP.subgroup and
+-- GROUP.role too. GROUP.canInvite, when not nil, is what C_PartyInfo.CanInvite answers.
 GROUP = { members = {}, raid = false, leader = true, assistant = false, invites = {}, converted = 0, canInvite = nil }
 function GetNumGroupMembers() if #GROUP.members == 0 then return 0 end return #GROUP.members + 1 end
-function IsInGroup() return #GROUP.members > 0 end
+-- GROUP.instance = true: a group the game's group finder made (an "instance
+-- group"). It is not your "home" group, and it talks on INSTANCE_CHAT.
+LE_PARTY_CATEGORY_HOME, LE_PARTY_CATEGORY_INSTANCE = 1, 2
+function IsInGroup(category)
+    if #GROUP.members == 0 then return false end
+    if category == LE_PARTY_CATEGORY_HOME then return not GROUP.instance end
+    if category == LE_PARTY_CATEGORY_INSTANCE then return GROUP.instance == true end
+    return true
+end
 function IsInRaid() return GROUP.raid end
-function UnitIsGroupLeader(unit) return unit == "player" and GROUP.leader end
-function UnitIsGroupAssistant(unit) return unit == "player" and GROUP.assistant end
+-- Leader and assistant: the player's own flags for "player" (and the player's
+-- raid slot), a member's for partyN and raidN. Any other token is nobody. A
+-- member's flag can be SECRET: then the game hides the answer.
+function UnitIsGroupLeader(unit)
+    if unit == "player" then return GROUP.leader end
+    if not tostring(unit):match("^%a+%d+$") then return false end
+    local who = GROUP_UNIT(unit)
+    if who == "player" then return GROUP.leader end
+    if who ~= nil and who.leader == SECRET then return SECRET end
+    return who ~= nil and who.leader == true
+end
+function UnitIsGroupAssistant(unit)
+    if unit == "player" then return GROUP.assistant end
+    if not tostring(unit):match("^%a+%d+$") then return false end
+    local who = GROUP_UNIT(unit)
+    if who == "player" then return GROUP.assistant end
+    if who ~= nil and who.assistant == SECRET then return SECRET end
+    return who ~= nil and who.assistant == true
+end
+-- The raid roster: name, rank (2 leader, 1 assistant, 0), raid group, level,
+-- class name, class token, zone, online, dead, role (MAINTANK...), master
+-- looter, combat role. Index 1 is the player. Nothing outside a raid.
+function GetRaidRosterInfo(index)
+    assert(type(index) == "number", "GetRaidRosterInfo needs an index")
+    if not GROUP.raid or #GROUP.members == 0 then return nil end
+    if index == 1 then
+        local name = UnitFullName("player")
+        return name, GROUP.leader and 2 or (GROUP.assistant and 1 or 0), GROUP.subgroup or 1, UnitLevel("player"), "Class", select(2, UnitClass("player")),
+            "Zone", true, false, nil, false, GROUP.role or "NONE"
+    end
+    local who = GROUP.members[index - 1]
+    if not who then return nil end
+    return who.rosterName or who.name, who.leader and 2 or (who.assistant and 1 or 0), who.subgroup or 1, who.level or 60, "Class", who.class,
+        "Zone", who.online ~= false, false, nil, false, who.role or "NONE"
+end
+function UnitGroupRolesAssigned(unit)
+    local who = GROUP_UNIT(unit)
+    if who == "player" then return GROUP.role or "NONE" end
+    return who and (who.role or "NONE") or "NONE"
+end
+function UnitIsConnected(unit)
+    local who = GROUP_UNIT(unit)
+    if who == "player" then return true end
+    return who ~= nil and who.online ~= false
+end
 -- Who a unit token is: "player" (also "raid1" in a raid, the player's own
 -- raid slot), a member table (partyN, raidN), or nil for an unknown index.
 -- Any other token fails, so the addon cannot use one the fakes do not model.
@@ -460,10 +535,40 @@ local guildChat = {}                                     -- ordinary chat lines 
 local prefixes = {}
 local sendResult = 0                                     -- what the game answers to SendAddonMessage (0 = ok)
 local chatLock = false                                   -- the game's "no chat messaging right now" state
+-- Messages to the group (globals: the main chunk is out of locals). Only the
+-- names in GROUP_PREFIXES may go to the party or raid; they are recorded in
+-- GROUP_WIRE with the channel they went out on, and never in `wire`, so the
+-- guild checks see exactly what they saw before. The addon sends these
+-- inside pcall, so a broken call is noted in GROUP_WIRE_ERRORS as well as
+-- raised. Every attempt's answer is counted in GROUP_SEND_RESULTS.
+GROUP_PREFIXES = { DragonworldTac = true }
+GROUP_WIRE = {}
+GROUP_WIRE_ERRORS = {}
+GROUP_SEND_RESULTS = {}
+function GROUP_SEND(prefix, message, chatType)
+    local function need(ok, problem)
+        if not ok then GROUP_WIRE_ERRORS[#GROUP_WIRE_ERRORS + 1] = problem; error(problem) end
+    end
+    need(type(message) == "string" and #message <= 255 and not message:find("\0", 1, true), "bad addon message to the group")
+    need(chatType == "RAID" or chatType == "PARTY" or (chatType == "INSTANCE_CHAT" and GROUP.instance == true),
+        "a group message must go to RAID or PARTY (INSTANCE_CHAT in an instance group), not " .. tostring(chatType))
+    need(not chatLock, "sent an addon message to the group while the game had chat locked")
+    local result = sendResult
+    if result == 0 then
+        -- The game answers 5 (not in a group) to PARTY when alone and to RAID outside a raid.
+        if #GROUP.members == 0 or (chatType == "RAID" and not GROUP.raid) then result = 5 end
+        need(chatType ~= "PARTY" or not GROUP.raid, "in a raid the message must go to RAID")
+        need(chatType == "INSTANCE_CHAT" or not GROUP.instance, "in an instance group the message must go to INSTANCE_CHAT")
+    end
+    GROUP_SEND_RESULTS[result] = (GROUP_SEND_RESULTS[result] or 0) + 1
+    if result == 0 then GROUP_WIRE[#GROUP_WIRE + 1] = { prefix = prefix, message = message, chatType = chatType } end
+    return result
+end
 C_ChatInfo = {
     RegisterAddonMessagePrefix = function(prefix) assert(type(prefix) == "string" and #prefix <= 16, "prefix too long"); prefixes[prefix] = true; return 0 end,
     SendAddonMessage = function(prefix, message, chatType)
         assert(prefixes[prefix], "sending on a prefix that was never registered")
+        if GROUP_PREFIXES[prefix] then return GROUP_SEND(prefix, message, chatType) end
         assert(type(message) == "string" and #message <= 255 and not message:find("\0", 1, true), "bad addon message")
         assert(not chatLock, "sent an addon message while the game had chat locked")
         if sendResult == 0 then wire[#wire + 1] = { prefix = prefix, message = message, chatType = chatType } end
@@ -784,11 +889,13 @@ function FontString:SetFont(path, size, flags)
     self.font = { path, size }
     return true
 end
+function FontString:SetShadowOffset(x, y) assert(type(x) == "number" and type(y) == "number", "SetShadowOffset(x, y)"); self.shadowOffset = { x, y } end
+function FontString:SetShadowColor(r, g, b, a) assert(type(r) == "number" and type(g) == "number" and type(b) == "number", "SetShadowColor(r, g, b)"); self.shadowColor = { r, g, b, a } end
 
 local Texture = setmetatable({}, { __index = Region })
 Texture.__index = Texture
 function Texture:SetTexture(t) assert(t ~= nil, "SetTexture(nil)"); self.texture = t end
-function Texture:SetColorTexture(r, g, b, a) assert(r and g and b); self.texture = "color" end
+function Texture:SetColorTexture(r, g, b, a) assert(r and g and b); self.texture = "color"; self.flatColour = { r, g, b, a } end
 function Texture:SetTexCoord(...) assert(select("#", ...) == 4) end
 local BLEND_MODES = { DISABLE = true, BLEND = true, ALPHAKEY = true, ADD = true, MOD = true }
 function Texture:SetBlendMode(mode) assert(BLEND_MODES[mode], "SetBlendMode: unknown mode " .. tostring(mode)); self.blend = mode end
@@ -799,6 +906,37 @@ function Texture:AddMaskTexture(mask) assert(mask ~= nil, "AddMaskTexture(nil)")
 function Texture:SetDesaturated(on) self.desaturated = on and true or false end
 ATLASES = { ["gamepad-hud-actionbar-casting-complete-glow"] = true, ["gamepad-actionbar-circleslot-border-hover"] = true }
 function Texture:SetAtlas(name) assert(type(name) == "string" and ATLASES[name], "unknown atlas " .. tostring(name)); self.atlas = name; self.texture = nil; return true end
+-- What the Tactics board draws with: a texture can change its layer, be turned
+-- and lose its mask again. Like the game, a colour must be a number from 0 to 1
+-- that is a number (0 / 0 is not).
+function Texture:SetDrawLayer(layer, sublevel)
+    assert(layer == "BACKGROUND" or layer == "BORDER" or layer == "ARTWORK" or layer == "OVERLAY" or layer == "HIGHLIGHT", "SetDrawLayer: unknown layer " .. tostring(layer))
+    assert(sublevel == nil or (type(sublevel) == "number" and sublevel >= -8 and sublevel <= 7), "texture sublevel out of range")
+    self.layer, self.sublevel = layer, sublevel
+end
+function Texture:SetRotation(angle) assert(type(angle) == "number" and angle == angle, "SetRotation needs a number"); self.rotation = angle end
+function Texture:RemoveMaskTexture(mask) assert(mask ~= nil and self.mask == mask, "RemoveMaskTexture: not the mask this texture has"); self.maskRemoved = true end
+-- A line (Frame:CreateLine): placed by its two ends, each given from a point of
+-- a region. It has no size and no anchors of its own. FAKE_DRAWN counts what is
+-- made (a global: the main chunk is out of locals).
+FAKE_DRAWN = { lines = 0, masks = 0 }
+FAKE_LINE = setmetatable({}, { __index = Texture })
+FAKE_LINE.__index = FAKE_LINE
+function FAKE_LINE:SetThickness(thickness)
+    assert(type(thickness) == "number" and thickness == thickness and thickness > 0, "SetThickness needs a positive number")
+    self.thickness = thickness
+end
+function FAKE_LINE:SetStartPoint(point, relTo, x, y)
+    assert(type(point) == "string" and type(relTo) == "table" and type(x) == "number" and type(y) == "number" and x == x and y == y, "SetStartPoint(point, region, x, y)")
+    self.from = { x, y }
+end
+function FAKE_LINE:SetEndPoint(point, relTo, x, y)
+    assert(type(point) == "string" and type(relTo) == "table" and type(x) == "number" and type(y) == "number" and x == x and y == y, "SetEndPoint(point, region, x, y)")
+    self.to = { x, y }
+end
+function FAKE_LINE:SetPoint() error("a line is placed with SetStartPoint and SetEndPoint, not SetPoint") end
+function FAKE_LINE:SetAllPoints() error("a line is placed with SetStartPoint and SetEndPoint, not SetAllPoints") end
+function FAKE_LINE:SetSize() error("a line has a thickness, not a size") end
 
 local Frame = setmetatable({}, { __index = Region })
 Frame.__index = Frame
@@ -876,7 +1014,7 @@ function Frame:SetNormalTexture(t) assert(self.kind == "Button" or self.kind == 
 function Frame:GetText() assert(self.kind == "EditBox", "GetText on a frame that is not an EditBox"); return self.text or "" end
 function Frame:SetAutoFocus(auto) assert(self.kind == "EditBox", "SetAutoFocus on non-EditBox") end
 function Frame:SetMaxBytes(bytes) assert(self.kind == "EditBox" and type(bytes) == "number", "SetMaxBytes"); self.maxBytes = bytes end
-function Frame:ClearFocus() assert(self.kind == "EditBox", "ClearFocus on non-EditBox") end
+function Frame:ClearFocus() assert(self.kind == "EditBox", "ClearFocus on non-EditBox"); self.focused = false end
 function Frame:SetPushedTexture(t) assert(self.kind == "Button" or self.kind == "CheckButton", "SetPushedTexture on non-button"); assert(t ~= nil); self.pushedTexture = t end
 function Frame:SetDisabledTexture(t) assert(self.kind == "Button" or self.kind == "CheckButton", "SetDisabledTexture on non-button"); assert(t ~= nil); self.disabledTexture = t end
 -- A text field over several lines needs a font of its own when it has no template.
@@ -909,6 +1047,31 @@ function Frame:SetChecked(v) assert(self.kind == "CheckButton", "SetChecked on n
 function Frame:GetChecked() assert(self.kind == "CheckButton", "GetChecked on non-CheckButton"); return self.checked end
 function Frame:SetAttribute(key, value) Region.notLocked(self, "SetAttribute"); self.attributes = self.attributes or {}; self.attributes[key] = value end
 function Frame:GetAttribute(key) return self.attributes and self.attributes[key] end
+-- What the Tactics board and its windows need of a frame. Tests place a frame
+-- on the screen with frame.screenLeft and frame.screenTop (GetLeft, GetTop),
+-- and read what was drawn from frame.lines and frame.textures.
+function Frame:CreateLine(name, layer, template, sublevel)
+    assert(sublevel == nil or (type(sublevel) == "number" and sublevel >= -8 and sublevel <= 7), "line sublevel out of range")
+    local line = setmetatable({ parent = self, shown = true, layer = layer, sublevel = sublevel }, FAKE_LINE)
+    self.lines = self.lines or {}
+    self.lines[#self.lines + 1] = line
+    FAKE_DRAWN.lines = FAKE_DRAWN.lines + 1
+    return line
+end
+function Frame:CreateMaskTexture()
+    FAKE_DRAWN.masks = FAKE_DRAWN.masks + 1
+    return setmetatable({ parent = self, shown = true, isMask = true }, Texture)
+end
+function Frame:SetClipsChildren(clips) self.clips = clips and true or false end
+function Frame:GetLeft() return self.screenLeft or 0 end
+function Frame:GetTop() return self.screenTop or 0 end
+function Frame:SetScale(scale) assert(type(scale) == "number" and scale > 0, "SetScale needs a positive number"); self.ownScale = scale end
+function Frame:GetScale() return self.ownScale or 1 end
+-- A greyed-out button runs OnEnter and OnLeave only when it is told to.
+function Frame:SetMotionScriptsWhileDisabled(on)
+    assert(self.kind == "Button" or self.kind == "CheckButton", "SetMotionScriptsWhileDisabled on non-button")
+    self.motionWhileDisabled = on and true or false
+end
 
 function CreateFrame(kind, name, parent, template)
     assert(FRAME_TYPES[kind], "unexpected frame type " .. tostring(kind))
@@ -1331,7 +1494,7 @@ do
         and intro.next.label.text == "Volgende" and #intro.tips == 5 and intro.tips[1].text == "- " .. ns.strings.nl.INTRO_TIP_BANK
         and intro.tips[2].text == "- " .. ns.strings.nl.INTRO_TIP_PROFESSIONS and intro.tips[3].text == "- " .. ns.strings.nl.INTRO_TIP_GUILDBANK)
     check("the intro lists every tab in tab order, with its icon, name and what it does",
-        #intro.rows == 15 and intro.rows[1].icon.texture == ns.modules.home.icon
+        #intro.rows == 16 and intro.rows[1].icon.texture == ns.modules.home.icon
         and intro.rows[1].text.text == "|cffffd100" .. ns.ModuleTitle(ns.modules.home) .. "|r  " .. ns.ModuleNotes(ns.modules.home)
         and intro.rows[2].text.text:find(ns.ModuleTitle(ns.modules.roster), 1, true) ~= nil
         and intro.rows[3].text.text:find(ns.strings.nl.GC_TITLE, 1, true) ~= nil, intro.rows[1] and intro.rows[1].text.text)
@@ -1430,23 +1593,23 @@ local rsChip, etterChip, kaputtChip = chipByID.ryddesekk, chipByID.etter, chipBy
 local matChip, kbChip, evChip, roChip = chipByID.materialer, chipByID.keybinds, chipByID.events, chipByID.roster
 check("the module asked for (/kast) is the one that opens", rsPanel ~= nil and rsPanel:IsVisible() and rsChip.selected and isGold(rsChip.borderColor))
 check("one chip per module that has content, top to bottom in order",
-    #chipOrder == 15 and chipOrder[1] == rsChip and chipOrder[2] == matChip and chipOrder[3] == kbChip and chipOrder[4] == evChip
+    #chipOrder == 16 and chipOrder[1] == rsChip and chipOrder[2] == matChip and chipOrder[3] == kbChip and chipOrder[4] == evChip
     and chipOrder[5] == roChip and chipOrder[6] == chipByID.guildchat and chipOrder[7] == chipByID.guildbank and chipOrder[8] == chipByID.forslag
-    and chipOrder[9] == chipByID.dungeons and chipOrder[10] == chipByID.quest and chipOrder[11] == chipByID.professions
-    and chipOrder[12] == chipByID.achievements and chipOrder[13] == chipByID.home and chipOrder[14] == etterChip and chipOrder[15] == kaputtChip
+    and chipOrder[9] == chipByID.dungeons and chipOrder[10] == chipByID.quest and chipOrder[11] == chipByID.tactics and chipOrder[12] == chipByID.professions
+    and chipOrder[13] == chipByID.achievements and chipOrder[14] == chipByID.home and chipOrder[15] == etterChip and chipOrder[16] == kaputtChip
     and chipByID.boom == nil, #chipOrder)
 do
     local ok = true
     -- The default order (the guild leader's choice), test modules last.
-    local position = { home = 1, roster = 2, guildchat = 3, dungeons = 4, quest = 5, guildbank = 6, events = 7, achievements = 8, professions = 9, materialer = 10,
-                       ryddesekk = 11, keybinds = 12, forslag = 13, etter = 14, kaputt = 15 }
+    local position = { home = 1, roster = 2, guildchat = 3, dungeons = 4, tactics = 5, quest = 6, guildbank = 7, events = 8, achievements = 9, professions = 10,
+                       materialer = 11, ryddesekk = 12, keybinds = 13, forslag = 14, etter = 15, kaputt = 16 }
     for _, chip in ipairs(chipOrder) do
         local index = position[chip.id] or 99
         local point, relTo, _, x, y = chip:GetPoint(1)
-        -- Fifteen tabs (thirteen modules and two test ones) do not fit 48 apart above
-        -- Settings (434 - 48 = 386 high), so they move to floor(386 / 15) = 25 apart and get 23 tall.
-        if not (point == "TOPLEFT" and x == 0 and y == -(index - 1) * 25 and chip:GetWidth() == 190 and chip:GetHeight() == 23
-            and (index - 1) * 25 + 23 <= 434 - 40) then ok = false end
+        -- Sixteen tabs (fourteen modules and two test ones) do not fit 48 apart above
+        -- Settings (434 - 48 = 386 high), so they move to floor(386 / 16) = 24 apart and get 22 tall.
+        if not (point == "TOPLEFT" and x == 0 and y == -(index - 1) * 24 and chip:GetWidth() == 190 and chip:GetHeight() == 22
+            and (index - 1) * 24 + 22 <= 434 - 40) then ok = false end
     end
     local sPoint, _, _, sx, sy = win.settingsChip:GetPoint(1)
     check("chips are stacked down the left side, Settings at the bottom", ok and sPoint == "BOTTOMLEFT" and sx == 0 and sy == 0)
@@ -5560,21 +5723,21 @@ end)()
             if row:IsShown() and row.id == id then return row end
         end
     end
-    local DEFAULT_ORDER = "home,roster,guildchat,dungeons,quest,guildbank,events,achievements,professions,materialer,ryddesekk,keybinds,forslag,etter,kaputt"
+    local DEFAULT_ORDER = "home,roster,guildchat,dungeons,tactics,quest,guildbank,events,achievements,professions,materialer,ryddesekk,keybinds,forslag,etter,kaputt"
     check("Settings lists the tabs in the default order (the guild leader's), in the chosen language",
         settings.orderLabel.text == "Rekkefølgen på fanene til venstre (bruk pilene)" and orderNames() == DEFAULT_ORDER
         and settings.orderRows[1].name.text == ns.ModuleTitle(ns.modules.home) and settings.orderRows[1].icon.texture == ns.modules.home.icon, orderNames())
     check("the top tab cannot move up, and the bottom one cannot move down",
         not settings.orderRows[1].up:IsEnabled() and settings.orderRows[1].down:IsEnabled()
-        and settings.orderRows[15].up:IsEnabled() and not settings.orderRows[15].down:IsEnabled())
+        and settings.orderRows[16].up:IsEnabled() and not settings.orderRows[16].down:IsEnabled() and settings.orderRows[17] == nil)
     check("the arrows use the game's own arrow pictures", settings.orderRows[1].up.normalTexture == "Interface\\Buttons\\UI-ScrollBar-ScrollUpButton-Up"
         and settings.orderRows[1].down.disabledTexture == "Interface\\Buttons\\UI-ScrollBar-ScrollDownButton-Disabled")
 
     rowFor("roster").down.scripts.OnClick(rowFor("roster").down)
     check("moving Members down swaps it with Guild chat in the sidebar at once",
-        chipY("home") == 0 and chipY("guildchat") == -25 and chipY("roster") == -50 and chipY("dungeons") == -75 and orderNames():find("^home,guildchat,roster,dungeons,") ~= nil, orderNames())
-    check("...and the order is saved", DragonworldDB.tabOrder[1] == "home" and DragonworldDB.tabOrder[2] == "guildchat" and DragonworldDB.tabOrder[3] == "roster" and #DragonworldDB.tabOrder == 15)
-    -- Forslag is 13th of 15 now: click its up arrow for as long as it can move.
+        chipY("home") == 0 and chipY("guildchat") == -24 and chipY("roster") == -48 and chipY("dungeons") == -72 and orderNames():find("^home,guildchat,roster,dungeons,") ~= nil, orderNames())
+    check("...and the order is saved", DragonworldDB.tabOrder[1] == "home" and DragonworldDB.tabOrder[2] == "guildchat" and DragonworldDB.tabOrder[3] == "roster" and #DragonworldDB.tabOrder == 16)
+    -- Forslag is 14th of 16 now: click its up arrow for as long as it can move.
     local row = rowFor("forslag")
     while row.up:IsEnabled() do
         row.up.scripts.OnClick(row.up)
@@ -5586,8 +5749,8 @@ end)()
     DragonworldDB.tabOrder = { "guildbank", "nothing-here", 42, "guildbank", "forslag" }
     ns.MoveModule("forslag", 1)
     check("a saved order with unknown or repeated names still works; tabs missing from it get their default place, others come last",
-        orderNames() == "home,roster,guildchat,dungeons,quest,guildbank,events,achievements,professions,materialer,ryddesekk,keybinds,etter,forslag,kaputt"
-        and chipY("home") == 0 and chipY("roster") == -25 and chipY("kaputt") == -14 * 25, orderNames())
+        orderNames() == "home,roster,guildchat,dungeons,tactics,quest,guildbank,events,achievements,professions,materialer,ryddesekk,keybinds,etter,forslag,kaputt"
+        and chipY("home") == 0 and chipY("roster") == -24 and chipY("kaputt") == -15 * 24, orderNames())
     DragonworldDB.tabOrder = { "forslag", "roster", "dungeons", "guildbank", "events", "professions", "materialer", "ryddesekk", "keybinds" }
     ns.MoveModule("etter", 1)
     check("a tab that is new since the order was saved lands right under the one before it by default (Guild chat under Members)",
@@ -5600,7 +5763,7 @@ end)()
     DragonworldDB.tabOrder = nil
     ns.MoveModule("materialer", -1)
     ns.MoveModule("materialer", 1)
-    check("back to the default order", orderNames() == DEFAULT_ORDER and chipY("home") == 0 and chipY("roster") == -25, orderNames())
+    check("back to the default order", orderNames() == DEFAULT_ORDER and chipY("home") == 0 and chipY("roster") == -24, orderNames())
 
     -- Forslag ---------------------------------------------------------------------
     local SUG_PREFIX = "DragonworldSug"
@@ -8146,7 +8309,7 @@ ns.SetMinimapButtonShown(true)
     end
     table.sort(shown)
     check("/dw opens the window with only the personal tabs", win:IsShown() and win.body:IsShown()
-        and table.concat(shown, ",") == "keybinds,materialer,professions,ryddesekk", table.concat(shown, ","))
+        and table.concat(shown, ",") == "keybinds,materialer,professions,ryddesekk,tactics", table.concat(shown, ","))
     local pills = false
     for _, pill in ipairs(win.statusPills) do pills = pills or pill:IsShown() end
     check("...without the status buttons, and the reminders about the guild stay away", not pills and not shareNotice:IsShown())
@@ -9195,7 +9358,8 @@ end)()
     at.scripts.OnLeave(at)
     if win:IsShown() then ns.ToggleMainWindow() end
     click(at)
-    check("clicking it opens Dragonworld on the Achievements tab", win:IsShown() and chipByID.achievements.selected)
+    check("clicking it opens only the Achievements pane, as the compact view (not the whole addon)",
+        win:IsShown() and ns.IsCompact() and ns.IsModuleShown("achievements") and not chipByID.achievements:IsShown())
     check("...and it does not blink", at.glow == nil)
     guildSelected = false
     window:UpdateCommunitiesTabs()
@@ -9203,7 +9367,8 @@ end)()
     guildSelected = true
     window:UpdateCommunitiesTabs()
     check("...and back with it on the guild", at:IsShown() and gt:IsShown())
-    if win:IsShown() then ns.ToggleMainWindow() end
+    click(at)
+    check("clicking it again closes the pane", not win:IsShown() and not ns.IsCompact())
 
     window:Hide()
 
@@ -9257,10 +9422,11 @@ end)()
     matTab.scripts.OnMouseUp(matTab, "RightButton", true)
     check("a right click does nothing", not win:IsShown())
     matTab.scripts.OnMouseUp(matTab, "LeftButton", true)
-    check("a click on Materials opens Dragonworld on the Materials tab", win:IsShown() and chipByID.materialer.selected)
+    check("a click on Materials opens only the Materials pane, as the compact view", win:IsShown() and ns.IsCompact() and ns.IsModuleShown("materialer"))
     profTab.scripts.OnMouseUp(profTab, "LeftButton", true)
-    check("...and on Professions, the Professions tab", win:IsShown() and chipByID.professions.selected)
+    check("...and on Professions, the Professions pane", win:IsShown() and ns.IsCompact() and ns.IsModuleShown("professions"))
     pf:Hide()
+    check("...which closes with the Professions window", not win:IsShown())
 
     -- The game's Looking For Group window (in Forever: LFGParentFrame in
     -- Blizzard_GroupFinder_VanillaStyle): three side tabs, 2 apart.
@@ -9291,14 +9457,15 @@ end)()
     dgTab.scripts.OnLeave(dgTab)
     if win:IsShown() then ns.ToggleMainWindow() end
     dgTab.scripts.OnMouseUp(dgTab, "LeftButton", true)
-    check("a click opens Dragonworld on the Dungeons tab", win:IsShown() and chipByID.dungeons.selected)
+    check("a click opens only the Dungeons pane, as the compact view", win:IsShown() and ns.IsCompact() and ns.IsModuleShown("dungeons"))
     fire("ADDON_LOADED", "Blizzard_GroupFinder_VanillaStyle")
     local count = 0
     for _, child in ipairs(lfg.children) do if child.module then count = count + 1 end end
     check("loading the window again does not make a second one", count == 1)
 
     -- It blinks when someone in the guild is up for dungeons (the same alert as the minimap button).
-    if win:IsShown() then ns.ToggleMainWindow() end
+    dgTab.scripts.OnMouseUp(dgTab, "LeftButton", true)
+    check("a second click on the shortcut closes the pane", not win:IsShown())
     for _, alert in ipairs(ns.ALERTS) do ns.MarkAlertSeen(alert.kind) end
     ns.RefreshAlerts()
     check("nothing new: the Dungeons shortcut does not glow", not dgTab.glowPlaying)
@@ -9316,7 +9483,7 @@ end)()
     check("...without counting it as seen", dgTab.glowPlaying and ns.IsBlinking())
     dgTab.scripts.OnMouseUp(dgTab, "LeftButton", true)
     flush()
-    check("opening Dungeons from it counts as seen: the glow stops", chipByID.dungeons.selected and not dgTab.glowPlaying)
+    check("opening Dungeons from it counts as seen: the glow stops", ns.IsCompact() and ns.IsModuleShown("dungeons") and not dgTab.glowPlaying)
     lfg:Hide()
 
     -- The game's Legacy window (in Forever: LegacySystemFrame in Blizzard_LegacySystem):
@@ -9345,11 +9512,410 @@ end)()
     achTab.scripts.OnLeave(achTab)
     if win:IsShown() then ns.ToggleMainWindow() end
     achTab.scripts.OnMouseUp(achTab, "LeftButton", true)
-    check("a click opens Dragonworld on the Achievements tab", win:IsShown() and chipByID.achievements.selected)
+    check("a click opens only the Achievements pane, as the compact view", win:IsShown() and ns.IsCompact() and ns.IsModuleShown("achievements"))
     check("...and it has nothing to glow for", achTab.alert == nil and not achTab.glowPlaying)
     legacy:Hide()
 
     if win:IsShown() ~= wasShown then ns.ToggleMainWindow() end
+end)()
+
+-- ====== the compact view: one pane beside the game window it was opened from (MainWindow.lua, Minimap.lua) ======
+;(function()
+    local function click(button) button.scripts.OnClick(button) end
+    local function mouseUp(tab) tab.scripts.OnMouseUp(tab, "LeftButton", true) end
+    local function shownOf(list)
+        local n = 0
+        for _, region in pairs(list) do if region:IsShown() then n = n + 1 end end
+        return n
+    end
+    local function point() local p, relTo, relPoint, x, y = win:GetPoint(1); return p, relTo, relPoint, x, y end
+    local function onePoint() return select("#", win:GetPoint(2)) == 0 end
+    local wasShown, language = win:IsShown(), ns.GetLanguage()
+    local saved = DragonworldDB.window
+    local pf, lfg, legacy, guildWindow = ProfessionsFrame, LFGParentFrame, LegacySystemFrame, CommunitiesFrame
+    local function shortcut(window, id)
+        for _, child in ipairs(window.children) do if child.module == id then return child end end
+    end
+    local profTab, matTab, dgTab, achTab = shortcut(pf, "professions"), shortcut(pf, "materialer"), shortcut(lfg, "dungeons"), shortcut(legacy, "achievements")
+    local gt, at = DragonworldGuildTab, DragonworldGuildAchievementsTab
+
+    -- A screen 1600 wide, with the game's windows where the game puts them: at the left edge.
+    local screenWidth, screenHeight = UIParent.width, UIParent.height
+    UIParent:SetSize(1600, 900)
+    pf:SetSize(673, 594)
+    lfg:SetSize(458, 535)
+    legacy:SetSize(920, 575)
+    guildWindow:SetSize(814, 426)
+    for _, window in ipairs({ pf, lfg, legacy, guildWindow }) do window.screenLeft = 16 end
+    pf.scale = 1
+    local keysBefore = {}
+    for key in pairs(pf) do keysBefore[key] = true end
+
+    -- The full window first, to compare with: its header, its tabs, its saved place.
+    ns.OpenModule("roster")
+    local fullPills, fullChips, fullStrip = shownOf(win.statusPills), shownOf(chipByID), win.pinned:IsShown()
+    check("(the full window: 840 x 540 with the header, the status buttons and the tabs, and not compact)",
+        win:GetWidth() == 840 and win:GetHeight() == 540 and fullPills == 3 and fullChips == 16 and win.logo:IsShown() and win.settingsChip:IsShown()
+        and not ns.IsCompact() and ns.CompactView() == nil and ns.ExpandWindow() == false
+        and type(saved) == "table" and type(saved.point) == "string", fullChips)
+
+    -- 1. A side tab opens only its pane, beside the game window.
+    win:Hide()
+    pf:Show()
+    pf:RefreshRightTabs()
+    mouseUp(matTab)
+    local bar = win.compactBar
+    local id, dockedTo = ns.CompactView()
+    check("compact: a shortcut in the Professions window turns the main window into the compact view of that pane",
+        win:IsShown() and ns.IsCompact() and ns.IsModuleShown("materialer") and ns.IsMainWindowShown() and id == "materialer" and dockedTo == pf)
+    local bp, _, _, bx, by = win.body:GetPoint(1)
+    local cp, _, _, cx, cy = win.content:GetPoint(1)
+    check("compact: it is 632 x 480: the pane at the size it is laid out for, under a slim title bar",
+        win:GetWidth() == 632 and win:GetHeight() == 480 and win.content:GetWidth() == 612 and win.content:GetHeight() == 434
+        and win.body:GetWidth() == 612 and bp == "TOPLEFT" and bx == 10 and by == -36 and cp == "TOPLEFT" and cx == 0 and cy == 0
+        and select("#", win.body:GetPoint(2)) == 0 and select("#", win.content:GetPoint(2)) == 0,
+        win:GetWidth() .. " x " .. win:GetHeight())
+    check("compact: no big header, no status buttons, no pinned strip, no tabs on the left and no Settings",
+        not win.logo:IsShown() and not win.title:IsShown() and not win.subtitle:IsShown() and not win.headerLine:IsShown()
+        and shownOf(win.statusPills) == 0 and not win.pinned:IsShown() and shownOf(chipByID) == 0 and not win.settingsChip:IsShown())
+    check("compact: the title bar has the small guild shield, the pane's name and a button for the whole addon",
+        bar ~= nil and bar:IsVisible() and bar.parent == win and not bar.mouse and bar.logo.texture == ns.ICON and bar.logo:GetWidth() == 22
+        and bar.title.text == "Dragonworld: " .. ns.ModuleTitle(ns.modules.materialer) and bar.full.label.text == ns.L.COMPACT_FULL
+        and bar.full:IsVisible(), bar and bar.title.text)
+    bar.full:Fire("OnEnter")
+    check("compact: ...which says what it does when hovered", GameTooltip:IsShown() and GameTooltip.lines[1] == ns.L.COMPACT_FULL
+        and GameTooltip.lines[2] == ns.L.COMPACT_FULL_TIP, table.concat(GameTooltip.lines, " / "))
+    bar.full:Fire("OnLeave")
+    local p, relTo, relPoint, x, y = point()
+    check("compact: it is docked to the right of the Professions window, past its side tabs (43 wide) and level with its top",
+        p == "TOPLEFT" and relTo == pf and relPoint == "TOPRIGHT" and x == 43 + 4 and y == 0 and onePoint(), tostring(p) .. " " .. tostring(x))
+    check("compact: the shortcut whose pane is open looks selected, like the game's own tab", matTab.SelectedTexture:IsShown() and not profTab.SelectedTexture:IsShown())
+
+    -- 2. Dragging it is allowed, but never remembered.
+    win.scripts.OnDragStart(win)
+    win:ClearAllPoints()
+    win:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", 700, 200)   -- where the client leaves it
+    win.scripts.OnDragStop(win)
+    check("compact: it can be dragged, but that place is not saved: the full window keeps its own",
+        win.moving == false and DragonworldDB.window == saved and saved.point ~= "BOTTOMLEFT")
+
+    -- 3. The other shortcut in the same window switches the pane; the same one again closes it.
+    mouseUp(profTab)
+    check("compact: the other shortcut in the Professions window switches the pane, where the view is",
+        ns.IsCompact() and ns.IsModuleShown("professions") and not ns.IsModuleShown("materialer") and (point()) == "BOTTOMLEFT"
+        and bar.title.text == "Dragonworld: " .. ns.ModuleTitle(ns.modules.professions)
+        and profTab.SelectedTexture:IsShown() and not matTab.SelectedTexture:IsShown(), bar.title.text)
+    mouseUp(profTab)
+    check("compact: the same shortcut again closes it, and nothing looks selected any more",
+        not win:IsShown() and not ns.IsCompact() and ns.CompactView() == nil and not profTab.SelectedTexture:IsShown() and not matTab.SelectedTexture:IsShown())
+    check("compact: closed, the window is laid out as the full one again, at the full window's place",
+        win:GetWidth() == 840 and win:GetHeight() == 540 and (point()) == saved.point and select(4, point()) == saved.x)
+    mouseUp(profTab)
+    p, relTo, relPoint, x, y = point()
+    check("compact: opened again, it docks again (not where it was dragged to)",
+        ns.IsCompact() and p == "TOPLEFT" and relTo == pf and relPoint == "TOPRIGHT" and x == 47 and y == 0 and onePoint())
+
+    -- 4. It closes with the game window.
+    pf:Hide()
+    check("compact: when the Professions window closes, the view closes with it", not win:IsShown() and not ns.IsCompact() and not profTab.SelectedTexture:IsShown())
+    pf:Show()
+    check("compact: ...and does not come back by itself", not win:IsShown())
+    check("compact: Escape closes it like the full window (one entry in UISpecialFrames)", (function()
+        local count = 0
+        for _, name in ipairs(UISpecialFrames) do if name == "DragonworldFrame" then count = count + 1 end end
+        mouseUp(matTab)
+        local open = ns.IsCompact()
+        win:Hide()                            -- what the game does on Escape
+        return count == 1 and open and not ns.IsCompact() and not matTab.SelectedTexture:IsShown()
+    end)())
+
+    -- When the whole interface is hidden for a moment (Alt+Z), OnHide runs for
+    -- every frame although nothing was closed.
+    mouseUp(matTab)
+    pf:Fire("OnHide")
+    win:Fire("OnHide")
+    check("compact: hiding the whole interface for a moment leaves the view open and compact",
+        win:IsShown() and ns.IsCompact() and win:GetWidth() == 632 and matTab.SelectedTexture:IsShown())
+
+    -- 5. The button in the title bar: the same window becomes the full one.
+    click(bar.full)
+    p, relTo, relPoint, x, y = point()
+    check("compact: the button turns it into the full window, on the same tab, at the full window's saved place",
+        win:IsShown() and not ns.IsCompact() and ns.IsModuleShown("materialer") and chipByID.materialer.selected
+        and win:GetWidth() == 840 and win:GetHeight() == 540 and p == saved.point and relTo == UIParent and relPoint == saved.relativePoint
+        and x == saved.x and y == saved.y and onePoint(), tostring(p) .. " " .. tostring(x) .. " " .. tostring(y))
+    bp, _, _, bx, by = win.body:GetPoint(1)
+    cp, _, _, cx, cy = win.content:GetPoint(1)
+    check("compact: ...with the header, the status buttons, the tabs and Settings back, and the pane where it belongs",
+        win.logo:IsShown() and win.title:IsShown() and win.subtitle:IsShown() and win.headerLine:IsShown() and win.settingsChip:IsShown()
+        and shownOf(win.statusPills) == fullPills and shownOf(chipByID) == fullChips and win.pinned:IsShown() == fullStrip and not bar:IsShown()
+        and bp == "TOPLEFT" and bx == 14 and by == -92 and win.body:GetWidth() == 812 and win.body:GetHeight() == 434
+        and cp == "TOPLEFT" and cx == 200 and cy == 0 and win.content:GetWidth() == 612 and not matTab.SelectedTexture:IsShown())
+    pf:Hide()
+    check("compact: as the full window it no longer closes with the Professions window", win:IsShown())
+    win.scripts.OnDragStart(win)
+    win:ClearAllPoints()
+    win:SetPoint("CENTER", UIParent, "CENTER", -70, 15)
+    win.scripts.OnDragStop(win)
+    check("compact: ...and dragging the full window is remembered as before", DragonworldDB.window ~= saved and DragonworldDB.window.point == "CENTER"
+        and DragonworldDB.window.x == -70 and DragonworldDB.window.y == 15)
+    DragonworldDB.window = saved
+    pf:Show()
+
+    -- 6. Every other way of opening Dragonworld gives the full window.
+    mouseUp(profTab)
+    check("compact: with the whole addon already open, a shortcut only shows its tab there (the window does not shrink and jump)",
+        win:IsShown() and not ns.IsCompact() and win:GetWidth() == 840 and chipByID.professions.selected and (point()) == saved.point
+        and not profTab.SelectedTexture:IsShown())
+    mouseUp(profTab)
+    check("compact: ...and a second click changes nothing", win:IsShown() and not ns.IsCompact() and chipByID.professions.selected)
+    win:Hide()
+    mouseUp(profTab)
+    check("(closed first, the shortcut opens the compact view)", ns.IsCompact() and win:GetWidth() == 632 and ns.IsModuleShown("professions"))
+    mm.scripts.OnClick(mm, "LeftButton")
+    check("compact: a click on the minimap button then gives the full window on that tab, not a closed one",
+        win:IsShown() and not ns.IsCompact() and win:GetWidth() == 840 and chipByID.professions.selected and chipByID.professions:IsShown()
+        and (point()) == saved.point and not profTab.SelectedTexture:IsShown())
+    mm.scripts.OnClick(mm, "LeftButton")
+    check("compact: ...and the next click closes it as usual", not win:IsShown())
+    mouseUp(profTab)
+    ns.OpenModule("roster")
+    check("compact: DW.OpenModule gives the full window on its tab", win:IsShown() and not ns.IsCompact() and win:GetWidth() == 840 and chipByID.roster.selected)
+    win:Hide()
+    mouseUp(matTab)
+    dw("")
+    check("compact: /dw (the action bar button) gives the full window", win:IsShown() and not ns.IsCompact() and chipByID.materialer.selected)
+    win:Hide()
+    mouseUp(matTab)
+    ns.ToggleModule("materialer")
+    check("compact: a module's own toggle gives the full window too", win:IsShown() and not ns.IsCompact() and chipByID.materialer.selected)
+    win:Hide()
+    mouseUp(matTab)
+    ns.OpenSettings()
+    check("compact: Settings opens in the full window", win:IsShown() and not ns.IsCompact() and win.settingsChip.selected and win.settingsChip:IsShown())
+    pf:Hide()
+
+    -- 7. The windows that lie over the main window are laid out for the full one.
+    lfg:Show()
+    lfg:UpdateTabs()
+    ns.OpenModule("dungeons")
+    ns.OpenDungeonPicker()
+    check("(the dungeon picker is open over the full window)", DragonworldDungeonPicker:IsVisible())
+    win:Hide()
+    mouseUp(dgTab)
+    p, relTo, relPoint, x, y = point()
+    check("compact: opening the compact view closes what lay over the full window", ns.IsCompact() and not DragonworldDungeonPicker:IsShown()
+        and p == "TOPLEFT" and relTo == lfg and x == 47)
+    local dgPanel = DragonworldDungeonsScroll.parent
+    click(dgPanel.mine)
+    check("compact: the dungeon picker, opened from the compact Dungeons pane, turns the window full first",
+        not ns.IsCompact() and win:GetWidth() == 840 and DragonworldDungeonPicker:IsVisible() and DragonworldDungeonPicker:GetWidth() == 812
+        and DragonworldDungeonPicker:GetHeight() == 434 and ns.IsModuleShown("dungeons") and not dgTab.SelectedTexture:IsShown())
+    click(DragonworldDungeonPicker.cancel)
+    win:Hide()
+    mouseUp(dgTab)
+    click(dgPanel.lead)
+    check("compact: ...and so does the group form", not ns.IsCompact() and DragonworldGroupForm:IsVisible() and DragonworldGroupForm:GetWidth() == 812)
+    click(DragonworldGroupForm.cancel)
+    win:Hide()
+    mouseUp(dgTab)
+    local hadAnnouncements = DragonworldAnnouncements ~= nil
+    ns.ShowAnnouncements()
+    check("compact: a window made while the view is compact still gets the full window's size (the announcements)",
+        not ns.IsCompact() and DragonworldAnnouncements ~= nil and DragonworldAnnouncements:IsVisible()
+        and DragonworldAnnouncements:GetWidth() == 812 and DragonworldAnnouncements:GetHeight() == 434, tostring(hadAnnouncements))
+    DragonworldAnnouncements:Hide()
+
+    -- The reminder to share professions is drawn over the full window only.
+    local reminded = DragonworldDB.modules.roster.reminded
+    local key = ns.CharacterKey()
+    local wasReminded = reminded[key]
+    reminded[key] = nil
+    ns.OpenModule("dungeons")
+    check("(the professions reminder shows over the full window)", DragonworldShareNotice:IsVisible())
+    win:Hide()
+    mouseUp(dgTab)
+    check("compact: the reminder is not drawn over the compact view", ns.IsCompact() and not DragonworldShareNotice:IsShown())
+    click(bar.full)
+    check("compact: ...it waits for the full window", not ns.IsCompact() and DragonworldShareNotice:IsVisible())
+    click(DragonworldShareNotice.ok)
+    check("(and OK puts it away for good)", reminded[key] == true and not DragonworldShareNotice:IsShown())
+    reminded[key] = wasReminded
+
+    -- In combat: the window is not secure, so it may open, dock and close.
+    win:Hide()
+    inCombat = true
+    local ok = pcall(mouseUp, dgTab)
+    local opened = ns.IsCompact()
+    ok = ok and pcall(lfg.Hide, lfg)
+    inCombat = false
+    check("compact: it opens and closes in combat too", ok and opened and not win:IsShown())
+    lfg:Show()
+
+    -- The language can change while it is open.
+    mouseUp(dgTab)
+    ns.SetLanguage("en")
+    check("compact: a change of language rewrites the title bar, and brings nothing of the header back",
+        bar.title.text == "Dragonworld: Dungeons" and bar.full.label.text == "Open Dragonworld" and shownOf(win.statusPills) == 0
+        and not win.pinned:IsShown() and shownOf(chipByID) == 0, bar.title.text)
+    ns.SetLanguage("fr")
+    check("compact: ...in every language", bar.title.text == "Dragonworld: Donjons" and bar.full.label.text == "Ouvrir Dragonworld", bar.title.text)
+    ns.SetLanguage(language)
+    lfg:Hide()
+    check("compact: Looking For Group closing closes its Dungeons pane", not win:IsShown())
+
+    -- 8. The first-time steps come first, in the full window.
+    ns.ShowIntro()
+    win:Hide()
+    pf:Show()
+    mouseUp(matTab)
+    check("compact: while the intro is waiting, a shortcut opens the full window with it, like DW.OpenModule",
+        win:IsShown() and not ns.IsCompact() and win:GetWidth() == 840 and win.intro:IsVisible() and not win.body:IsVisible() and not matTab.SelectedTexture:IsShown())
+    click(win.intro.next)
+    click(win.setup.done)
+    check("compact: ...and after it the tab that was asked for, in the full window", win.body:IsVisible() and chipByID.materialer.selected and not ns.IsCompact())
+    win:Hide()
+    local chosen = DragonworldDB.language
+    DragonworldDB.language = nil
+    mouseUp(profTab)
+    check("compact: with no language chosen yet, a shortcut opens the full window with the language question",
+        win:IsShown() and not ns.IsCompact() and win.prompt:IsVisible() and not win.body:IsVisible())
+    DragonworldDB.language = chosen
+    win:Hide()
+    mouseUp(profTab)
+    check("compact: once that is done the shortcut opens its pane, without the question",
+        ns.IsCompact() and ns.IsModuleShown("professions") and not win.prompt:IsShown() and win.body:IsVisible())
+    pf:Hide()
+
+    -- 9. The Achievements tab in the guild window docks to the guild window.
+    guildWindow:Show()
+    guildWindow:UpdateCommunitiesTabs()
+    click(at)
+    p, relTo, relPoint, x, y = point()
+    check("compact: the guild window's Achievements tab opens the Achievements pane beside the guild window, past its tabs",
+        ns.IsCompact() and ns.IsModuleShown("achievements") and select(2, ns.CompactView()) == guildWindow
+        and p == "TOPLEFT" and relTo == guildWindow and relPoint == "TOPRIGHT" and x == 44 + 4 and y == 0 and onePoint(), tostring(p) .. " " .. tostring(x))
+    check("compact: ...and is lit while it is open (the Legacy window's shortcut to the same pane is not)",
+        at.checked:IsShown() and at.checked.blend == "ADD" and not achTab.SelectedTexture:IsShown())
+    click(gt)
+    check("compact: the Dragonworld tab next to it still opens the whole addon", win:IsShown() and not ns.IsCompact() and win:GetWidth() == 840
+        and chipByID.achievements.selected and not at.checked:IsShown())
+    click(gt)
+    check("compact: ...and closes it again", not win:IsShown())
+    click(at)
+    guildWindow:Hide()
+    check("compact: the guild window closing closes its Achievements pane", not win:IsShown() and not at.checked:IsShown())
+
+    -- 10. Where it goes when there is no room on the right.
+    legacy:Show()
+    mouseUp(achTab)
+    p, relTo, relPoint, x, y = point()
+    check("compact: no room on either side of the wide Legacy window: it lies over its content, against its right edge, below its title bar",
+        ns.IsCompact() and p == "TOPRIGHT" and relTo == legacy and relPoint == "TOPRIGHT" and x == 0 and y == -24 and onePoint()
+        and achTab.SelectedTexture:IsShown() and not at.checked:IsShown(), tostring(p) .. " " .. tostring(x) .. " " .. tostring(y))
+    UIParent:SetSize(1616, 900)
+    mouseUp(achTab)
+    mouseUp(achTab)
+    p, relTo, relPoint, x, y = point()
+    check("compact: on a screen just wide enough it goes to the right", p == "TOPLEFT" and relTo == legacy and relPoint == "TOPRIGHT" and x == 47)
+    UIParent:SetSize(1600, 900)
+    legacy:Hide()
+    lfg.screenLeft = 1100
+    lfg:Show()
+    mouseUp(dgTab)
+    p, relTo, relPoint, x, y = point()
+    check("compact: a game window at the right edge of the screen gets it on its left side",
+        ns.IsCompact() and p == "TOPRIGHT" and relTo == lfg and relPoint == "TOPLEFT" and x == -4 and y == 0 and onePoint(), tostring(p) .. " " .. tostring(x))
+    lfg:Hide()
+    lfg.screenLeft = 16
+    UIParent:SetSize(1024, 768)
+    lfg:Show()
+    mouseUp(dgTab)
+    p, relTo, relPoint, x, y = point()
+    check("compact: on a narrow screen, over a game window narrower than itself, it starts at that window's left edge and so stays on the screen",
+        ns.IsCompact() and p == "TOPLEFT" and relTo == lfg and relPoint == "TOPLEFT" and x == 0 and y == -24 and onePoint(), tostring(p) .. " " .. tostring(x))
+    lfg:Hide()
+    UIParent:SetSize(1600, 900)
+    pf.scale = 0.8
+    pf:Show()
+    mouseUp(matTab)
+    p, relTo, relPoint, x, y = point()
+    check("compact: a game window drawn at another scale: its side tabs are measured in its scale",
+        p == "TOPLEFT" and relTo == pf and math.abs(x - (43 * 0.8 + 4)) < 0.001 and y == 0, tostring(x))
+    mouseUp(matTab)
+    pf.scale = 1
+
+    -- 11. The game may keep the place of its windows secret.
+    for _, method in ipairs({ "GetLeft", "GetWidth", "GetEffectiveScale" }) do
+        pf[method] = function() return SECRET end
+        local fine, result = pcall(ns.OpenCompact, "materialer", pf, 43)
+        p, relTo = point()
+        check("compact: a secret " .. method .. " from the game window does not throw: the view opens in the middle of the screen",
+            fine and result == true and ns.IsCompact() and p == "CENTER" and relTo == UIParent and onePoint(), tostring(result))
+        pf:Hide()
+        check("compact: ...and still closes with that window", not win:IsShown())
+        pf:Show()
+        pf[method] = nil
+    end
+    local fine = pcall(ns.OpenCompact, "materialer", pf, SECRET)
+    p, relTo, relPoint, x = point()
+    check("compact: a secret width for the side tabs does not throw either", fine and ns.IsCompact() and p == "TOPLEFT" and relTo == pf and x == 4)
+    check("compact: DW.OpenCompact answers whether the view is showing that pane: false when it closed it",
+        ns.OpenCompact("materialer", pf, SECRET) == false and not ns.IsCompact())
+    check("compact: without a game window it opens in the middle of the screen, and the same call closes it",
+        ns.OpenCompact("materialer") == true and (point()) == "CENTER" and ns.CompactView() == "materialer" and select(2, ns.CompactView()) == nil
+        and ns.OpenCompact("materialer") == false and not win:IsShown())
+    check("compact: the game's frame is only hooked, once, and nothing is written on it", (function()
+        for key in pairs(pf) do if not keysBefore[key] then return false end end
+        return #pf.hooks.OnHide == 1 and #lfg.hooks.OnHide == 1 and pf.scripts.OnHide == nil
+    end)(), pf.hooks.OnHide and #pf.hooks.OnHide)
+
+    -- 12. A tab this character may not use.
+    local sentBefore = #wire
+    mouseUp(matTab)
+    lfg:Show()
+    mouseUp(dgTab)
+    check("(the Dungeons pane is open beside Looking For Group)", ns.IsCompact() and select(2, ns.CompactView()) == lfg)
+    DragonworldDB.memberCharacters["Mainy-Stormrage"] = 5
+    setGuild("Other Guild")
+    check("compact: leaving the guild while a guild pane is open closes the view", not ns.IsMember() and ns.HasAccess() and not win:IsShown() and not ns.IsCompact())
+    clearChat()
+    check("compact: on an alt outside the guild a guild tab is refused as before, with the explanation",
+        ns.OpenCompact("dungeons", lfg, 43) == false and not win:IsShown() and not ns.IsCompact()
+        and has(ns.L.LOCKED:format(ns.GUILD_NAME)) and has("Mainy"), chatText())
+    check("compact: ...and its shortcut is not there, while a personal tab still opens as a pane",
+        not dgTab:IsShown() and matTab:IsShown() and ns.OpenCompact("materialer", pf, 43) == true and ns.IsCompact() and shownOf(chipByID) == 0)
+    click(bar.full)
+    check("compact: ...and the full window on the alt has only the personal tabs", not ns.IsCompact() and shownOf(chipByID) == 5 and shownOf(win.statusPills) == 0)
+    win:Hide()
+    setGuild("Dragonworld")
+    DragonworldDB.memberCharacters["Mainy-Stormrage"] = nil
+    flush()
+    while #wire > sentBefore do table.remove(wire) end
+    clearChat()
+    check("(back in the guild)", ns.IsMember() and dgTab:IsShown())
+
+    -- 13. After all that, the full window is what it was.
+    pf:Hide()
+    lfg:Hide()
+    ns.OpenModule("achievements")
+    p, relTo, relPoint, x, y = point()
+    bp, _, _, bx, by = win.body:GetPoint(1)
+    cp, _, _, cx, cy = win.content:GetPoint(1)
+    check("compact: afterwards the full window opens as always: its size, its place, its header and its tabs",
+        win:IsShown() and not ns.IsCompact() and win:GetWidth() == 840 and win:GetHeight() == 540
+        and p == saved.point and relTo == UIParent and x == saved.x and y == saved.y and onePoint()
+        and bx == 14 and by == -92 and win.body:GetWidth() == 812 and cx == 200 and win.content:GetWidth() == 612 and win.content:GetHeight() == 434
+        and win.logo:IsShown() and win.title:IsShown() and win.settingsChip:IsShown() and not bar:IsShown()
+        and shownOf(win.statusPills) == fullPills and shownOf(chipByID) == fullChips and chipByID.achievements.selected
+        and DragonworldDB.window == saved)
+
+    -- Leave things as the remaining tests expect.
+    UIParent.width, UIParent.height = screenWidth, screenHeight
+    for _, window in ipairs({ pf, lfg, legacy, guildWindow }) do window.width, window.height, window.screenLeft = nil, nil, nil end
+    pf.scale = nil
+    if win:IsShown() ~= wasShown then ns.ToggleMainWindow() end
+    clearChat()
 end)()
 
 -- ================== Prestasjoner (Modules\Achievements.lua) =====================
@@ -10956,14 +11522,14 @@ end)()
             if y - row:GetHeight() < -434 then fits = false end
         end
     end
-    check("every tab-order row ends above the bottom of the body", fits and shownRows == 15, shownRows)
+    check("every tab-order row ends above the bottom of the body", fits and shownRows == 16, shownRows)
     click(settings.introButton)
     local intro = win.intro
-    local last = intro.rows[15]
+    local last = intro.rows[16]
     local _, _, _, _, lastY = last.icon:GetPoint(1)
     local lastBottom = lastY - math.max(last.icon:GetHeight(), last.text:GetHeight())
     local nextTop = -434 + 16 + intro.next:GetHeight()
-    check("intro: with 15 tabs the last row ends above the Next button", intro:IsVisible() and lastBottom > nextTop,
+    check("intro: with 16 tabs the last row ends above the Next button", intro:IsVisible() and intro.rows[17] == nil and lastBottom > nextTop,
         lastBottom .. " / " .. nextTop .. " (row height " .. tostring(intro.introRow) .. ")")
     last.hover.scripts.OnEnter(last.hover)
     check("...and a shortened row shows the whole text when hovered",
@@ -13099,7 +13665,7 @@ end)()
     local craftAt
     for i, file in ipairs(ADDON_FILES) do if file.name == "CraftSearch.lua" then craftAt = i end end
     check("craft: a module without a tab or a sidebar chip, loaded right after the recipe window, and /dw help lists /dw craft",
-        ns.modules.craft ~= nil and ns.modules.craft.CreatePanel == nil and not anyCraft and craftChips == 15
+        ns.modules.craft ~= nil and ns.modules.craft.CreatePanel == nil and not anyCraft and craftChips == 16
         and craftAt ~= nil and ADDON_FILES[craftAt - 1].name == "RecipeWindow.lua" and has("/dw craft - " .. E.CS_TITLE .. ": " .. E.CS_NOTES), chatText())
     clearChat()
 
@@ -13560,11 +14126,12 @@ end)()
         return table.concat(names, ",")
     end
     DragonworldDB.tabOrder = nil
-    check("quest: with no saved order it comes right after Dungeons", orderNames():find("^home,roster,guildchat,dungeons,quest,guildbank,") ~= nil, orderNames())
+    check("quest: with no saved order it comes after Dungeons and Tactics", orderNames():find("^home,roster,guildchat,dungeons,tactics,quest,guildbank,") ~= nil, orderNames())
     DragonworldDB.tabOrder = { "roster", "guildchat", "dungeons", "guildbank", "events", "achievements", "professions", "materialer", "ryddesekk", "keybinds", "forslag" }
-    check("quest: an order saved before it existed gets it right after Dungeons", orderNames():find("^home,roster,guildchat,dungeons,quest,guildbank,") ~= nil, orderNames())
+    check("quest: an order saved before it and Tactics existed gets Tactics right after Dungeons and it after that",
+        orderNames():find("^home,roster,guildchat,dungeons,tactics,quest,guildbank,") ~= nil, orderNames())
     DragonworldDB.tabOrder = savedOrder
-    -- 16. The Settings page with 5 alert kinds and 14 tabs.
+    -- 16. The Settings page with 5 alert kinds and 16 tabs.
     check("quest: Settings has five blink kinds, the last one for quests, all above the action bar part",
         #settings.blink.kinds == 5 and settings.blink.kinds[5].label.text == N.AL_QUEST and settings.blink.kinds[5].checked
         and select(5, settings.blink.kinds[5]:GetPoint(1)) > select(5, settings.actionLabel:GetPoint(1)))
@@ -15081,6 +15648,3305 @@ end)()
     ns.SetLanguage(language, true)
     clearChat()
     ns.OpenModule("ryddesekk")
+end)()
+
+-- ================================== Tactics =====================================
+-- TacticsCore.lua: the plan as data, the saved library, the catalogue of
+-- dungeons, bosses and maps, the group, and the slideshow messages to the
+-- group. What the sections share is in the global TAC (the main chunk is out
+-- of locals).
+TAC = { PREFIX = "DragonworldTac", events = {} }
+-- True when two values are the same all the way down.
+function TAC.same(a, b)
+    if type(a) ~= type(b) then return false end
+    if type(a) ~= "table" then return a == b end
+    for key, value in pairs(a) do
+        if not TAC.same(value, b[key]) then return false end
+    end
+    for key in pairs(b) do
+        if a[key] == nil then return false end
+    end
+    return true
+end
+-- Everything that went to the group since last asked: the texts, and the
+-- channel they went on ("mixed" when not all on the same one).
+function TAC.sent()
+    local texts, channel = {}, nil
+    for index, m in ipairs(GROUP_WIRE) do
+        assert(m.prefix == TAC.PREFIX, "a group message under another name")
+        texts[index] = m.message
+        if index == 1 then channel = m.chatType elseif channel ~= m.chatType then channel = "mixed" end
+    end
+    GROUP_WIRE = {}
+    return texts, channel
+end
+-- A message arriving from someone, on the raid channel unless another is given.
+function TAC.receive(text, sender, channel) fire("CHAT_MSG_ADDON", TAC.PREFIX, text, channel or "RAID", sender) end
+-- Puts the player in a group with these other members (see GROUP), and tells the addon.
+function TAC.group(members, me)
+    me = me or {}
+    GROUP = { members = members, raid = me.raid or false, leader = me.leader or false, assistant = me.assistant or false,
+              invites = {}, converted = 0, canInvite = nil, subgroup = me.subgroup, role = me.role }
+    fire("GROUP_ROSTER_UPDATE")
+end
+-- The events T.On has reported: how many of a kind, and the last of a kind ({ name, ... }).
+function TAC.count(name)
+    local n = 0
+    for _, event in ipairs(TAC.events) do
+        if event[1] == name then n = n + 1 end
+    end
+    return n
+end
+function TAC.last(name)
+    for index = #TAC.events, 1, -1 do
+        if TAC.events[index][1] == name then return TAC.events[index] end
+    end
+    return {}
+end
+-- How many timers of a given delay are waiting.
+function TAC.timers(delay)
+    local n = 0
+    for _, timer in ipairs(timers) do
+        if math.abs(timer.delay - delay) < 1e-9 then n = n + 1 end
+    end
+    return n
+end
+-- A scene with one of every kind of item in a drawn room, and one on a map.
+function TAC.scene1()
+    return {
+        title = "Fase 1",
+        notes = { "Tanks bytter på 3 stacks", "Healere: stå samlet; ikke løp, vent" },
+        bg = { kind = "room", room = "round" },
+        items = {
+            { k = "m", i = "boss", x = 500, y = 200, t = "", c = 2, s = 3 },
+            { k = "m", i = "tank", x = 480, y = 260, t = "MT", c = 1, s = 2 },
+            { k = "p", n = "Akro Polis", cl = "MAGE", x = 300, y = 400 },
+            { k = "g", g = { 1, 2 }, x = 200, y = 500, t = "Venstre side" },
+            { k = "a", x = 100, y = 100, x2 = 300, y2 = 150, c = 4, s = 1 },
+            { k = "l", p = { 10, 20, 30, 40, 1000, 625 }, c = 6, s = 2 },
+            { k = "z", x = 700, y = 300, r = 120, c = 5 },
+            { k = "t", x = 400, y = 50, t = "Stå her; ikke der, ~ok", c = 3, s = 2 },
+        },
+    }
+end
+function TAC.scene2()
+    return { title = "", notes = {}, bg = { kind = "map", map = 291, zoom = 30, cx = 250, cy = 750 },
+             items = { { k = "m", i = "skull", x = 0, y = 0, t = "", c = 1, s = 2 } } }
+end
+function TAC.plan()
+    return { id = "ptest1", name = "To tanks, én boss; ~", inst = 4, instName = "The Deadmines", boss = "Edwin VanCleef",
+             author = "Altine", updated = 123456, scenes = { TAC.scene1(), TAC.scene2() } }
+end
+-- The messages a slideshow of this plan is, as someone else would send them:
+-- S, then every scene in two pieces.
+function TAC.slideshow(sid, plan, current)
+    local T = ns.Tactics
+    local list = { table.concat({ "S", sid, 1, #plan.scenes, current or 1, T.EncodeHeader(plan) }, "\t") }
+    for index, scene in ipairs(plan.scenes) do
+        local text = T.EncodeScene(scene)
+        local half = #text // 2
+        list[#list + 1] = table.concat({ "C", sid, index, 1, 2, text:sub(1, half) }, "\t")
+        list[#list + 1] = table.concat({ "C", sid, index, 2, 2, text:sub(half + 1) }, "\t")
+    end
+    return list
+end
+-- Reads a list of sent messages back: the S (sid, count, current, header),
+-- the scenes put together from their pieces, whether the pieces came in
+-- order, how many S there were, and the longest message.
+function TAC.read(messages)
+    local r = { scenes = {}, ordered = true, longest = 0, starts = 0, pieces = 0 }
+    local lastScene, lastPart, lastOf = 0, 0, 0
+    for _, text in ipairs(messages) do
+        r.longest = math.max(r.longest, #text)
+        local f = {}
+        for piece in (text .. "\t"):gmatch("(.-)\t") do f[#f + 1] = piece end
+        if f[1] == "S" then
+            r.starts = r.starts + 1
+            r.sid, r.protocol, r.count, r.current, r.header = f[2], tonumber(f[3]), tonumber(f[4]), tonumber(f[5]), f[6]
+            if r.pieces > 0 then r.ordered = false end
+        elseif f[1] == "C" then
+            r.pieces = r.pieces + 1
+            local scene, part, of = tonumber(f[3]), tonumber(f[4]), tonumber(f[5])
+            local nextPart = scene == lastScene and part == lastPart + 1 and of == lastOf
+            local nextScene = scene == lastScene + 1 and part == 1 and lastPart == lastOf
+            if f[2] ~= r.sid or not (nextPart or nextScene) then r.ordered = false end
+            lastScene, lastPart, lastOf = scene, part, of
+            r.scenes[scene] = (r.scenes[scene] or "") .. f[6]
+        end
+    end
+    if lastPart ~= lastOf then r.ordered = false end
+    return r
+end
+
+-- 1. The plan, checking it, packing it, the library and the catalogue.
+;(function()
+    local T = ns.Tactics
+    local same = TAC.same
+    local module = ns.modules.tactics
+    local db = DragonworldDB.modules.tactics
+    local keptNow = SERVER_NOW
+    local empty = { title = "", notes = {}, bg = { kind = "room", room = "round" }, items = {} }
+    flush()
+    check("tactics: nothing malformed went to the group in the tests before this", #GROUP_WIRE_ERRORS == 0, GROUP_WIRE_ERRORS[1])
+    GROUP_WIRE = {}
+
+    local coreAt
+    for index, file in ipairs(ADDON_FILES) do
+        if file.name == "Modules\\TacticsCore.lua" then coreAt = index end
+    end
+    check("tactics: the core is loaded before the board, the tab and the slideshow window",
+        type(T) == "table" and coreAt ~= nil and ADDON_FILES[coreAt + 1].name == "Modules\\TacticsBoard.lua"
+        and ADDON_FILES[coreAt + 2].name == "Modules\\Tactics.lua" and ADDON_FILES[coreAt + 3].name == "Modules\\TacticsViewer.lua")
+    check("tactics: registered as a personal module, with its own saved table and its own message name for the group",
+        module ~= nil and module == T.module and module.personal == true and module.titleKey == "TAC_TITLE" and module.notesKey == "TAC_NOTES"
+        and module.icon == "Interface\\Icons\\INV_Misc_Map_01" and type(db) == "table" and module.db == db
+        and prefixes[TAC.PREFIX] == true and T.PROTOCOL == 1 and T.MAX_BYTES == 6000 and select(2, ns.CharacterKey()) == "Tester")
+    do
+        local titles, missing = {}, {}
+        for _, language in ipairs(ns.LANGUAGES) do titles[#titles + 1] = language.code .. "=" .. ns.strings[language.code].TAC_TITLE end
+        check("tactics: the tab's name in every language",
+            table.concat(titles, " ") == "en=Tactics nb=Taktikk nl=Tactiek de=Taktik da=Taktik sv=Taktik fr=Tactiques", table.concat(titles, " "))
+        for _, key in ipairs({ "TAC_NOTES", "TAC_ERR_NO_ACCESS", "TAC_ERR_NO_GROUP", "TAC_ERR_NOT_LEADER", "TAC_ERR_BAD_PLAN", "TAC_ERR_NO_NAME",
+                               "TAC_ERR_FULL", "TAC_ERR_TOO_BIG", "TAC_ERR_LOCKED", "TAC_ERR_BLOCKED" }) do
+            if type(ns.strings.en[key]) ~= "string" or ns.L[key] == key then missing[#missing + 1] = key end
+        end
+        check("tactics: every reason a function can give is a text", #missing == 0, table.concat(missing, ", "))
+    end
+    for _, name in ipairs({ "plans", "received", "present", "watch", "scene", "ping", "roster" }) do
+        T.On(name, function(...) TAC.events[#TAC.events + 1] = { name, ... } end)
+    end
+
+    -- The plan.
+    local plan = T.NewPlan("  To tanks  ")
+    check("tactics: a new plan has an id of its own, its name, and one empty scene in the round room",
+        plan.id:match("^p[%l%d]+$") ~= nil and #plan.id <= 12 and plan.name == "To tanks" and plan.inst == 0 and plan.instName == "" and plan.boss == ""
+        and plan.author == "Tester" and plan.updated == SERVER_NOW and #plan.scenes == 1 and same(plan.scenes[1], empty), plan.id)
+    check("tactics: two new plans get different ids", T.NewPlan("a").id ~= T.NewPlan("b").id)
+    local first = TAC.scene1()
+    local second = T.NewScene(first)
+    second.items[1].x, second.notes[1], second.bg.room = 1, "x", "square"
+    check("tactics: a new scene can start from the previous one, as a copy of its own",
+        second.title == "" and #second.items == #first.items and first.items[1].x == 500 and first.notes[1] ~= "x" and first.bg.room == "round"
+        and same(T.NewScene(), empty) and same(T.NewScene("junk"), empty))
+    local original = TAC.plan()
+    local copy = T.CopyPlan(original)
+    copy.scenes[1].items[1].x = 7
+    check("tactics: a copy of a plan has a new id and shares nothing with the original",
+        copy.id ~= original.id and copy.id:match("^p[%l%d]+$") ~= nil and copy.name == original.name and #copy.scenes == 2
+        and original.scenes[1].items[1].x == 500 and T.CopyPlan("junk") == nil)
+
+    -- Checking.
+    check("tactics: something that is not a plan gives nothing", T.Sanitize(nil) == nil and T.Sanitize(5) == nil and T.Sanitize("plan") == nil and T.Sanitize(SECRET) == nil)
+    check("tactics: something that is not a scene gives an empty scene",
+        same(T.SanitizeScene(nil), empty) and same(T.SanitizeScene(5), empty) and same(T.SanitizeScene(SECRET), empty) and same(T.SanitizeScene({ items = "x", notes = 4, bg = true, title = {} }), empty))
+    do
+        local broken = setmetatable({}, { __index = function() error("do not look") end })
+        local junk = { 5, "x", true, {}, SECRET, { k = "m" }, { k = "l", p = SECRET, x = SECRET }, broken, 0 / 0, math.huge }
+        local ok, problem = pcall(function()
+            for _, a in ipairs(junk) do
+                T.Sanitize(a); T.SanitizeScene(a); T.EncodeScene(a); T.DecodeScene(a); T.EncodeHeader(a); T.DecodeHeader(a); T.PlanBytes(a); T.CopyPlan(a)
+                T.NewScene(a); T.NewPlan(a); T.IsMine(a); T.IsMine({ k = "p", n = a }); T.IsMine({ k = "g", g = a })
+                T.GetPlan(a); T.DeletePlan(a); T.KeepReceived(a); T.ShowScene(a); T.Ping(a, a); T.On(a, a)
+                T.Sanitize({ id = a, name = a, inst = a, instName = a, boss = a, author = a, updated = a, scenes = a })
+                T.Sanitize({ scenes = { a, { items = a, notes = a, bg = a, title = a },
+                    { items = { a, { k = a, x = a, y = a }, { k = "l", p = a }, { k = "l", p = { a, a, a, a } }, { k = "g", g = a, x = 1, y = 1 }, { k = "g", g = { a }, x = 1, y = 1 },
+                                { k = "m", i = a, x = 1, y = 1, t = a, c = a, s = a }, { k = "p", n = a, cl = a, x = 1, y = 1 }, { k = "z", x = 1, y = 1, r = a } },
+                      notes = { a }, bg = { kind = "map", map = a, zoom = a, cx = a, cy = a } }, { bg = { kind = "room", room = a } } } })
+            end
+        end)
+        check("tactics: garbage never causes an error", ok, problem)
+    end
+    do
+        local thirty = {}
+        for index = 1, 60 do thirty[index] = index end
+        local scene = T.SanitizeScene({
+            title = ("é"):rep(60),
+            notes = { ("x"):rep(120), "", "  to  ", 5, "a|cffff0000b|r", "c\nd\te", "f", "g", "h" },
+            bg = { kind = "map", map = 291.4, zoom = 5, cx = -3, cy = 2000 },
+            items = {
+                { k = "m", i = "tank", x = 1500.7, y = -5, c = 99, s = 0 },          -- clamped
+                { k = "m", i = "futureicon1", x = 10.4, y = 10.6 },                  -- an icon this version does not know: kept
+                { k = "m", i = "Bad Icon", x = 1, y = 1 },                           -- not an id
+                { k = "m", i = "waytoolongicon", x = 1, y = 1 },                     -- too long for an id
+                { k = "m", x = 1, y = 1 },                                           -- no icon
+                { k = "m", i = "tank", x = 0 / 0, y = 1 },                           -- no place
+                { k = "m", i = "tank", x = "12", y = 1 },                            -- a text is not a number
+                { k = "p", n = "", cl = "MAGE", x = 1, y = 1 },                      -- no name
+                { k = "p", n = "Akro Polis", cl = "mage", x = 1, y = 1 },            -- not a class name: kept without it
+                { k = "g", g = { 1, 9, 2, 2, "x", 0, 1.5 }, x = 5, y = 5 },          -- groups 1 and 2
+                { k = "g", g = {}, x = 5, y = 5 },                                   -- no groups
+                { k = "a", x = 1, y = 2, x2 = 3 },                                   -- no tip
+                { k = "l", p = { 1, 2 } },                                           -- one point is no line
+                { k = "l", p = { 1, 2, 3, 4, 5 } },                                  -- half a point is dropped
+                { k = "l", p = thirty },                                             -- cut to 24 points
+                { k = "z", x = 1, y = 1, r = 1000 },                                 -- the largest radius
+                { k = "z", x = 1, y = 1 },                                           -- the usual radius
+                { k = "t", x = 1, y = 1, t = "   " },                                -- no text
+                { k = "t", x = 1, y = 1, t = ("ø"):rep(30) },                        -- cut to 24 letters
+                { k = "x", x = 1, y = 1 },                                           -- a kind this version does not know
+                "junk", 5, false,
+            },
+        })
+        local points = {}
+        for index = 1, 48 do points[index] = math.min(index, index % 2 == 1 and 1000 or 625) end
+        check("tactics: texts are cut to their limits by letters, without colour codes, line breaks or empty lines",
+            scene.title == ("é"):rep(40) and same(scene.notes, { ("x"):rep(90), "to", "a/cffff0000b/r", "c d e", "f" }), scene.title)
+        check("tactics: a map background is kept, with its numbers whole and in range", same(scene.bg, { kind = "map", map = 291, zoom = 10, cx = 0, cy = 1000 }))
+        check("tactics: numbers are made whole and put in range, what is left out is filled in, and what cannot be drawn is dropped",
+            same(scene.items, {
+                { k = "m", i = "tank", x = 1000, y = 0, t = "", c = 8, s = 1 },
+                { k = "m", i = "futureicon1", x = 10, y = 11, t = "", c = 1, s = 2 },
+                { k = "p", n = "Akro Polis", cl = "", x = 1, y = 1 },
+                { k = "g", g = { 1, 2 }, x = 5, y = 5, t = "" },
+                { k = "l", p = { 1, 2, 3, 4 }, c = 1, s = 2 },
+                { k = "l", p = points, c = 1, s = 2 },
+                { k = "z", x = 1, y = 1, r = 300, c = 1 },
+                { k = "z", x = 1, y = 1, r = 80, c = 1 },
+                { k = "t", x = 1, y = 1, t = ("ø"):rep(24), c = 1, s = 2 },
+            }), #scene.items)
+        check("tactics: a room this version does not know is kept, one that is no id becomes the round room",
+            same(T.SanitizeScene({ bg = { kind = "room", room = "cave9" } }).bg, { kind = "room", room = "cave9" })
+            and same(T.SanitizeScene({ bg = { kind = "room", room = "Bad Room" } }).bg, empty.bg) and same(T.SanitizeScene({ bg = { kind = "sky" } }).bg, empty.bg)
+            and same(T.SanitizeScene({ bg = { kind = "map" } }).bg, empty.bg))
+        check("tactics: broken bytes are left out and a letter of several bytes is never cut in two",
+            T.SanitizeScene({ title = "a\255b\195" }).title == "ab" and T.SanitizeScene({ title = ("x"):rep(39) .. "éé" }).title == ("x"):rep(39) .. "é"
+            and T.SanitizeScene({ title = "\226\130\172\240\159\152\128 ok \0" }).title == "\226\130\172\240\159\152\128 ok")
+
+        local many = { scenes = {} }
+        for index = 1, 15 do many.scenes[index] = { title = "s" .. index, items = {} } end
+        for index = 1, 60 do many.scenes[1].items[index] = { k = "t", x = index, y = 1, t = "t" .. index } end
+        many = T.Sanitize(many)
+        check("tactics: at most 10 scenes and 40 items in a scene are kept", #many.scenes == 10 and many.scenes[10].title == "s10" and #many.scenes[1].items == 40 and many.scenes[1].items[40].t == "t40")
+        local fixed = T.Sanitize({ id = "BAD ID", name = ("n"):rep(50), inst = 4, boss = "b|c", author = 7, updated = -5, scenes = {} })
+        check("tactics: a plan gets what it lacks: an id, its dungeon's name, a scene",
+            fixed.id:match("^p[%l%d]+$") ~= nil and fixed.name == ("n"):rep(40) and fixed.inst == 4 and fixed.instName == "The Deadmines" and fixed.boss == "b/c"
+            and fixed.author == "" and fixed.updated == 0 and #fixed.scenes == 1 and same(fixed.scenes[1], empty))
+        local later = T.Sanitize({ id = "pok12", inst = 77.9, instName = "A dungeon from the future", scenes = { {} } })
+        check("tactics: a dungeon this version does not know keeps its number and the name it came with",
+            later.id == "pok12" and later.inst == 78 and later.instName == "A dungeon from the future")
+    end
+
+    -- Packing.
+    local s1, s2 = TAC.scene1(), TAC.scene2()
+    check("tactics: a clean scene comes out of the check as it went in", same(T.SanitizeScene(s1), s1) and same(T.SanitizeScene(s2), s2))
+    local packed1, packed2 = T.EncodeScene(s1), T.EncodeScene(s2)
+    check("tactics: every kind of item, the notes and a drawn room survive packing and unpacking", same(T.DecodeScene(packed1), s1), packed1)
+    check("tactics: ...and so does a map background", same(T.DecodeScene(packed2), s2) and packed2 == ";m291,30,250,750;;m0000skull", packed2)
+    check("tactics: what is the usual is left out of the packed text",
+        T.EncodeScene({ bg = { kind = "map", map = 291, zoom = 10, cx = 500, cy = 500 } }) == ";m291;" and T.EncodeScene(empty) == ";rround;"
+        and packed1:find(";mdw5kboss,,2,3;", 1, true) ~= nil and packed1:find(";mdc78tank,MT;", 1, true) ~= nil and packed1:find(";p8cb48,Akro Polis;", 1, true) ~= nil
+        and packed1:find(";g5kdw12,Venstre side;", 1, true) ~= nil and packed1:find(";a2s2s8c46,4,1;", 1, true) ~= nil and packed1:find(";l0a0k0u14rshd,6;", 1, true) ~= nil
+        and packed1:find(";zjg8c3c,5;", 1, true) ~= nil and packed1:find(";tb41eStå her~1 ikke der~2 ~0ok,3", 1, true) ~= nil, packed1)
+    check("tactics: a packed scene is plain text: no tab, no line break, no zero byte", not (packed1 .. packed2):find("%c"))
+    do
+        local future = { title = "", notes = {}, bg = empty.bg, items = { { k = "p", n = "Ny", cl = "TINKER", x = 1, y = 2 }, { k = "p", n = "Uten", cl = "", x = 3, y = 4 } } }
+        check("tactics: a class that is not in the list is sent by name, and no class as nothing",
+            same(T.DecodeScene(T.EncodeScene(future)), future) and T.EncodeScene(future) == ";rround;;p0102TINKER,Ny;p0304,Uten", T.EncodeScene(future))
+        local typical = { title = "Fase 2", notes = { "Tanks bytter på 3 stacks", "Alle løper ut ved Inferno" }, bg = { kind = "room", room = "round" }, items = {
+            { k = "m", i = "boss", x = 500, y = 180, t = "", c = 2, s = 3 },
+            { k = "m", i = "tank", x = 470, y = 240, t = "MT", c = 1, s = 2 },
+            { k = "m", i = "tank", x = 530, y = 240, t = "OT", c = 1, s = 2 },
+            { k = "m", i = "healer", x = 420, y = 420, t = "", c = 1, s = 2 },
+            { k = "m", i = "healer", x = 580, y = 420, t = "", c = 1, s = 2 },
+            { k = "m", i = "dps", x = 350, y = 330, t = "Melee", c = 1, s = 2 },
+            { k = "m", i = "dps", x = 650, y = 480, t = "Ranged", c = 1, s = 2 },
+            { k = "m", i = "skull", x = 500, y = 90, t = "", c = 1, s = 1 },
+            { k = "p", n = "Akro Polis", cl = "MAGE", x = 300, y = 500 },
+            { k = "p", n = "Altine", cl = "PRIEST", x = 340, y = 520 },
+            { k = "p", n = "Borin Steinhard", cl = "WARRIOR", x = 380, y = 500 },
+            { k = "p", n = "Eira", cl = "HUNTER", x = 700, y = 520 },
+            { k = "g", g = { 1, 2 }, x = 200, y = 300, t = "Venstre" },
+            { k = "g", g = { 3, 4 }, x = 800, y = 300, t = "Høyre" },
+            { k = "a", x = 470, y = 240, x2 = 300, y2 = 150, c = 4, s = 2 },
+            { k = "a", x = 530, y = 240, x2 = 700, y2 = 150, c = 4, s = 2 },
+            { k = "l", p = { 100, 600, 200, 560, 320, 540, 450, 560, 560, 600, 700, 610 }, c = 6, s = 2 },
+            { k = "z", x = 500, y = 330, r = 90, c = 2 },
+            { k = "z", x = 250, y = 120, r = 60, c = 5 },
+            { k = "t", x = 500, y = 30, t = "Stå samlet her", c = 3, s = 2 },
+        } }
+        local packed = T.EncodeScene(typical)
+        check("tactics: a typical scene of 20 items packs into less than 400 bytes", #typical.items == 20 and #packed < 400 and same(T.DecodeScene(packed), typical), #packed)
+    end
+    check("tactics: a text that is no packed scene gives nothing, and a broken record only loses that item",
+        T.DecodeScene("") == nil and T.DecodeScene("a;b") == nil and T.DecodeScene(nil) == nil and T.DecodeScene(("x"):rep(30000)) == nil
+        and same(T.DecodeScene(";;;m;l;z;p0000;g0000;a0000;x;mzz;t00"), empty) and same(T.DecodeScene("T;q;n,o;t0a0bHei").items, { { k = "t", x = 10, y = 11, t = "Hei", c = 1, s = 2 } }))
+
+    local header = T.EncodeHeader(original)
+    check("tactics: the header says what a viewer needs before the scenes arrive",
+        same(T.DecodeHeader(header), { id = "ptest1", name = "To tanks, én boss; ~", inst = 4, instName = "The Deadmines", boss = "Edwin VanCleef", author = "Altine", updated = 123456, count = 2 })
+        and header == "ptest1,To tanks~2 én boss~1 ~0,4,The Deadmines,Edwin VanCleef,Altine,123456,2", header)
+    do
+        local face = "\240\159\152\128" -- a letter of four bytes
+        local long = { id = "plong1", name = face:rep(40), instName = face:rep(40), boss = face:rep(40), author = face:rep(40), inst = 0, updated = 2000000000, scenes = { {}, {}, {} } }
+        local text = T.EncodeHeader(long)
+        local back = T.DecodeHeader(text)
+        check("tactics: a header always fits in one message; names in letters of many bytes are shortened, never cut inside a letter",
+            #text <= 230 and back ~= nil and back.id == "plong1" and back.count == 3 and back.updated == 2000000000
+            and #back.name % 4 == 0 and #back.name >= 40 and back.name == face:rep(#back.name // 4) and back.boss == face:rep(#back.boss // 4), #text)
+        check("tactics: a text that is no header gives nothing",
+            T.DecodeHeader("") == nil and T.DecodeHeader("a,b") == nil and T.DecodeHeader("BAD ID,n,4,i,b,a,1,2") == nil and T.DecodeHeader("pid,n,4,i,b,a,1,0") == nil
+            and T.DecodeHeader("pid,n,4,i,b,a,1,11") == nil and T.DecodeHeader("pid,n,4,i,b,a,1,2,extra") == nil and T.DecodeHeader(nil) == nil and T.DecodeHeader("pid,n,4,i,b,a,1,2") ~= nil)
+    end
+    check("tactics: a plan weighs its header and its scenes", T.PlanBytes(original) == #header + #packed1 + #packed2 and T.PlanBytes("junk") == 0, T.PlanBytes(original))
+
+    -- The library.
+    db.plans, db.received = nil, nil
+    module:OnLoad(db)                         -- as after a login
+    check("tactics: the library starts empty", #T.Plans() == 0 and #T.Received() == 0 and type(db.plans) == "table" and type(db.received) == "table")
+    TAC.events = {}
+    SERVER_NOW = keptNow + 100
+    local stored, why = T.SavePlan(original)
+    check("tactics: saving a plan stores a clean copy, with me as its author and the time now",
+        stored ~= nil and why == nil and stored.id == "ptest1" and stored.author == "Tester" and stored.updated == keptNow + 100
+        and db.plans.ptest1 ~= nil and db.plans.ptest1 ~= stored and same(db.plans.ptest1, stored) and same(stored.scenes, original.scenes) and TAC.count("plans") == 1)
+    stored.name = "changed"
+    stored.scenes[1].items[1].x = 9
+    check("tactics: what is handed out is a copy", T.GetPlan("ptest1").name == original.name and T.GetPlan("ptest1").scenes[1].items[1].x == 500
+        and T.Plans()[1] ~= T.Plans()[1] and T.GetPlan("nope") == nil)
+    do
+        local none, reason = T.SavePlan({ name = "  ", scenes = {} })
+        local none2, reason2 = T.SavePlan("junk")
+        check("tactics: a plan with no name, or something that is no plan, is not saved, and says why",
+            none == nil and reason == "TAC_ERR_NO_NAME" and none2 == nil and reason2 == "TAC_ERR_BAD_PLAN" and TAC.count("plans") == 1)
+        T.SavePlan({ id = "pz", name = "B", instName = "Zul'Farrak", boss = "Gahz'rilla" })
+        T.SavePlan({ id = "pb", name = "b", inst = 4, boss = "Cookie" })
+        T.SavePlan({ id = "pa", name = "A", inst = 4, boss = "Cookie" })
+        local order = {}
+        for _, saved in ipairs(T.Plans()) do order[#order + 1] = saved.id end
+        check("tactics: the plans are listed by dungeon, boss and name", table.concat(order, " ") == "pa pb ptest1 pz", table.concat(order, " "))
+        T.MAX_PLANS = 4
+        local full, fullWhy = T.SavePlan({ id = "pnew", name = "En til" })
+        local over = T.SavePlan({ id = "pa", name = "A2", inst = 4, boss = "Cookie" })
+        check("tactics: a full library takes no new plan, but a saved one can still be changed",
+            full == nil and fullWhy == "TAC_ERR_FULL" and T.GetPlan("pnew") == nil and over ~= nil and T.GetPlan("pa").name == "A2")
+        T.MAX_PLANS = 200
+        TAC.events = {}
+        check("tactics: a plan can be deleted", T.DeletePlan("pz") == true and T.GetPlan("pz") == nil and T.DeletePlan("pz") == false and TAC.count("plans") == 1 and #T.Plans() == 3)
+
+        local boom = true
+        T.On("plans", function() if boom then error("tac kaboom") end end)
+        clearChat()
+        local okSave = pcall(T.DeletePlan, "pb")
+        check("tactics: an error in a window that listens is reported, and stops nothing", okSave and has("tac kaboom") and has("Feil:") and T.GetPlan("pb") == nil, chatText())
+        boom = false
+        clearChat()
+
+        db.plans = { ptest1 = db.plans.ptest1, junk = "x", [5] = {},
+                     bad = { id = "bad", name = ("x"):rep(99), scenes = { { items = { { k = "m" }, { k = "t", x = 1, y = 1, t = "ok" } } } } } }
+        db.received = "junk"
+        module:OnLoad(db)                     -- as after a login with a damaged saved file
+        local listed, count = #T.Plans(), 0
+        for _ in pairs(db.plans) do count = count + 1 end
+        check("tactics: saved data is checked before it is used: what is no plan, or has no name, is gone", listed == 2 and count == 2 and db.plans.junk == nil and db.plans[5] == nil
+            and T.GetPlan("ptest1") ~= nil and #T.GetPlan("bad").name == 40 and #T.GetPlan("bad").scenes[1].items == 1 and same(T.Received(), {}) and same(db.received, {}), count)
+    end
+
+    -- The catalogue.
+    local function byId(list)
+        local out = {}
+        for _, instance in ipairs(list) do out[instance.id] = instance end
+        return out
+    end
+    do
+        local instances = T.Instances()
+        local inOrder, withBosses = #instances == #ns.DUNGEONS, true
+        for index, dungeon in ipairs(ns.DUNGEONS) do
+            local instance = instances[index] or {}
+            inOrder = inOrder and instance.id == dungeon.id and instance.name == dungeon.name and instance.raid == (dungeon.raid == true)
+            if not dungeon.raid then withBosses = withBosses and type(instance.bosses) == "table" and #instance.bosses >= 1 end
+        end
+        local found = byId(instances)
+        check("tactics: the instances are the ones in DW.DUNGEONS, in the same order", inOrder)
+        check("tactics: every dungeon has its bosses, with the game's names", withBosses and #found[4].bosses == 7 and found[4].bosses[6] == "Edwin VanCleef"
+            and #found[25].bosses == 20 and found[25].bosses[20] == "Emperor Dagran Thaurissan" and same(found[16].bosses, { "Herod" }) and found[35].bosses[9] == "Izha'Rel and Tor'Rel")
+        check("tactics: a raid has no bosses when the game's journal gives none", found[101].raid and same(found[101].bosses, {}) and same(found[102].bosses, {}))
+        found[4].bosses[1] = "changed"
+        check("tactics: the list handed out is a copy", T.Instances()[4].bosses[1] == "Rhahk'Zor")
+
+        -- The game's journal: two tiers, Molten Core in the first.
+        local tier, journalCalls = 2, 0
+        local JOURNAL = {
+            [1] = { [true] = { { 741, "Molten Core", { "Lucifron", "Magmadar", "Ragnaros", SECRET, "Never" } } }, [false] = { { 63, "The Deadmines", { "Wrong" } } } },
+            [2] = { [true] = {}, [false] = {} },
+        }
+        EJ_GetNumTiers = function() return 2 end
+        EJ_GetCurrentTier = function() return tier end
+        EJ_SelectTier = function(index) assert(index == 1 or index == 2); tier = index end
+        EJ_GetInstanceByIndex = function(index, raid)
+            journalCalls = journalCalls + 1
+            local entry = JOURNAL[tier][raid == true][index]
+            if entry then return entry[1], entry[2], "description" end
+        end
+        EJ_SelectInstance = function(id) assert(type(id) == "number") end
+        EJ_GetEncounterInfoByIndex = function(index, id)
+            for _, list in pairs(JOURNAL[tier]) do
+                for _, entry in ipairs(list) do
+                    if entry[1] == id then
+                        if entry[3][index] then return entry[3][index], "description", 1000 + index end
+                        return nil
+                    end
+                end
+            end
+        end
+        check("tactics: the journal is not asked again right away", same(byId(T.Instances())[101].bosses, {}) and journalCalls == 0)
+        clock = clock + 61
+        found = byId(T.Instances())
+        check("tactics: a raid's bosses come from the game's journal when it has them, and the journal is left on the page it was",
+            same(found[101].bosses, { "Lucifron", "Magmadar", "Ragnaros" }) and same(found[102].bosses, {}) and tier == 2 and #found[4].bosses == 7, table.concat(found[101].bosses, ";"))
+        local calls = journalCalls
+        T.Instances()
+        check("tactics: ...and what it gave is remembered", journalCalls == calls and #byId(T.Instances())[101].bosses == 3)
+        EJ_GetNumTiers, EJ_GetCurrentTier, EJ_SelectTier, EJ_GetInstanceByIndex, EJ_SelectInstance, EJ_GetEncounterInfoByIndex = nil, nil, nil, nil, nil, nil
+    end
+    do
+        local tiles = {}
+        for index = 1, 12 do tiles[index] = 270000 + index end
+        local function art() return { layerWidth = 1002, layerHeight = 668, tileWidth = 256, tileHeight = 256, textures = tiles } end
+        QT_MAPS[291] = { name = "The Deadmines", mapType = 4, parentMapID = 1436 }
+        QT_MAPS[292] = { name = "The Deadmines", mapType = 4, parentMapID = 1436 }
+        QT_MAPS[1500] = { name = "Ragefire Chasm", mapType = 4, parentMapID = 1 }
+        QT_MAPS[1600] = { name = "Scarlet Monastery", mapType = 4, parentMapID = 1 }
+        QT_MAPS[225] = { name = "Some Zone", mapType = 3, parentMapID = 1 }
+        MAP_ART = { [291] = art(), [292] = art(), [1500] = art(), [1600] = art(), [225] = art(),
+                    [777] = { layerWidth = SECRET, layerHeight = 668, tileWidth = 256, tileHeight = 256, textures = tiles },
+                    [778] = { layerWidth = 2000, layerHeight = 668, tileWidth = 256, tileHeight = 256, textures = tiles },
+                    [779] = { layerWidth = 1002, layerHeight = 668, tileWidth = 0, tileHeight = 256, textures = tiles } }
+        local map = T.MapArt(291)
+        check("tactics: the game's map of a dungeon floor comes as its size and its tiles, row by row",
+            map ~= nil and map.width == 1002 and map.height == 668 and map.tileW == 256 and map.tileH == 256 and map.cols == 4 and map.rows == 3
+            and #map.textures == 12 and map.textures[1] == 270001 and map.textures[12] == 270012)
+        check("tactics: a map with no art, a secret size, too few tiles or a tile of no size gives nothing",
+            T.MapArt(4242) == nil and T.MapArt("x") == nil and T.MapArt(nil) == nil and T.MapArt(777) == nil and T.MapArt(778) == nil and T.MapArt(779) == nil)
+        check("tactics: a dungeon's maps are the known ones that have art here, numbered when they share a name",
+            same(T.InstanceMaps(4), { { map = 291, name = "The Deadmines" }, { map = 292, name = "The Deadmines (2)" } }))
+        local calls = MAP_ART_CALLS
+        T.InstanceMaps(4)
+        T.MapArt(291)
+        T.MapArt(4242)
+        check("tactics: ...and the game is asked only once", MAP_ART_CALLS == calls)
+        check("tactics: when the known map has no art here, the dungeon's maps are found by name",
+            same(T.InstanceMaps(2), { { map = 1500, name = "Ragefire Chasm" } }) and same(T.InstanceMaps(13), { { map = 1600, name = "Scarlet Monastery" } }))
+        check("tactics: a known id that is another kind of map on this client is not used, and a dungeon with no map gives none",
+            same(T.InstanceMaps(8), {}) and same(T.InstanceMaps(1), {}) and same(T.InstanceMaps(999), {}) and same(T.InstanceMaps(101), {}))
+        local ok, problem = pcall(function()
+            for _, a in ipairs({ "x", true, {}, SECRET, 0 / 0, math.huge, -1, 2.5 }) do
+                T.MapArt(a)
+                T.InstanceMaps(a)
+            end
+        end)
+        check("tactics: asking for the maps of something that is no dungeon or map causes no error", ok and same(T.InstanceMaps(nil), {}) and T.MapArt(0) == nil, problem)
+        QT_MAPS[291], QT_MAPS[292], QT_MAPS[1500], QT_MAPS[1600], QT_MAPS[225] = nil, nil, nil, nil, nil
+        MAP_ART = {}
+    end
+
+    SERVER_NOW = keptNow
+    TAC.events = {}
+end)()
+
+-- 2. The group, and showing a slideshow to it.
+;(function()
+    local T = ns.Tactics
+    local same = TAC.same
+    TAC.keptGroup = GROUP
+    local function altine() return { name = "Altine", guid = "Player-1-Altine", class = "MAGE", role = "HEALER" } end
+    local function borin() return { name = "Borin", guid = "Player-1-Borin", class = "WARRIOR", role = "TANK", subgroup = 2, assistant = true } end
+    local function akro() return { name = "Akro", realm = "Polis", rosterName = "Akro-Polis", guid = "Player-9-Akro", class = "ROGUE", subgroup = 2, online = false } end
+    local function zed() return { name = "Zed", guid = "Player-9-Zed", class = "PRIEST", subgroup = 8 } end
+    local function raid(me) return TAC.group({ altine(), borin(), akro(), zed() }, me) end
+    -- A scene with 30 texts: several messages long.
+    local function fat(n)
+        local scene = { title = "Fase " .. n, notes = {}, bg = { kind = "room", room = "round" }, items = {} }
+        for index = 1, 30 do scene.items[index] = { k = "t", x = index * 10, y = index * 5, t = "Stå her nummer " .. (n * 100 + index), c = 1, s = 2 } end
+        return scene
+    end
+    local big = { id = "pbig1", name = "Stor", inst = 101, instName = "Molten Core", boss = "Ragnaros", author = "x", updated = 1, scenes = { fat(1), fat(2), fat(3) } }
+    local small = TAC.plan()
+
+    -- Alone.
+    TAC.group({})
+    flush()
+    TAC.sent()
+    TAC.events = {}
+    local roster = T.Roster()
+    check("tactics: alone, the roster is you in group 1", not roster.inGroup and not roster.inRaid and roster.size == 1 and roster.myGroup == 1
+        and same(roster.groups[1], { { name = "Tester", class = "PALADIN", online = true, me = true } }) and #roster.groups == 8 and #roster.groups[2] == 0)
+    do
+        local can, why = T.CanPresent()
+        local shown, whyNot = T.Present(small)
+        check("tactics: alone there is nobody to show a plan to", can == false and why == "TAC_ERR_NO_GROUP" and shown == false and whyNot == "TAC_ERR_NO_GROUP"
+            and T.Presenting() == nil and #GROUP_WIRE == 0)
+    end
+
+    -- A party.
+    local asks = TAC.timers(4)
+    TAC.group({ altine(), akro() }, { leader = true, role = "TANK" })
+    roster = T.Roster()
+    check("tactics: in a party everyone is in group 1, with class, role and whether they are online",
+        roster.inGroup and not roster.inRaid and roster.size == 3 and roster.myGroup == 1 and #roster.groups[2] == 0 and same(roster.groups[1], {
+            { name = "Tester", class = "PALADIN", role = "TANK", online = true, me = true },
+            { name = "Altine", class = "MAGE", role = "HEALER", online = true, me = false },
+            { name = "Akro Polis", class = "ROGUE", online = false, me = false } }) and TAC.count("roster") == 1, roster.groups[1][3] and roster.groups[1][3].name)
+    check("tactics: joining a group asks nothing right away", #GROUP_WIRE == 0 and TAC.timers(4) == asks + 1)
+    flush()
+    do
+        local sent, channel = TAC.sent()
+        check("tactics: a few seconds after joining, it asks once whether a slideshow is running", same(sent, { "Q" }) and channel == "PARTY", table.concat(sent, " ; "))
+        fire("GROUP_ROSTER_UPDATE")
+        fire("PARTY_LEADER_CHANGED")
+        flush()
+        check("tactics: ...and not again while you stay in the group", #TAC.sent() == 0 and TAC.count("roster") == 3)
+        local can = T.CanPresent()
+        GROUP.leader, GROUP.assistant = false, true
+        local cannot, why = T.CanPresent()
+        check("tactics: in a party only the leader may show a plan", can == true and cannot == false and why == "TAC_ERR_NOT_LEADER")
+    end
+
+    -- A raid: me in group 2, as an assistant.
+    raid({ raid = true, assistant = true, subgroup = 2 })
+    roster = T.Roster()
+    check("tactics: in a raid the members are in their raid groups, with the names as we show them",
+        roster.inGroup and roster.inRaid and roster.size == 5 and roster.myGroup == 2 and #roster.groups[3] == 0
+        and same(roster.groups[1], { { name = "Altine", class = "MAGE", role = "HEALER", online = true, me = false } })
+        and same(roster.groups[2], { { name = "Tester", class = "PALADIN", online = true, me = true }, { name = "Borin", class = "WARRIOR", role = "TANK", online = true, me = false },
+                                     { name = "Akro Polis", class = "ROGUE", online = false, me = false } })
+        and same(roster.groups[8], { { name = "Zed", class = "PRIEST", online = true, me = false } }))
+    check("tactics: an item is yours when it has your name or your raid group",
+        T.IsMine({ k = "p", n = "Tester" }) and T.IsMine({ k = "p", n = "Tester-Stormrage" }) and not T.IsMine({ k = "p", n = "Altine" }) and not T.IsMine({ k = "p", n = "Test" })
+        and T.IsMine({ k = "g", g = { 2, 5 } }) and not T.IsMine({ k = "g", g = { 1, 8 } }) and not T.IsMine({ k = "m", i = "tank" }) and not T.IsMine(nil))
+    GROUP.subgroup = 5
+    fire("GROUP_ROSTER_UPDATE")
+    check("tactics: ...also after you are moved to another group", T.IsMine({ k = "g", g = { 5 } }) and not T.IsMine({ k = "g", g = { 2 } }))
+    GROUP.members[5] = { name = SECRET, class = SECRET, subgroup = 3 }
+    check("tactics: a member the game hides is left out of the roster", pcall(T.Roster) and T.Roster().size == 5 and #T.Roster().groups[3] == 0)
+    GROUP.members[5] = nil
+    do
+        local can = T.CanPresent()
+        GROUP.assistant = false
+        local cannot, why = T.CanPresent()
+        local shown, whyNot = T.Present(small)
+        GROUP.leader = true
+        local leader = T.CanPresent()
+        GROUP.leader, GROUP.assistant = false, true
+        check("tactics: in a raid the leader and the assistants may show a plan, nobody else",
+            can == true and cannot == false and why == "TAC_ERR_NOT_LEADER" and shown == false and whyNot == "TAC_ERR_NOT_LEADER" and leader == true and #GROUP_WIRE == 0)
+        local realAccess = ns.HasAccess
+        ns.HasAccess = function() return false end
+        local locked, lockedWhy = T.CanPresent()
+        ns.HasAccess = realAccess
+        local junk, junkWhy = T.Present("junk")
+        local huge = { id = "phuge", name = "Enorm", scenes = {} }
+        for index = 1, 10 do huge.scenes[index] = fat(index) end
+        local tooBig, tooBigWhy = T.Present(huge)
+        check("tactics: a character without access, something that is no plan, and a plan too big to send are refused with the reason",
+            locked == false and lockedWhy == "TAC_ERR_NO_ACCESS" and junk == false and junkWhy == "TAC_ERR_BAD_PLAN"
+            and T.PlanBytes(huge) > T.MAX_BYTES and tooBig == false and tooBigWhy == "TAC_ERR_TOO_BIG" and T.Presenting() == nil and #GROUP_WIRE == 0, T.PlanBytes(huge))
+    end
+
+    -- Showing a plan to the raid.
+    flush()
+    TAC.sent()
+    TAC.events = {}
+    local clean = T.Sanitize(big)
+    local shown, whyNot = T.Present(big)
+    local all, channel = TAC.sent()
+    local sid = all[1] and all[1]:match("^S\t(%w+)\t1\t3\t1\t")
+    local p = T.Presenting()
+    check("tactics: showing a plan sends the start and then the scenes, ten messages at once, on the raid channel",
+        shown == true and whyNot == nil and #all == 10 and channel == "RAID" and sid ~= nil and all[2]:match("^C\t" .. tostring(sid) .. "\t1\t1\t%d+\t") ~= nil, all[1])
+    check("tactics: the one who shows can see how far it has come", p ~= nil and p.scene == 1 and p.sent == 10 and p.total > 10 and p.locked == false and p.problem == nil
+        and p.viewerCount == 0 and same(p.viewers, {}) and same(p.plan, clean) and TAC.count("present") >= 1 and TAC.last("scene")[2] == 1, p and p.total)
+    flushNow()
+    check("tactics: the rest waits for room", #GROUP_WIRE == 0 and T.Presenting().sent == 10)
+    clock = clock + 2
+    flushNow()
+    do
+        local more = TAC.sent()
+        check("tactics: ...and goes out at about one message a second", #more == 2 and T.Presenting().sent == 12, #more)
+        for _, text in ipairs(more) do all[#all + 1] = text end
+        flush()
+        for _, text in ipairs((TAC.sent())) do all[#all + 1] = text end
+        local r = TAC.read(all)
+        p = T.Presenting()
+        check("tactics: ...until all of it is sent, in order, no message over 255 bytes", p.sent == p.total and #all == p.total and r.ordered and r.starts == 1 and r.longest <= 255
+            and r.count == 3 and r.current == 1 and r.protocol == 1 and r.header == T.EncodeHeader(clean), #all)
+        check("tactics: put together again, the pieces are the plan's scenes", r.scenes[1] == T.EncodeScene(big.scenes[1]) and r.scenes[2] == T.EncodeScene(big.scenes[2])
+            and r.scenes[3] == T.EncodeScene(big.scenes[3]) and same(T.DecodeScene(r.scenes[3]), clean.scenes[3]) and r.pieces == #all - 1)
+    end
+
+    -- Moving through the scenes, pointing, and who has it.
+    TAC.events = {}
+    check("tactics: moving to another scene tells the group", T.ShowScene(2) == true and T.Presenting().scene == 2 and same((TAC.sent()), { "G\t" .. sid .. "\t2" })
+        and TAC.last("scene")[2] == 2 and TAC.count("scene") == 1 and TAC.count("present") == 1)
+    check("tactics: ...only when it is another scene, and one the plan has", T.ShowScene(2) == true and T.ShowScene(4) == false and T.ShowScene(0) == false
+        and T.ShowScene(1.5) == false and T.ShowScene("1") == false and T.Presenting().scene == 2 and #GROUP_WIRE == 0 and TAC.count("scene") == 1)
+    check("tactics: pointing at a spot tells the group, and the one who points", T.Ping(300.4, 200) == true and same((TAC.sent()), { "P\t" .. sid .. "\t300\t200" })
+        and TAC.last("ping")[2] == 300 and TAC.last("ping")[3] == 200)
+    check("tactics: ...at most twice a second", T.Ping(1, 1) == false and #GROUP_WIRE == 0 and TAC.count("ping") == 1)
+    clock = clock + 0.6
+    check("tactics: ...and always on the board", T.Ping(5000, -5) == true and same((TAC.sent()), { "P\t" .. sid .. "\t1000\t0" }) and T.Ping("x", 1) == false)
+    TAC.events = {}
+    TAC.receive("A\t" .. sid .. "\t3", "Borin-Stormrage")
+    TAC.receive("A\t" .. sid .. "\t3", "Borin-Stormrage")                 -- said twice
+    TAC.receive("A\twrong\t3", "Altine-Stormrage")                        -- about another slideshow
+    TAC.receive("A\t" .. sid .. "\t3", "Stranger-Stormrage")              -- not in the raid
+    TAC.receive("A\t" .. sid .. "\t3", "Altine-Stormrage", "GUILD")       -- not on a group channel
+    TAC.receive("A\t" .. sid .. "\t3", "Tester-Stormrage")                -- my own echo
+    p = T.Presenting()
+    check("tactics: the one who shows sees who has received all of it", p.viewerCount == 1 and same(p.viewers, { Borin = true }) and TAC.count("present") == 1)
+    TAC.receive("A\t" .. sid .. "\t3", "Akro-Polis", "INSTANCE_CHAT")
+    p = T.Presenting()
+    check("tactics: ...also someone whose name the game writes in another way", p.viewerCount == 2 and p.viewers["Akro Polis"] == true)
+
+    -- Someone joins late and asks.
+    flush()
+    TAC.sent()
+    local fifteen = TAC.timers(15)
+    TAC.receive("Q", "Stranger-Stormrage")
+    check("tactics: a question from outside the group gets no answer", #GROUP_WIRE == 0 and TAC.timers(15) == fifteen)
+    TAC.receive("Q", "Zed-Stormrage")
+    do
+        local again = TAC.sent()
+        check("tactics: when someone asks, everything is sent again, from the scene being shown",
+            #again == 10 and again[1]:match("^S\t" .. sid .. "\t1\t3\t2\t") ~= nil and T.Presenting().sent == 10 and T.Presenting().viewerCount == 2, again[1])
+        TAC.receive("Q", "Altine-Stormrage")
+        TAC.receive("Q", "Zed-Stormrage")
+        check("tactics: ...but not more than once in 15 seconds", #GROUP_WIRE == 0 and TAC.timers(15) == fifteen + 1)
+        flush()
+        flush()
+        local rest = TAC.sent()
+        local starts = 0
+        for _, text in ipairs(rest) do
+            if text:sub(1, 2) == "S\t" then starts = starts + 1 end
+        end
+        check("tactics: ...the ones who asked meanwhile get it when the 15 seconds have passed",
+            starts == 1 and #rest == (T.Presenting().total - 10) + T.Presenting().total and T.Presenting().sent == T.Presenting().total, #rest)
+    end
+
+    TAC.events = {}
+    check("tactics: ending the slideshow tells the group", T.StopPresenting() == true and same((TAC.sent()), { "E\t" .. sid }) and T.Presenting() == nil and TAC.count("present") == 1
+        and T.StopPresenting() == false and T.ShowScene(1) == false and T.Ping(1, 1) == false and #GROUP_WIRE == 0)
+
+    -- In a party the messages go to the party.
+    TAC.group({ altine(), borin() }, { leader = true })
+    flush()
+    TAC.sent()
+    check("tactics: in a party the slideshow goes out on the party channel", T.Present(small) == true)
+    do
+        local sent, where = TAC.sent()
+        local r = TAC.read(sent)
+        check("tactics: ...complete", where == "PARTY" and #sent == T.Presenting().total and r.ordered and r.count == 2 and r.scenes[1] == T.EncodeScene(small.scenes[1])
+            and r.scenes[2] == T.EncodeScene(small.scenes[2]), #sent)
+        local partySid = r.sid
+        GROUP.leader = false
+        fire("GROUP_ROSTER_UPDATE")
+        check("tactics: a change in the group does not end the slideshow before the roster has settled", T.Presenting() ~= nil and #GROUP_WIRE == 0)
+        flush()
+        check("tactics: when you are no longer the leader, your slideshow ends", T.Presenting() == nil and same((TAC.sent()), { "E\t" .. partySid }))
+        GROUP.leader = true
+        fire("GROUP_ROSTER_UPDATE")
+        T.Present(small)
+        TAC.sent()
+        TAC.events = {}
+        TAC.group({})
+        check("tactics: leaving the group ends it at once, with nobody left to tell", T.Presenting() == nil and #GROUP_WIRE == 0 and TAC.count("present") == 1)
+        flush()
+        check("tactics: ...and nothing is sent afterwards", #GROUP_WIRE == 0)
+    end
+
+    -- The game refuses addon messages.
+    raid({ raid = true, leader = true })
+    flush()
+    check("tactics: joining a group again asks again", same((TAC.sent()), { "Q" }))
+    -- The small plan is three messages: the start and its two scenes.
+    local total = 1 + math.ceil(#T.EncodeScene(small.scenes[1]) / 230) + math.ceil(#T.EncodeScene(small.scenes[2]) / 230)
+    local refused, five = GROUP_SEND_RESULTS[11] or 0, TAC.timers(5)
+    sendResult = 11
+    TAC.events = {}
+    shown = T.Present(small)
+    p = T.Presenting()
+    check("tactics: when the game refuses addon messages, the slideshow waits and says so",
+        shown == true and total == 3 and #GROUP_WIRE == 0 and p.locked == true and p.problem == "TAC_ERR_LOCKED" and p.sent == 0 and p.total == total
+        and TAC.timers(5) == five + 1 and GROUP_SEND_RESULTS[11] == refused + 1 and TAC.count("present") == 1, p.total)
+    clock = clock + 5
+    flushNow()
+    check("tactics: ...it tries again every 5 seconds, once", #GROUP_WIRE == 0 and GROUP_SEND_RESULTS[11] == refused + 2 and TAC.timers(5) == five + 1 and T.Presenting().locked)
+    sendResult = 0
+    clock = clock + 5
+    TAC.events = {}
+    flushNow()
+    do
+        local sent = TAC.sent()
+        p = T.Presenting()
+        check("tactics: ...and sends it when the game lets it", #sent == total and TAC.read(sent).ordered and p.locked == false and p.problem == nil and p.sent == total
+            and TAC.timers(5) == five and TAC.count("present") == 1, #sent)
+        sid = TAC.read(sent).sid
+    end
+    T.StopPresenting()
+    flush()
+    TAC.sent()
+
+    five = TAC.timers(5)
+    sendResult = 11
+    T.Present(small)
+    for _ = 1, 23 do
+        clock = clock + 5
+        flushNow()
+    end
+    check("tactics: it keeps trying for two minutes", T.Presenting().problem == "TAC_ERR_LOCKED" and TAC.timers(5) == five + 1 and #GROUP_WIRE == 0)
+    clock = clock + 5
+    TAC.events = {}
+    flushNow()
+    p = T.Presenting()
+    check("tactics: ...then gives up, and tells the one who shows that the group may not have it",
+        p ~= nil and p.problem == "TAC_ERR_BLOCKED" and p.locked == false and p.sent == 0 and p.total == total and TAC.timers(5) == five and #GROUP_WIRE == 0 and TAC.count("present") == 1)
+    sendResult = 0
+    T.ShowScene(2)
+    do
+        local sent = TAC.sent()
+        local r = TAC.read(sent)
+        p = T.Presenting()
+        check("tactics: ...and when a message gets through again, the whole slideshow is sent once more",
+            #sent == total + 1 and sent[1]:match("^G\t%w+\t2$") ~= nil and r.starts == 1 and r.current == 2 and r.scenes[1] == T.EncodeScene(small.scenes[1])
+            and p.problem == nil and p.sent == total, table.concat(sent, " ; "))
+    end
+    T.StopPresenting()
+    flush()
+    TAC.sent()
+
+    five = TAC.timers(5)
+    chatLock = true
+    T.Present(small)
+    p = T.Presenting()
+    check("tactics: the game's chat lockdown is treated the same way: nothing is sent into it",
+        #GROUP_WIRE == 0 and #GROUP_WIRE_ERRORS == 0 and p.locked == true and p.problem == "TAC_ERR_LOCKED" and TAC.timers(5) == five + 1)
+    chatLock = false
+    clock = clock + 5
+    flushNow()
+    check("tactics: ...and it goes out when the lockdown is over", #TAC.sent() == total and T.Presenting().locked == false)
+    T.StopPresenting()
+    flush()
+    TAC.sent()
+
+    sendResult = 3
+    T.Present(small)
+    p = T.Presenting()
+    check("tactics: being told to slow down is not a lock: it waits a moment", #GROUP_WIRE == 0 and p.locked == false and p.problem == nil and p.sent == 0)
+    sendResult = 0
+    flush()
+    check("tactics: ...and sends", #TAC.sent() == total and T.Presenting().sent == total)
+    T.StopPresenting()
+    flush()
+    TAC.sent()
+    TAC.events = {}
+end)()
+
+-- 3. Watching a slideshow someone else shows.
+;(function()
+    local T = ns.Tactics
+    local same = TAC.same
+    local db = DragonworldDB.modules.tactics
+    local function altine(flags) return { name = "Altine", guid = "Player-1-Altine", class = "MAGE", leader = flags == "leader" } end
+    local function borin(flags) return { name = "Borin", guid = "Player-1-Borin", class = "WARRIOR", subgroup = 2, assistant = flags == "assistant" } end
+    local function cedric() return { name = "Cedric", guid = "Player-9-Cedric", class = "ROGUE", subgroup = 2 } end
+    local function all(show, sender, channel)
+        for _, text in ipairs(show) do TAC.receive(text, sender, channel) end
+    end
+    db.plans, db.received = {}, {}
+    ns.modules.tactics:OnLoad(db)
+    local plan = T.Sanitize(TAC.plan())
+    local show = TAC.slideshow("sida1", plan, 1)   -- S, scene 1 in two pieces, scene 2 in two pieces
+
+    -- A raid led by Altine, with Borin as an assistant. I am an ordinary member.
+    TAC.group({ altine("leader"), borin("assistant"), cedric() }, { raid = true })
+    flush()
+    TAC.sent()
+    TAC.events = {}
+    clearChat()
+    all(show, "Cedric-Stormrage")
+    check("tactics: a slideshow from an ordinary member of the raid is ignored", T.Watching() == nil and #TAC.events == 0 and #GROUP_WIRE == 0)
+    all(show, "Stranger-Stormrage")
+    check("tactics: ...and so is one from someone who is not in the group", T.Watching() == nil and #TAC.events == 0)
+    TAC.receive(show[1], "Altine-Stormrage", "GUILD")
+    TAC.receive(show[1], "Altine-Stormrage", "WHISPER")
+    TAC.receive(show[1], "Tester-Stormrage")
+    TAC.receive((show[1]:gsub("^S\tsida1\t1\t", "S\tsida1\t2\t")), "Altine-Stormrage")
+    TAC.receive(SECRET, "Altine-Stormrage")
+    TAC.receive(show[1], SECRET)
+    check("tactics: ...one that comes on another channel, as my own echo, in a newer version of the messages, or hidden by the game",
+        T.Watching() == nil and #TAC.events == 0 and not has("Feil"))
+    do
+        local realAccess = ns.HasAccess
+        ns.HasAccess = function() return false end
+        TAC.receive(show[1], "Altine-Stormrage")
+        ns.HasAccess = realAccess
+        check("tactics: ...and any at all on a character without access", T.Watching() == nil)
+    end
+
+    TAC.receive(show[1], "Altine-Stormrage")
+    local w = T.Watching()
+    check("tactics: the leader's slideshow opens as soon as it starts, before any scene has arrived",
+        w ~= nil and w.from == "Altine" and w.scene == 1 and w.ready == 0 and w.total == 2 and w.plan.id == "ptest1" and w.plan.name == plan.name and w.plan.inst == 4
+        and w.plan.boss == "Edwin VanCleef" and w.plan.author == "Altine" and w.plan.updated == 123456 and w.plan.scenes[1] == nil
+        and TAC.count("watch") == 1 and TAC.last("scene")[2] == 1)
+    TAC.receive(show[2], "Altine-Stormrage")
+    check("tactics: half a scene is not a scene yet", T.Watching().ready == 0 and T.Watching().plan.scenes[1] == nil and TAC.count("watch") == 1)
+    TAC.receive(show[3], "Altine-Stormrage")
+    w = T.Watching()
+    check("tactics: the first scene can be shown while the rest is on its way",
+        w.ready == 1 and same(w.plan.scenes[1], plan.scenes[1]) and w.plan.scenes[2] == nil and TAC.count("watch") == 2 and #GROUP_WIRE == 0 and #T.Received() == 0)
+    TAC.receive(show[5], "Borin-Stormrage")                               -- an assistant, but not the one who shows this
+    TAC.receive(show[5], "Altine-Stormrage")                              -- the pieces can come in any order
+    TAC.receive("C\tsida1\t3\t1\t1\tx", "Altine-Stormrage")               -- a scene the slideshow does not have
+    TAC.receive("C\tother\t2\t1\t2\tx", "Altine-Stormrage")               -- a piece of another slideshow
+    check("tactics: a piece from someone else, or of something else, does not count", T.Watching().ready == 1 and #GROUP_WIRE == 0)
+    TAC.receive(show[4], "Altine-Stormrage")
+    w = T.Watching()
+    do
+        local sent, channel = TAC.sent()
+        local got = T.Received()
+        check("tactics: when the last scene is in, the viewer says so once, on the raid channel",
+            w.ready == 2 and same(w.plan.scenes, plan.scenes) and same(sent, { "A\tsida1\t2" }) and channel == "RAID" and TAC.count("watch") == 3, table.concat(sent, " ; "))
+        check("tactics: ...and the plan is kept among the received ones, with who showed it and when",
+            #got == 1 and got[1].id == "ptest1" and got[1].name == plan.name and got[1].from == "Altine" and got[1].at == SERVER_NOW and got[1].kept == nil
+            and same(got[1].scenes, plan.scenes) and TAC.count("received") == 1 and #T.Plans() == 0)
+    end
+
+    TAC.events = {}
+    TAC.receive("G\tsida1\t2", "Altine-Stormrage")
+    check("tactics: the viewer follows the leader to another scene", T.Watching().scene == 2 and TAC.last("scene")[2] == 2 and TAC.count("scene") == 1)
+    TAC.receive("G\tsida1\t3", "Altine-Stormrage")                        -- no such scene
+    TAC.receive("G\tother\t1", "Altine-Stormrage")                        -- another slideshow
+    TAC.receive("G\tsida1\t1", "Borin-Stormrage")                         -- not the one who shows it
+    TAC.receive("G\tsida1\t1", "Cedric-Stormrage")
+    check("tactics: ...but nobody else can move it", T.Watching().scene == 2 and TAC.count("scene") == 1)
+    TAC.receive("P\tsida1\t300\t200", "Altine-Stormrage")
+    TAC.receive("P\tsida1\t3000\t200", "Altine-Stormrage")                -- not on the board
+    TAC.receive("P\tsida1\t5\t6", "Cedric-Stormrage")
+    check("tactics: the viewer sees where the leader points", TAC.count("ping") == 1 and TAC.last("ping")[2] == 300 and TAC.last("ping")[3] == 200)
+    TAC.receive("P\tsida1\t7\t8", "Altine-Stormrage", "INSTANCE_CHAT")
+    check("tactics: ...also on the channel of an instance group", TAC.count("ping") == 2 and TAC.last("ping")[2] == 7)
+    TAC.events = {}
+    all(TAC.slideshow("sida1", plan, 1), "Altine-Stormrage")              -- sent again for someone who asked
+    check("tactics: a slideshow that is sent again does not start over, and is not answered again",
+        T.Watching().ready == 2 and T.Watching().scene == 1 and TAC.count("watch") == 0 and TAC.count("scene") == 1 and #GROUP_WIRE == 0 and #T.Received() == 1)
+
+    -- The newest slideshow wins.
+    local other = T.Sanitize(TAC.plan())
+    other.id, other.name = "ptest2", "Annen plan"
+    local show2 = TAC.slideshow("sidb2", other, 2)
+    TAC.receive(show2[1], "Borin-Stormrage")
+    w = T.Watching()
+    check("tactics: a newer slideshow, here from an assistant, replaces the one being watched",
+        w.from == "Borin" and w.plan.id == "ptest2" and w.ready == 0 and w.scene == 2 and w.plan.scenes[1] == nil)
+    TAC.receive("E\tsida1", "Altine-Stormrage")
+    TAC.receive("E\tsidb2", "Altine-Stormrage")
+    TAC.receive("E\tsidb2", "Cedric-Stormrage")
+    check("tactics: ...and only the one who shows it can end it", T.Watching() ~= nil)
+    for index = 2, #show2 do TAC.receive(show2[index], "Borin-Stormrage") end
+    do
+        local got = T.Received()
+        check("tactics: the received plans are kept newest first", T.Watching().ready == 2 and same((TAC.sent()), { "A\tsidb2\t2" })
+            and #got == 2 and got[1].id == "ptest2" and got[1].from == "Borin" and got[2].id == "ptest1")
+    end
+    TAC.events = {}
+    TAC.receive("E\tsidb2", "Borin-Stormrage")
+    check("tactics: when the one who shows ends it, watching ends", T.Watching() == nil and TAC.count("watch") == 1 and #T.Received() == 2)
+
+    -- Closing it yourself.
+    TAC.receive(show[1], "Altine-Stormrage")
+    check("tactics: the viewer can close the slideshow", T.Watching() ~= nil and T.StopWatching() == true and T.Watching() == nil and T.StopWatching() == false and #GROUP_WIRE == 0)
+    all(show, "Altine-Stormrage")
+    check("tactics: ...and it stays closed when it is sent again", T.Watching() == nil and #GROUP_WIRE == 0)
+    TAC.receive(TAC.slideshow("sidc3", plan, 1)[1], "Altine-Stormrage")
+    check("tactics: ...but a new one opens", T.Watching() ~= nil and T.Watching().from == "Altine")
+
+    -- In a fight the game can hide names and ranks. That must not close anything.
+    GROUP.members[1].name = SECRET
+    fire("GROUP_ROSTER_UPDATE")
+    flush()
+    check("tactics: a name the game hides does not end watching", T.Watching() ~= nil)
+    GROUP.members[1].name = "Altine"
+    GROUP.members[1].leader = SECRET
+    fire("GROUP_ROSTER_UPDATE")
+    flush()
+    TAC.receive("G\tsidc3\t2", "Altine-Stormrage")
+    check("tactics: ...nor does a rank it hides, but nothing counts from that member meanwhile", T.Watching() ~= nil and T.Watching().scene == 1)
+    GROUP.members[1].leader = true
+    TAC.receive("G\tsidc3\t2", "Altine-Stormrage")
+    check("tactics: ...and it goes on when the game says who leads again", T.Watching().scene == 2)
+
+    -- The one who shows it leaves, loses the right, or loses the slideshow.
+    table.remove(GROUP.members, 1)
+    fire("GROUP_ROSTER_UPDATE")
+    check("tactics: a change in the group does not end watching before the roster has settled", T.Watching() ~= nil)
+    flush()
+    check("tactics: watching ends when the one who shows has left the group", T.Watching() == nil)
+    TAC.receive(TAC.slideshow("sidd4", plan, 1)[1], "Borin-Stormrage")
+    check("tactics: (an assistant shows one)", T.Watching() ~= nil)
+    GROUP.members[1].assistant = false
+    fire("GROUP_ROSTER_UPDATE")
+    flush()
+    check("tactics: ...when they may no longer show one", T.Watching() == nil)
+    GROUP.members[1].assistant = true
+    TAC.sent()                            -- (what a viewer asks when a slideshow stands still: see further down)
+    TAC.receive(TAC.slideshow("side5", plan, 1)[1], "Borin-Stormrage")
+    TAC.receive("Q", "Cedric-Stormrage")
+    check("tactics: (someone else asking changes nothing for a viewer)", T.Watching() ~= nil and #GROUP_WIRE == 0)
+    TAC.receive("Q", "Borin-Stormrage")
+    check("tactics: ...when they ask whether a slideshow is running: they have lost theirs", T.Watching() == nil)
+    TAC.receive(TAC.slideshow("sidf6", plan, 1)[1], "Borin-Stormrage")
+    TAC.events = {}
+    TAC.group({})
+    check("tactics: ...and at once when you leave the group yourself", T.Watching() == nil and TAC.count("watch") == 1)
+    flush()
+    TAC.sent()
+
+    -- Showing and watching: one at a time.
+    TAC.group({ altine("leader"), borin(), cedric() }, { raid = true, assistant = true })
+    flush()
+    TAC.sent()
+    T.Present(plan)
+    TAC.sent()
+    TAC.events = {}
+    clock = clock + 10                    -- (within a few seconds of ours it would be a race: see further down)
+    TAC.receive(show2[1], "Altine-Stormrage")
+    check("tactics: when someone else starts a slideshow, your own stops and you watch theirs",
+        T.Presenting() == nil and T.Watching() ~= nil and T.Watching().from == "Altine" and T.Watching().plan.id == "ptest2" and #GROUP_WIRE == 0 and TAC.count("present") == 1)
+    flush()
+    check("tactics: ...and nothing more of yours is sent (only the viewer's question about theirs, which stands still)", same((TAC.sent()), { "Q" }))
+    TAC.events = {}
+    check("tactics: showing a plan yourself closes the one you watch", T.Present(plan) == true and T.Watching() == nil and T.Presenting() ~= nil and TAC.count("watch") == 1)
+    T.StopPresenting()
+    flush()
+    TAC.sent()
+
+    -- A party: the leader only.
+    TAC.group({ altine("leader"), borin("assistant") }, {})
+    flush()
+    TAC.sent()
+    TAC.receive(show[1]:gsub("sida1", "sidg7"), "Borin-Stormrage", "PARTY")
+    check("tactics: in a party there are no assistants", T.Watching() == nil)
+    all(TAC.slideshow("sidg7", plan, 1), "Altine-Stormrage", "PARTY")
+    do
+        local sent, channel = TAC.sent()
+        check("tactics: ...the leader's slideshow is watched, and answered on the party channel",
+            T.Watching() ~= nil and T.Watching().ready == 2 and same(sent, { "A\tsidg7\t2" }) and channel == "PARTY")
+    end
+    TAC.receive("E\tsidg7", "Altine-Stormrage", "PARTY")
+
+    -- A group the game's group finder made talks on a channel of its own.
+    TAC.group({ altine("leader"), borin() }, {})
+    GROUP.instance = true
+    fire("GROUP_ROSTER_UPDATE")
+    flush()
+    TAC.sent()
+    all(TAC.slideshow("sidi9", plan, 1), "Altine-Stormrage", "INSTANCE_CHAT")
+    do
+        local sent, channel = TAC.sent()
+        check("tactics: in a group made by the game's group finder, the answer goes on the instance channel (PARTY would not arrive there)",
+            T.Watching() ~= nil and same(sent, { "A\tsidi9\t2" }) and channel == "INSTANCE_CHAT" and #GROUP_WIRE_ERRORS == 0, tostring(channel))
+    end
+    TAC.receive("E\tsidi9", "Altine-Stormrage", "INSTANCE_CHAT")
+
+    -- Forever's names: first and last name, written in more than one way.
+    TAC.group({ { name = "Akro", realm = "Polis", rosterName = "Akro-Polis", guid = "Player-9-AkroP", class = "MAGE", leader = true },
+                { name = "Akro", realm = "Smith", rosterName = "Akro-Smith", guid = "Player-9-AkroS", class = "ROGUE" } }, { raid = true })
+    flush()
+    TAC.sent()
+    TAC.receive(TAC.slideshow("sidh8", plan, 1)[1], "Akro-Smith")
+    TAC.receive(TAC.slideshow("sidh8", plan, 1)[1], "Akro")
+    check("tactics: someone who shares a first name with the leader is not taken for the leader", T.Watching() == nil)
+    TAC.receive(TAC.slideshow("sidh8", plan, 1)[1], "Akro Polis")
+    check("tactics: the leader is known by first and last name", T.Watching() ~= nil and T.Watching().from == "Akro Polis")
+    TAC.events = {}
+    TAC.receive("G\tsidh8\t2", "Akro-Polis")
+    TAC.receive("P\tsidh8\t1\t2", "Akro-Polis-Stormrage")
+    check("tactics: ...however the game writes the name on the next message", T.Watching().scene == 2 and TAC.count("ping") == 1)
+    TAC.receive("E\tsidh8", "Akro-Smith")
+    check("tactics: ...and the other Akro cannot end it", T.Watching() ~= nil)
+    TAC.receive("E\tsidh8", "Akro Polis")
+
+    -- Keeping a received plan, and the limit of the list.
+    TAC.events = {}
+    do
+        local kept, why = T.KeepReceived("ptest1")
+        local received = T.Received()
+        local entry
+        for _, item in ipairs(received) do
+            if item.id == "ptest1" then entry = item end
+        end
+        check("tactics: a received plan can be copied into your own library, under a new id, still by its author",
+            kept ~= nil and why == nil and kept.id ~= "ptest1" and kept.name == plan.name and kept.author == "Altine" and kept.updated == 123456 and kept.from == nil
+            and same(kept.scenes, plan.scenes) and same(T.GetPlan(kept.id), kept) and entry ~= nil and entry.kept == kept.id and #T.Plans() == 1
+            and TAC.count("plans") == 1 and TAC.count("received") == 1)
+        T.DeletePlan(kept.id)
+        entry = nil
+        for _, item in ipairs(T.Received()) do
+            if item.id == "ptest1" then entry = item end
+        end
+        local none, whyNot = T.KeepReceived("nope")
+        check("tactics: ...the received one remembers its copy only while the copy exists", entry ~= nil and entry.kept == nil and none == nil and whyNot == "TAC_ERR_BAD_PLAN")
+    end
+    TAC.group({ altine("leader"), borin("assistant") }, { raid = true })
+    flush()
+    TAC.sent()
+    for index = 1, 12 do
+        local one = { id = "prx" .. index, name = "Plan " .. index, scenes = { TAC.scene2() } }
+        all(TAC.slideshow("sidn" .. index, one, 1), "Altine-Stormrage")
+    end
+    all(TAC.slideshow("sidagain", { id = "prx5", name = "Plan 5 igjen", scenes = { TAC.scene2() } }, 1), "Borin-Stormrage")
+    do
+        local got = T.Received()
+        local ids = {}
+        for index, item in ipairs(got) do ids[index] = item.id end
+        check("tactics: at most 10 received plans are kept, the newest first, one for each plan",
+            table.concat(ids, " ") == "prx5 prx12 prx11 prx10 prx9 prx8 prx7 prx6 prx4 prx3" and got[1].name == "Plan 5 igjen" and got[1].from == "Borin" and #db.received == 10,
+            table.concat(ids, " "))
+        local answered = #GROUP_WIRE
+        flush()
+        check("tactics: ...and each was answered once, ten at once and the rest as there was room", answered == 10 and #TAC.sent() == 13, answered)
+    end
+    TAC.receive("E\tsidagain", "Borin-Stormrage")
+
+    -- A plan at every limit: far too big to show, but if it were sent, every
+    -- message would still fit.
+    do
+        local face, e, o = "\240\159\152\128", "é", "ø"
+        local limit = { id = "plimit123456", name = e:rep(40), inst = 101, instName = e:rep(40), boss = e:rep(40), author = "x", updated = 1, scenes = {} }
+        for n = 1, 10 do
+            local scene = { title = e:rep(40), notes = {}, bg = { kind = "map", map = 999999, zoom = 80, cx = 1000, cy = 1000 }, items = {} }
+            for index = 1, 5 do scene.notes[index] = (n % 2 == 0 and face or "å"):rep(90) end
+            for index = 1, 40 do
+                local kind = index % 5
+                if kind == 0 then
+                    local points = {}
+                    for point = 1, 48 do points[point] = (point % 2 == 1) and 1000 or 625 end
+                    scene.items[index] = { k = "l", p = points, c = 8, s = 3 }
+                elseif kind == 1 then
+                    scene.items[index] = { k = "t", x = 1000, y = 625, t = face:rep(24), c = 8, s = 3 }
+                elseif kind == 2 then
+                    scene.items[index] = { k = "m", i = "abcdefghijkl", x = 1000, y = 625, t = o:rep(24), c = 8, s = 3 }
+                elseif kind == 3 then
+                    scene.items[index] = { k = "p", n = e:rep(40), cl = "DEMONHUNTERS", x = 1000, y = 625 }
+                else
+                    scene.items[index] = { k = "g", g = { 1, 2, 3, 4, 5, 6, 7, 8 }, x = 1000, y = 625, t = ",;~" .. o:rep(21) }
+                end
+            end
+            limit.scenes[n] = scene
+        end
+        local cleanLimit = T.Sanitize(limit)
+        local refusedBig, refusedWhy
+        GROUP.assistant = true
+        refusedBig, refusedWhy = T.Present(limit)
+        check("tactics: a plan at every limit comes out of the check as it went in, and is too big to show",
+            same(cleanLimit, limit) and T.PlanBytes(limit) > T.MAX_BYTES and refusedBig == false and refusedWhy == "TAC_ERR_TOO_BIG", T.PlanBytes(limit))
+        T.MAX_BYTES = 1000000
+        flush()
+        TAC.sent()
+        local started = T.Present(limit)
+        local sent = {}
+        for _ = 1, 60 do
+            for _, text in ipairs((TAC.sent())) do sent[#sent + 1] = text end
+            if T.Presenting().sent == T.Presenting().total then break end
+            flush()
+        end
+        local r = TAC.read(sent)
+        local whole = true
+        for n = 1, 10 do whole = whole and r.scenes[n] == T.EncodeScene(limit.scenes[n]) end
+        check("tactics: ...and even then no message is over 255 bytes, and the game takes every one",
+            started == true and #sent == T.Presenting().total and #sent > 100 and r.ordered and r.longest <= 255 and whole and #GROUP_WIRE_ERRORS == 0, r.longest)
+        T.StopPresenting()
+        flush()
+        TAC.sent()
+        GROUP.assistant = false
+        fire("GROUP_ROSTER_UPDATE")
+        all(sent, "Altine-Stormrage")
+        w = T.Watching()
+        -- (Three names of 80 bytes do not fit the header: each arrives a little shorter.)
+        check("tactics: ...and a viewer puts it together again, exactly", w ~= nil and w.ready == 10 and same(w.plan.scenes, limit.scenes)
+            and w.plan.id == "plimit123456" and w.plan.inst == 101 and #w.plan.name >= 60 and w.plan.name == e:rep(#w.plan.name // 2) and #TAC.sent() == 1, w and w.plan.name)
+        TAC.receive("E\t" .. r.sid, "Altine-Stormrage")
+        T.MAX_BYTES = 6000
+        local before = #T.Received()
+        TAC.events = {}
+        all(sent, "Altine-Stormrage")
+        check("tactics: under the real size limit, a slideshow that big (sent by hand) is dropped on the way in, and stays closed",
+            T.Watching() == nil and #T.Received() == before and #GROUP_WIRE == 0 and TAC.last("watch")[1] == "watch", #T.Received())
+        TAC.receive(sent[1], "Altine-Stormrage")
+        check("tactics: ...also when it is started again", T.Watching() == nil)
+    end
+
+    -- What the code review of November 2026 found.
+    do
+        local groupBefore = GROUP
+
+        -- A plan without a name.
+        TAC.group({ altine(), borin("assistant"), cedric() }, { raid = true, leader = true })
+        flush()
+        TAC.sent()
+        local nameless = T.Sanitize(TAC.plan())
+        nameless.id, nameless.name = "pnoname1", ""
+        local ok, why = T.Present(nameless)
+        check("tactics: a plan without a name is not shown to the group (they keep a copy, and it could not be saved)",
+            ok == false and why == "TAC_ERR_NO_NAME" and T.Presenting() == nil and #GROUP_WIRE == 0, tostring(why))
+        TAC.group({ altine("leader"), borin("assistant"), cedric() }, { raid = true })
+        flush()
+        TAC.sent()
+        all(TAC.slideshow("sidn1", nameless, 1), "Altine-Stormrage")
+        TAC.sent()
+        local kept = T.KeepReceived("pnoname1")
+        ns.modules.tactics:OnLoad(db)         -- a reload: the saved data is read and checked again
+        check("tactics: a received plan without a name gets one when it is kept (the boss), so it is still there after a reload",
+            kept ~= nil and kept.name == "Edwin VanCleef" and T.GetPlan(kept.id) ~= nil and T.GetPlan(kept.id).name == "Edwin VanCleef",
+            kept and kept.name)
+        if kept then T.DeletePlan(kept.id) end
+        TAC.receive("E\tsidn1", "Altine-Stormrage")
+
+        -- A piece that got lost on the way.
+        local show3 = TAC.slideshow("sidr1", plan, 1)
+        TAC.receive(show3[1], "Altine-Stormrage")
+        TAC.receive(show3[2], "Altine-Stormrage")
+        clock = clock + 4
+        flushNow()
+        check("tactics: a slideshow that is still coming in is left alone", T.Watching() ~= nil and T.Watching().ready == 0 and #GROUP_WIRE == 0)
+        clock = clock + 8
+        flushNow()
+        check("tactics: ...but when it has stood still, incomplete, for a while, the viewer asks for it again", same((TAC.sent()), { "Q" }))
+        flush()
+        flush()
+        check("tactics: ...once", #GROUP_WIRE == 0 and T.Watching() ~= nil)
+        all(show3, "Altine-Stormrage")
+        check("tactics: ...and what is sent again fills the holes", T.Watching().ready == 2 and same((TAC.sent()), { "A\tsidr1\t2" }))
+        TAC.receive("E\tsidr1", "Altine-Stormrage")
+
+        -- The game will not say which raid unit you are (inside an instance).
+        local realIsUnit = UnitIsUnit
+        UnitIsUnit = function() return SECRET end
+        fire("GROUP_ROSTER_UPDATE")
+        local fine, roster = pcall(T.Roster)
+        check("tactics: a raid where the game hides which unit you are: the roster is read without an error, and you are found by name",
+            fine and type(roster) == "table" and roster.inRaid == true and roster.myGroup == 1 and roster.size == 4, tostring(roster))
+        TAC.receive(TAC.slideshow("sids1", plan, 1)[1], "Altine-Stormrage")
+        check("tactics: ...and the leader's slideshow still reaches you there", T.Watching() ~= nil and T.Watching().from == "Altine")
+        TAC.receive("E\tsids1", "Altine-Stormrage")
+        UnitIsUnit = realIsUnit
+        fire("GROUP_ROSTER_UPDATE")
+        flush()
+        TAC.sent()
+
+        -- Showing: pointing must not hold the slideshow's own pieces back.
+        TAC.group({ altine(), borin("assistant"), cedric() }, { raid = true, leader = true })
+        flush()
+        TAC.sent()
+        local big = T.Sanitize(TAC.plan())
+        while #big.scenes < T.MAX_SCENES and T.PlanBytes(big) < 3500 do big.scenes[#big.scenes + 1] = TAC.scene1() end
+        big = T.Sanitize(big)
+        local started = T.Present(big)
+        local first = TAC.sent()              -- ten go at once, the rest one a second
+        local sid = first[1] and first[1]:match("^S\t(%w+)\t")
+        local p = T.Presenting()
+        check("(a slideshow of more than ten messages is still going out)", started == true and #first == 10 and p.sent < p.total, #first)
+        TAC.events = {}
+        local pointed = T.Ping(100, 100)
+        flush()
+        local rest = TAC.sent()
+        local pings = 0
+        for _, message in ipairs(rest) do
+            if message:find("^P\t") then pings = pings + 1 end
+        end
+        check("tactics: pointing while the slideshow is still going out is shown to you only, and the pieces go out undisturbed",
+            pointed == true and TAC.count("ping") == 1 and pings == 0 and #first + #rest == p.total and T.Presenting().sent == p.total, #rest)
+        clock = clock + 1
+        T.Ping(200, 300)
+        check("tactics: ...and when all of it is out, the group sees where you point", same((TAC.sent()), { "P\t" .. tostring(sid) .. "\t200\t300" }))
+
+        -- One member asking again and again.
+        local answers = 0
+        for _ = 1, 6 do
+            TAC.receive("Q", "Cedric-Stormrage")
+            flush()
+            if #TAC.sent() > 0 then answers = answers + 1 end
+        end
+        check("tactics: one member who keeps asking gets the whole slideshow only a few times", answers == 4, answers)
+        TAC.receive("Q", "Borin-Stormrage")
+        flush()
+        check("tactics: ...and another member who asks still gets it", #TAC.sent() == p.total)
+
+        -- Someone who has received it leaves.
+        TAC.receive("A\t" .. tostring(sid) .. "\t8", "Cedric-Stormrage")
+        TAC.receive("A\t" .. tostring(sid) .. "\t8", "Borin-Stormrage")
+        check("(two have received all of it)", T.Presenting().viewerCount == 2)
+        table.remove(GROUP.members, 3)        -- Cedric
+        fire("GROUP_ROSTER_UPDATE")
+        flush()
+        p = T.Presenting()
+        check("tactics: someone who leaves the group no longer counts as having received it",
+            p ~= nil and p.viewerCount == 1 and p.viewers.Borin == true and p.viewers.Cedric == nil, p and p.viewerCount)
+        TAC.sent()
+
+        -- Ending it while the game refuses messages (a boss fight).
+        sendResult = 11
+        T.StopPresenting()
+        check("(the game refuses the message that ends the slideshow)", T.Presenting() == nil and #GROUP_WIRE == 0)
+        for _ = 1, 30 do                      -- two and a half minutes: the sender gives up after two
+            clock = clock + 5
+            flushNow()
+        end
+        check("(still refused)", #GROUP_WIRE == 0)
+        sendResult = 0
+        clock = clock + 5
+        flushNow()
+        check("tactics: the message that ends a slideshow is queued again when the game dropped it, so the group is told in the end",
+            same((TAC.sent()), { "E\t" .. tostring(sid) }))
+        flush()
+        flush()
+        check("tactics: ...once", #GROUP_WIRE == 0)
+
+        -- Two press "Show to group" at the same moment.
+        T.Present(plan)
+        local mine = TAC.read((TAC.sent()))
+        TAC.receive(TAC.slideshow("zzzzzzz", other, 1)[1], "Borin-Stormrage")
+        check("tactics: two slideshows started at the same moment: the one with the lower id goes on (here ours)",
+            T.Presenting() ~= nil and T.Watching() == nil and #GROUP_WIRE == 0)
+        clock = clock + 2
+        flushNow()
+        local again = TAC.read((TAC.sent()))
+        check("tactics: ...and it is sent once more, since the group was just told about the other one",
+            again.starts == 1 and again.sid == mine.sid and again.pieces == mine.pieces and again.ordered, tostring(again.sid))
+        T.StopPresenting()
+        flush()
+        TAC.sent()
+        T.Present(plan)
+        TAC.sent()
+        TAC.receive(TAC.slideshow("0000000", other, 1)[1], "Borin-Stormrage")
+        check("tactics: ...with the higher id ours stops, and we watch theirs",
+            T.Presenting() == nil and T.Watching() ~= nil and T.Watching().from == "Borin" and #GROUP_WIRE == 0)
+        TAC.receive("E\t0000000", "Borin-Stormrage")
+        GROUP = groupBefore
+        fire("GROUP_ROSTER_UPDATE")
+        flush()
+        TAC.sent()
+        TAC.events = {}
+    end
+
+    -- /dw debug.
+    clearChat()
+    dw("debug")
+    check("tactics: /dw debug tells the group, the lock and the game's last answer",
+        has("[tactics]") and has("gruppe: true | raid: true | størrelse: 3 | leder: false | assistent: false | kan vise: false (TAC_ERR_NOT_LEADER)")
+        and has("meldinger: venter 0 | spillet sperrer nå: false | sperret ved siste forsøk: false | siste svar fra spillet: 0")
+        and has("viser: - | ser på: - | spurt: true | lagret: 0 | mottatt: 10"), chatText())
+
+    -- Leave things as the remaining tests expect.
+    GROUP = TAC.keptGroup
+    fire("GROUP_ROSTER_UPDATE")
+    flush()
+    check("tactics: nothing malformed was ever sent to the group", #GROUP_WIRE_ERRORS == 0 and sendResult == 0 and chatLock == false and T.Presenting() == nil and T.Watching() == nil,
+        GROUP_WIRE_ERRORS[1])
+    db.plans, db.received = {}, {}
+    ns.modules.tactics:OnLoad(db)
+    GROUP_WIRE = {}
+    wire = {}
+    TAC.events = {}
+    clearChat()
+end)()
+
+-- 4. The sender and receiver for group messages on their own (Comm.lua), under a name of their own.
+;(function()
+    local NAME = "DragonworldTst"
+    GROUP_PREFIXES[NAME] = true
+    local Group = ns.CreateGroupSender(NAME)
+    local heard, changes = {}, {}
+    ns.OnGroupMessage(NAME, function(text, sender, channel)
+        if text == "boom" then error("grp kaboom") end
+        heard[#heard + 1] = text .. "@" .. channel .. "@" .. sender
+    end)
+    Group.OnChange(function(what) changes[#changes + 1] = what end)
+    -- What went out under this name since last asked, as "text@channel ...".
+    local function out()
+        local list, rest = {}, {}
+        for _, m in ipairs(GROUP_WIRE) do
+            if m.prefix == NAME then list[#list + 1] = m.message .. "@" .. m.chatType else rest[#rest + 1] = m end
+        end
+        GROUP_WIRE = rest
+        return table.concat(list, " ")
+    end
+    local function changed()
+        local text = table.concat(changes, ",")
+        changes = {}
+        return text
+    end
+    local function from(text, channel, sender) fire("CHAT_MSG_ADDON", NAME, text, channel, sender or "Altine-Stormrage") end
+    local keptGroup = GROUP
+
+    TAC.group({ { name = "Altine", guid = "Player-1-Altine", class = "MAGE" } }, { leader = true })
+    flush()
+    GROUP_WIRE = {}                           -- (Tactics asked its question on joining)
+    check("group messages: a sender registers its name and starts with nothing waiting",
+        prefixes[NAME] == true and Group.Waiting() == 0 and Group.Locked() == false and Group.LastResult() == nil)
+    check("group messages: in a party a message goes to the party", Group("one") == true and out() == "one@PARTY" and Group.LastResult() == 0 and changed() == "sent")
+    GROUP.raid = true
+    check("group messages: ...and in a raid to the raid", Group.Send("two") == true and out() == "two@RAID")
+    check("group messages: what is no text, or longer than 255 bytes, is refused",
+        Group(("x"):rep(256)) == false and Group(5) == false and Group(nil) == false and Group(("x"):rep(255)) == true and out() == ("x"):rep(255) .. "@RAID")
+
+    flush()
+    for index = 1, 12 do Group("m" .. index) end
+    check("group messages: ten go at once, the rest wait", #GROUP_WIRE == 10 and Group.Waiting() == 2 and Group.Waiting("^m11$") == 1 and Group.Waiting("^x") == 0 and Group.Locked() == false)
+    Group("urgent1", true)
+    Group("urgent2", true)
+    Group("m11")                              -- already waiting: not queued twice
+    Group.Clear("^m12$")
+    check("group messages: a message is not queued twice, and one that waits can be taken back", Group.Waiting() == 3 and Group.Waiting("^m") == 1)
+    out()
+    changed()
+    flush()
+    check("group messages: urgent ones go first, in their own order", out() == "urgent1@RAID urgent2@RAID m11@RAID" and Group.Waiting() == 0 and changed() == "sent")
+
+    from("hei", "RAID")
+    from("hei", "PARTY")
+    from("hei", "INSTANCE_CHAT")
+    from("hei", "GUILD")
+    from("hei", "WHISPER")
+    from("hei", "RAID", "Tester-Stormrage")   -- my own echo
+    from(SECRET, "RAID")
+    from("hei", SECRET)
+    from("hei", "RAID", SECRET)
+    check("group messages: taken from the three group channels only, not my own echo, never anything secret",
+        table.concat(heard, " ") == "hei@RAID@Altine-Stormrage hei@PARTY@Altine-Stormrage hei@INSTANCE_CHAT@Altine-Stormrage", table.concat(heard, " "))
+    clearChat()
+    check("group messages: an error in the one who listens is caught and reported", pcall(from, "boom", "RAID") and has("grp kaboom") and has("Feil:"), chatText())
+    clearChat()
+    do
+        local guildHeard = 0
+        ns.OnGuildMessage(NAME, function() guildHeard = guildHeard + 1 end)
+        from("x", "GUILD")
+        from("x", "RAID")
+        check("group messages: the guild and the group are kept apart, also under the same name", guildHeard == 1 and #heard == 4 and heard[4] == "x@RAID@Altine-Stormrage")
+        ns.OnGuildMessage(NAME, nil)
+    end
+
+    local refused = GROUP_SEND_RESULTS[11] or 0
+    sendResult = 11
+    Group("a")
+    Group("b")
+    check("group messages: when the game answers 11, the messages are kept and the sender says it is locked",
+        Group.Locked() == true and Group.Waiting() == 2 and Group.LastResult() == 11 and changed() == "locked" and #GROUP_WIRE == 0 and GROUP_SEND_RESULTS[11] == refused + 1)
+    sendResult = 0
+    clock = clock + 5
+    flushNow()
+    check("group messages: ...and sent five seconds later if the game takes them then", Group.Locked() == false and out() == "a@RAID b@RAID" and changed() == "sent")
+    sendResult = 9
+    Group("c")
+    for _ = 1, 23 do
+        clock = clock + 5
+        flushNow()
+    end
+    check("group messages: an answer we do not know counts as locked too", Group.Locked() == true and Group.Waiting() == 1 and Group.LastResult() == 9 and changed() == "locked")
+    clock = clock + 5
+    flushNow()
+    check("group messages: after two minutes what waits is dropped, and the sender says it gave up", Group.Waiting() == 0 and Group.Locked() == true and changed() == "gaveup" and #GROUP_WIRE == 0)
+    sendResult = 0
+    check("group messages: the next message is tried as usual", Group("d") == true and out() == "d@RAID" and Group.Locked() == false and changed() == "sent")
+    chatLock = true
+    Group("e")
+    check("group messages: in the game's chat lockdown nothing is attempted", Group.Locked() == true and Group.LastResult() == false and #GROUP_WIRE == 0 and #GROUP_WIRE_ERRORS == 0)
+    chatLock = false
+    clock = clock + 5
+    flushNow()
+    check("group messages: ...until it is over", out() == "e@RAID" and Group.LastResult() == 0)
+    changed()
+
+    do
+        local realAccess = ns.HasAccess
+        ns.HasAccess = function() return false end
+        Group("f")
+        from("f", "RAID")
+        ns.HasAccess = realAccess
+        check("group messages: a character without access sends nothing and hears nothing", Group.Waiting() == 0 and #GROUP_WIRE == 0 and #heard == 4 and changed() == "")
+    end
+    flush()
+    for index = 1, 11 do Group("n" .. index) end
+    out()
+    changed()
+    TAC.group({})
+    flush()
+    check("group messages: what waits is dropped when you are in no group", Group.Waiting() == 0 and out() == "" and changed() == "nogroup")
+    Group("alone")
+    check("group messages: ...and alone nothing is sent", Group.Waiting() == 0 and #GROUP_WIRE == 0 and changed() == "nogroup" and Group.Locked() == false)
+
+    GROUP = keptGroup
+    fire("GROUP_ROSTER_UPDATE")
+    flush()
+    check("group messages: nothing malformed was sent", #GROUP_WIRE_ERRORS == 0 and sendResult == 0 and chatLock == false, GROUP_WIRE_ERRORS[1])
+    GROUP_WIRE = {}
+    wire = {}
+    TAC.events = {}
+    clearChat()
+end)()
+
+-- What the board and window sections share.
+-- Puts the mouse over a point of a board (board units). The board must be at
+-- the fake screen's corner (screenLeft and screenTop 0, the default).
+function TAC.mouse(board, x, y)
+    cursor[1], cursor[2] = x * board.px, -y * board.px
+end
+-- A click on a board, and a drag from one point to another (the mouse moves in
+-- `steps` stretches, and the board looks at it after each).
+function TAC.click(board, x, y, button)
+    TAC.mouse(board, x, y)
+    board:Fire("OnMouseDown", button or "LeftButton")
+    board:Fire("OnMouseUp", button or "LeftButton")
+end
+function TAC.drag(board, x1, y1, x2, y2, steps)
+    steps = steps or 4
+    TAC.mouse(board, x1, y1)
+    board:Fire("OnMouseDown", "LeftButton")
+    for step = 1, steps do
+        TAC.mouse(board, x1 + (x2 - x1) * step / steps, y1 + (y2 - y1) * step / steps)
+        board:Fire("OnUpdate", 0.02)
+    end
+    board:Fire("OnMouseUp", "LeftButton")
+end
+-- Where a region lies inside `root`: left, top, right, bottom, with x to the
+-- right and y downwards from root's top left corner. Worked out from the
+-- region's anchors and size, as the game would.
+function TAC.box(region, root)
+    if region == root then return 0, 0, root:GetWidth(), root:GetHeight() end
+    local parent = region.parent
+    if parent and parent.scrollChild == region then
+        -- What a list scrolls starts at the top left corner of the list.
+        local l, t = TAC.box(parent, root)
+        return l, t, l + region:GetWidth(), t + region:GetHeight()
+    end
+    if region.allPoints then
+        return TAC.box(region.allPoints == true and parent or region.allPoints, root)
+    end
+    assert(region.points and #region.points > 0, "a region without a place")
+    local left, top, right, bottom, midX, midY
+    for _, p in ipairs(region.points) do
+        local point, relPoint = p[1], p[3]
+        local l, t, r, b = TAC.box(p[2] or parent, root)
+        local x = (relPoint:find("LEFT") and l or relPoint:find("RIGHT") and r or (l + r) / 2) + p[4]
+        local y = (relPoint:find("TOP") and t or relPoint:find("BOTTOM") and b or (t + b) / 2) - p[5]
+        if point:find("LEFT") then left = x elseif point:find("RIGHT") then right = x else midX = x end
+        if point:find("TOP") then top = y elseif point:find("BOTTOM") then bottom = y else midY = y end
+    end
+    local width, height = region:GetWidth(), region:GetHeight()
+    if region.GetStringWidth then
+        if width <= 0 then width = region:GetStringWidth() end
+        height = region:GetStringHeight()
+    end
+    if not left then left = right and (right - width) or (midX - width / 2) end
+    if not right then right = left + width end
+    if not top then top = bottom and (bottom - height) or (midY - height / 2) end
+    if not bottom then bottom = top + height end
+    return left, top, right, bottom
+end
+-- Everything in a window that can be clicked or typed in and is showing, with
+-- where it lies: { { region, left, top, right, bottom }, ... }. What is inside
+-- a scrolling list is left out (it is cut off at the list's edge); the list
+-- itself is in.
+function TAC.controls(root, out, from)
+    out = out or {}
+    for _, child in ipairs((from or root).children) do
+        if child.shown and child ~= root.prompt then
+            local clickable = child.kind == "Button" or child.kind == "CheckButton" or child.kind == "EditBox" or child.kind == "ScrollFrame"
+                or child.px ~= nil
+            if clickable then
+                out[#out + 1] = { child, TAC.box(child, root) }
+            end
+            if child.kind ~= "ScrollFrame" and child.px == nil and not clickable then
+                TAC.controls(root, out, child)
+            end
+        end
+    end
+    return out
+end
+-- What is wrong with where a window's controls lie: one that reaches closer
+-- than `margin` to the window's edge, or two that lie over each other.
+function TAC.layoutProblems(root, margin)
+    local problems = {}
+    local controls = TAC.controls(root)
+    local width, height = root:GetWidth(), root:GetHeight()
+    local function name(control)
+        local region = control[1]
+        local text = region.label and region.label.text or region.kind
+        return ("%s@%d,%d"):format(tostring(text), control[2], control[3])
+    end
+    for index, a in ipairs(controls) do
+        if a[2] < margin or a[3] < margin or a[4] > width - margin or a[5] > height - margin or a[4] <= a[2] or a[5] <= a[3] then
+            problems[#problems + 1] = "outside: " .. name(a)
+        end
+        for other = index + 1, #controls do
+            local b = controls[other]
+            if a[2] < b[4] and b[2] < a[4] and a[3] < b[5] and b[3] < a[5] then
+                problems[#problems + 1] = "over each other: " .. name(a) .. " and " .. name(b)
+            end
+        end
+    end
+    return problems, #controls
+end
+
+-- 5. The board on its own: the names of what it offers, its arithmetic, and drawing a scene.
+;(function()
+    local T = ns.Tactics
+    local Geo = T.Geo
+    local same = TAC.same
+    local keptGroup = GROUP
+    TAC.group({})
+    flush()
+    TAC.sent()
+
+    -- The names the editor's palette and the board's tooltips look up.
+    do
+        local missing, groups, groupCount = {}, {}, 0
+        local function need(key)
+            for _, language in ipairs(ns.LANGUAGES) do
+                local text = ns.strings[language.code][key]
+                if type(text) ~= "string" or text == "" or text == key then missing[#missing + 1] = language.code .. "." .. key end
+            end
+        end
+        for _, icon in ipairs(T.ICONS) do
+            need("TAC_ICON_" .. icon.id:upper())
+            if not groups[icon.group] then groups[icon.group] = true; groupCount = groupCount + 1 end
+        end
+        for group in pairs(groups) do need("TAC_ICONS_" .. group:upper()) end
+        for _, room in ipairs(T.ROOMS) do need("TAC_ROOM_" .. room.id:upper()) end
+        for _, colour in ipairs(T.COLORS) do need("TAC_COLOR_" .. colour[4]) end
+        for _, key in ipairs({ "TAC_GROUP_N", "TAC_GROUP_EMPTY", "TAC_GROUP_NONE" }) do need(key) end
+        check("tactics: every icon, group of icons, room and colour the board offers has a name in every language",
+            #missing == 0 and #T.ICONS == 31 and groupCount == 4 and #T.ROOMS == 10 and #T.COLORS == 8, table.concat(missing, ", "))
+        check("tactics: the names read as a player would say them, and the raid target icons keep the game's own names",
+            ns.strings.en.TAC_ICON_TANK == "Tank" and ns.strings.de.TAC_ICON_HEAL == "Heiler" and ns.strings.fr.TAC_ICON_HEAL == "Soigneur"
+            and ns.strings.nb.TAC_ICON_RT8 == "Skull" and ns.strings.de.TAC_ICON_RT8 == "Totenschädel" and ns.strings.fr.TAC_ICON_RT1 == "Étoile"
+            and ns.strings.nb.TAC_ROOM_ROUND == "Rundt rom" and ns.strings.nl.TAC_COLOR_PURPLE == "Paars" and ns.strings.sv.TAC_GROUP_N:format(3) == "Grupp 3")
+        local quoted = {}
+        for _, language in ipairs(ns.LANGUAGES) do
+            local t = ns.strings[language.code]
+            if not t.TAC_EMPTY:find('"' .. t.TAC_NEW .. '"', 1, true) or not t.TAC_TOOL_TEXT_TIP:find('"' .. t.TAC_LABEL .. '"', 1, true)
+                or not t.TAC_TOOL_BG_OFF:find(t.TAC_ROOM, 1, true) then
+                quoted[#quoted + 1] = language.code
+            end
+        end
+        check("tactics: a text that names a button or a field uses that button's own words, in every language", #quoted == 0, table.concat(quoted, ", "))
+    end
+
+    -- Thinning a drawn stroke.
+    do
+        local straight, corner, circle = {}, {}, {}
+        for x = 100, 500, 4 do straight[#straight + 1] = x; straight[#straight + 1] = 200 end
+        for x = 100, 300, 4 do corner[#corner + 1] = x; corner[#corner + 1] = 100 end
+        for y = 104, 300, 4 do corner[#corner + 1] = 300; corner[#corner + 1] = y end
+        for step = 0, 190 do
+            local angle = step / 200 * 2 * math.pi
+            circle[#circle + 1] = 500 + 200 * math.cos(angle)
+            circle[#circle + 1] = 300 + 200 * math.sin(angle)
+        end
+        check("tactics: a straight stroke is thinned to its two ends", same(Geo.Simplify(straight), { 100, 200, 500, 200 }), table.concat(Geo.Simplify(straight), ","))
+        check("tactics: ...a stroke with a corner keeps the corner", same(Geo.Simplify(corner), { 100, 100, 300, 100, 300, 300 }), table.concat(Geo.Simplify(corner), ","))
+        local thin = Geo.Simplify(circle)
+        local whole, farthest = true, 0
+        for _, value in ipairs(thin) do whole = whole and value == math.floor(value) end
+        for index = 1, #circle - 1, 2 do
+            local nearest = math.huge
+            for at = 3, #thin - 1, 2 do
+                nearest = math.min(nearest, Geo.SegmentDistance(circle[index], circle[index + 1], thin[at - 2], thin[at - 1], thin[at], thin[at + 1]))
+            end
+            farthest = math.max(farthest, nearest)
+        end
+        check("tactics: ...and a curve keeps its bends: at most 24 whole points, none of the drawn ones more than a few units from the line",
+            #thin % 2 == 0 and #thin / 2 <= T.MAX_POINTS and #thin / 2 >= 8 and whole and thin[1] == 700 and thin[2] == 300 and farthest <= Geo.TOLERANCE + 1,
+            #thin / 2 .. " points, " .. farthest .. " away")
+        local few = Geo.Simplify(circle, 5)
+        check("tactics: a line is never given more points than asked for, and never fewer than its two ends",
+            #few == 10 and few[1] == 700 and few[2] == 300 and #Geo.Simplify(corner, 2) == 4 and #Geo.Simplify(corner, 0) == 4 and #Geo.Simplify(circle, 24) <= 48)
+        check("tactics: a wobble smaller than the tolerance is smoothed away, a larger one is kept",
+            same(Geo.Simplify({ 0, 0, 50, 2, 100, 0 }), { 0, 0, 100, 0 }) and same(Geo.Simplify({ 0, 0, 50, 10, 100, 0 }), { 0, 0, 50, 10, 100, 0 })
+            and same(Geo.Simplify({ 0, 0, 50, 2, 100, 0 }, nil, 1), { 0, 0, 50, 2, 100, 0 }))
+        check("tactics: points are kept on the board and whole, and points on top of each other count once",
+            same(Geo.Simplify({ -50, -50, 2000, 2000 }), { 0, 0, 1000, 625 }) and same(Geo.Simplify({ 5.4, 5.4, 5, 5, 5.2, 4.8 }), { 5, 5 })
+            and same(Geo.Simplify({}), {}) and same(Geo.Simplify({ 7 }), {}))
+        check("tactics: thinning leaves the drawn list as it was", #straight == 202 and straight[1] == 100 and #circle == 382)
+    end
+
+    -- Which item a click means.
+    do
+        local items = {
+            { k = "z", x = 500, y = 300, r = 100, c = 1 },                      -- 1: an area
+            { k = "m", i = "tank", x = 500, y = 300, t = "", c = 1, s = 2 },    -- 2: a marker standing in it (radius 23)
+            { k = "a", x = 100, y = 100, x2 = 300, y2 = 100, c = 1, s = 2 },    -- 3: an arrow, 7 thick
+            { k = "l", p = { 100, 500, 200, 500, 200, 600 }, c = 1, s = 2 },    -- 4: a drawn line with a bend
+            { k = "g", g = { 1, 2 }, x = 800, y = 100, t = "" },                -- 5: a badge 100 x 44
+            { k = "t", x = 800, y = 500, t = "Stack", c = 1, s = 2 },           -- 6: a text, about 74 x 32
+            { k = "p", n = "Akro", cl = "MAGE", x = 300, y = 300 },             -- 7: a player (radius 22)
+            { k = "z", x = 300, y = 300, r = 60, c = 2 },                       -- 8: an area drawn later, over the player
+        }
+        check("tactics: a click on a marker standing in an area means the marker", Geo.HitTest(items, 500, 300) == 2 and Geo.HitTest(items, 520, 310) == 2)
+        check("tactics: ...also when the area was drawn after it", Geo.HitTest(items, 300, 300) == 7)
+        check("tactics: ...and beside the marker it means the area", Geo.HitTest(items, 560, 300) == 1 and Geo.HitTest(items, 340, 300) == 8)
+        check("tactics: an arrow and a drawn line are hit near them, not beside them",
+            Geo.HitTest(items, 200, 104) == 3 and Geo.HitTest(items, 200, 110) == nil and Geo.HitTest(items, 200, 110, 20) == 3
+            and Geo.HitTest(items, 150, 500) == 4 and Geo.HitTest(items, 200, 550) == 4 and Geo.HitTest(items, 150, 550) == nil)
+        check("tactics: a group's badge and a text are hit inside their box",
+            Geo.HitTest(items, 760, 100) == 5 and Geo.HitTest(items, 740, 100) == nil and Geo.HitTest(items, 800, 125) == 5 and Geo.HitTest(items, 800, 130) == nil
+            and Geo.HitTest(items, 800, 500) == 6 and Geo.HitTest(items, 830, 510) == 6 and Geo.HitTest(items, 850, 500) == nil)
+        check("tactics: of two things on the same spot the later one is on top, and of two areas too",
+            Geo.HitTest({ items[2], { k = "m", i = "boss", x = 505, y = 300, t = "", c = 1, s = 2 } }, 502, 300) == 2
+            and Geo.HitTest({ { k = "z", x = 100, y = 100, r = 50, c = 1 }, { k = "z", x = 120, y = 100, r = 50, c = 1 } }, 110, 100) == 2)
+        check("tactics: a click on nothing means nothing, and a list that is no list causes no error",
+            Geo.HitTest(items, 950, 600) == nil and Geo.HitTest({}, 1, 1) == nil and Geo.HitTest(nil, 1, 1) == nil and Geo.HitTest("x", 1, 1) == nil
+            and Geo.HitTest({ "junk", 5, false }, 1, 1) == nil)
+    end
+
+    -- Drawing a scene with one of everything, on both kinds of background.
+    do
+        local holder = CreateFrame("Frame", nil, UIParent)
+        local lines, masks = FAKE_DRAWN.lines, FAKE_DRAWN.masks
+        local board, selected, changed = nil, {}, 0
+        local scene1, scene2 = T.Sanitize({ scenes = { TAC.scene1() } }).scenes[1], T.Sanitize({ scenes = { TAC.scene2() } }).scenes[1]
+        local ok, problem = pcall(function()
+            board = T.CreateBoard(holder, 600)
+            board.onSelect = function(_, index) selected[#selected + 1] = index or 0 end
+            board.onChanged = function() changed = changed + 1 end
+            board:SetScene(scene1)
+        end)
+        check("tactics board: a board is made and draws a scene with every kind of item without a problem", ok and board ~= nil, problem)
+        local shownSlots = 0
+        for _, slot in ipairs(board.slots) do if slot.frame:IsShown() then shownSlots = shownSlots + 1 end end
+        check("tactics board: it is 16:10, cuts off what reaches outside it, and has a frame of its own for each item",
+            board:GetWidth() == 600 and board:GetHeight() == 375 and board.clips == true and shownSlots == 8 and #scene1.items == 8
+            and FAKE_DRAWN.lines > lines and FAKE_DRAWN.masks > masks and board.mapMissing == false and board.levels == T.MAX_ITEMS + 4)
+        ok, problem = pcall(function()
+            for index = 1, #scene1.items do board:Select(index) end
+            board:Select(nil)
+            board:SetHighlightMine(true)
+            board:Fire("OnUpdate", 0.1)
+            board:Ping(500, 300)
+            for _ = 1, 20 do board:Fire("OnUpdate", 0.1) end
+            board:SetHighlightMine(false)
+            board:SetBoardWidth(342)
+            board:SetBoardWidth(600)
+        end)
+        check("tactics board: selecting each item, the glow on what is yours, a ping and another size draw without a problem",
+            ok and table.concat(selected, ",") == "1,2,3,4,5,6,7,8,0" and #board.pings == 0, tostring(problem) .. " " .. table.concat(selected, ","))
+
+        -- Hovering a group shows who is in it, in the texts the editor added.
+        TAC.mouse(board, 200, 500)
+        board:Fire("OnEnter")
+        board:Fire("OnUpdate", 0.02)
+        check("tactics board: hovering a group says who is in each of its groups, and that nobody is listed outside a group",
+            table.concat(GameTooltip.lines, " / ") == "Venstre side / " .. ns.L.TAC_GROUP_N:format(1) .. " / > Tester / " .. ns.L.TAC_GROUP_N:format(2) .. " /   "
+                .. ns.L.TAC_GROUP_EMPTY .. " / " .. ns.L.TAC_GROUP_NONE, table.concat(GameTooltip.lines, " / "))
+        board:Fire("OnLeave")
+
+        ok, problem = pcall(function() board:SetScene(scene2) end)
+        local tiles = 0
+        for _, tile in ipairs(board.back.maps) do if tile:IsShown() then tiles = tiles + 1 end end
+        check("tactics board: the game's own map is drawn from its tiles, with an icon this version does not know as a plain marker",
+            ok and T.MapArt(291) ~= nil and board.mapMissing == false and #board.back.maps == 12 and tiles > 0 and tiles <= 12, tostring(problem) .. " " .. tiles)
+        ok, problem = pcall(function() board:SetScene({ title = "", notes = {}, bg = { kind = "map", map = 4242, zoom = 10, cx = 500, cy = 500 }, items = {} }) end)
+        check("tactics board: a map this game has no picture of is drawn as a plain room, and the board says so", ok and board.mapMissing == true, problem)
+        ok, problem = pcall(function()
+            for _, room in ipairs(T.ROOMS) do
+                board:SetScene({ title = "", notes = {}, bg = { kind = "room", room = room.id }, items = {} })
+                assert(board.mapMissing == false)
+            end
+            board:SetScene({ title = "", notes = {}, bg = { kind = "room", room = "cave9" }, items = {} })
+            board:SetScene(nil)
+            board:SetScene({})
+        end)
+        check("tactics board: every drawn room, a room from a newer version, no scene and an empty table draw without a problem", ok, problem)
+
+        -- Editing with the mouse: a marker placed, moved and taken back.
+        local scene = { title = "", notes = {}, bg = { kind = "room", room = "round" }, items = {} }
+        changed = 0
+        ok, problem = pcall(function()
+            board:SetScene(scene)
+            board:SetEditable(true)
+            board:SetTool({ kind = "m", i = "tank", c = 6, s = 2, t = "MT" })
+            TAC.click(board, 500, 300)
+            board:SetTool(nil)
+            TAC.drag(board, 500, 300, 600, 400)
+        end)
+        check("tactics board: a click with a marker tool places it, and a drag with the select tool moves it",
+            ok and same(scene.items, { { k = "m", i = "tank", x = 600, y = 400, t = "MT", c = 6, s = 2 } }) and changed == 2 and board:CanUndo(), problem)
+        check("tactics board: undo takes the move back, then the marker", board:Undo() and scene.items[1].x == 500 and board:Undo() and #scene.items == 0 and not board:Undo())
+        board:SetEditable(false)
+        holder:Hide()
+    end
+
+    GROUP = keptGroup
+    fire("GROUP_ROSTER_UPDATE")
+    flush()
+    GROUP_WIRE = {}
+    TAC.events = {}
+    clearChat()
+end)()
+
+-- What the two window sections share: the saved data starts empty, and is put
+-- back as it was by TAC.windowsDone.
+function TAC.windowsStart()
+    TAC.kept = { db = DragonworldDB.modules.tactics, group = GROUP, now = SERVER_NOW, language = ns.GetLanguage() }
+    TAC.fresh({})
+    TAC.group({})
+    flush()
+    TAC.sent()
+    TAC.events = {}
+    ns.SetLanguage("nb", true)
+    clearChat()
+end
+-- Gives the module another saved table, as a /reload would.
+function TAC.fresh(db)
+    DragonworldDB.modules.tactics = db
+    ns.modules.tactics.db = db
+    ns.modules.tactics:OnLoad(db)
+end
+function TAC.windowsDone()
+    local T = ns.Tactics
+    T.StopPresenting()
+    T.CloseEditor()
+    TAC.fresh(TAC.kept.db)
+    GROUP = TAC.kept.group
+    SERVER_NOW = TAC.kept.now
+    fire("GROUP_ROSTER_UPDATE")
+    flush()
+    ns.SetLanguage(TAC.kept.language, true)
+    GROUP_WIRE = {}
+    TAC.events = {}
+    T.Preview, T.ShowSlideshow = TAC.kept.preview, TAC.kept.showSlideshow
+    clearChat()
+    ns.OpenModule("ryddesekk")
+end
+-- A click on a button, as the game allows it: only one that shows and is not greyed out.
+function TAC.press(button)
+    assert(button:IsVisible(), "clicked a button that is not showing")
+    assert(button:IsEnabled(), "clicked a button that is greyed out")
+    button.scripts.OnClick(button)
+end
+-- The tooltip a widget shows when the mouse is over it, as one line.
+function TAC.tip(widget)
+    GameTooltip:Hide()
+    GameTooltip.lines = {}
+    widget:Fire("OnEnter")
+    local text = table.concat(GameTooltip.lines, " / ")
+    widget:Fire("OnLeave")
+    return text
+end
+-- A deep copy, as saved data comes back after a /reload: the same values in other tables.
+function TAC.copy(value)
+    if type(value) ~= "table" then return value end
+    local copy = {}
+    for key, inner in pairs(value) do copy[key] = TAC.copy(inner) end
+    return copy
+end
+
+-- 6. The tab in the main window: the list of tactics, the chosen one, and what can be done with it.
+;(function()
+    local T = ns.Tactics
+    local same, press, tip = TAC.same, TAC.press, TAC.tip
+    local N = ns.strings.nb
+    TAC.windowsStart()
+    TAC.kept.preview, TAC.kept.showSlideshow = T.Preview, T.ShowSlideshow
+    T.Preview, T.ShowSlideshow = nil, nil
+    local now = SERVER_NOW
+
+    ns.OpenModule("ryddesekk")
+    dw("tactics")
+    local tab = DragonworldTacticsScroll and DragonworldTacticsScroll.parent
+    local d = tab.detail
+    check("tactics tab: /dw tactics opens the tab on a member, its chip lit, right after Dungeons in the list of tabs",
+        win:IsShown() and tab:IsVisible() and tab.parent == win.content and chipByID.tactics.selected and chipByID.tactics.label.text == "Taktikk"
+        and chipByID.tactics.icon.texture == "Interface\\Icons\\INV_Misc_Map_01" and ns.modules.tactics.CreatePanel ~= nil
+        and select(5, chipByID.tactics:GetPoint(1)) == select(5, chipByID.dungeons:GetPoint(1)) - 24)
+    check("tactics tab: with no tactics it says what the tab is for and how to start",
+        tab.empty:IsShown() and tab.empty.text == N.TAC_EMPTY and not d:IsShown() and tab.hint:IsShown() and tab.hint.text == N.TAC_HINT
+        and not tab.bar:IsShown() and tab.newButton.label.text == "Ny taktikk" and tab.content:GetHeight() == 1)
+    ns.SetLanguage("en", true)
+    check("tactics tab: ...in the chosen language", tab.empty.text == ns.strings.en.TAC_EMPTY and tab.newButton.label.text == "New tactic" and tab.hint.text == ns.strings.en.TAC_HINT)
+    ns.SetLanguage("nb", true)
+
+    -- The list.
+    local function save(name, inst, instName, boss, scenes)
+        local plan = T.NewPlan(name)
+        plan.inst, plan.instName, plan.boss = inst, instName, boss
+        if scenes then plan.scenes = scenes end
+        return T.SavePlan(plan)
+    end
+    local function list()
+        local parts = {}
+        for _, head in ipairs(tab.heads) do if head:IsShown() then parts[#parts + 1] = { -select(5, head:GetPoint(1)), "H:" .. head.text } end end
+        for _, sub in ipairs(tab.subs) do if sub:IsShown() then parts[#parts + 1] = { -select(5, sub:GetPoint(1)), "S:" .. sub.text } end end
+        for _, row in ipairs(tab.rows) do if row:IsShown() then parts[#parts + 1] = { -select(5, row:GetPoint(1)), (row.selected and "*" or "") .. row.label.text } end end
+        table.sort(parts, function(a, b) return a[1] < b[1] end)
+        local out = {}
+        for index, part in ipairs(parts) do out[index] = part[2] end
+        return table.concat(out, " | ")
+    end
+    local function row(name)
+        for _, candidate in ipairs(tab.rows) do
+            if candidate:IsShown() and candidate.label.text == name then return candidate end
+        end
+    end
+    local function plans() return #T.Plans() end
+    SERVER_NOW = now + 100
+    local two = save("To tanks", 4, "The Deadmines", "Edwin VanCleef", { TAC.scene1(), TAC.scene2() })
+    save("Brenn", 4, "the deadmines", "edwin vancleef")
+    save("Kite", 4, "The Deadmines", "Cookie")
+    save("Ilddans", 101, "Molten Core", "Ragnaros")
+    save("Verdensboss", 0, "", "")
+    -- ("Brenn" was saved with the names in small letters: it goes under the same dungeon and boss, and
+    -- being first there, its spelling of the boss is the heading.)
+    check("tactics tab: the tactics are listed by dungeon or raid and then by boss, whatever the capitals, and the first one saved stays chosen",
+        list() == "H:" .. N.TAC_NO_INSTANCE .. " | S:" .. N.TAC_NO_BOSS .. " | Verdensboss | H:Molten Core | S:Ragnaros | Ilddans | H:The Deadmines | S:Cookie | Kite"
+            .. " | S:edwin vancleef | Brenn | *To tanks", list())
+    -- Three headings of 22 with 6 above the second and third, four bosses of 16, five tactics of 24.
+    check("tactics tab: the list is as tall as what is in it, so it scrolls when there is more than fits",
+        tab.content:GetHeight() == 3 * 22 + 2 * 6 + 4 * 16 + 5 * 24 and DragonworldTacticsScroll.scrollChild == tab.content and DragonworldTacticsScroll:GetHeight() == 344)
+    check("tactics tab: the chosen tactic shows its name, what it is for, who saved it and when, and its first scene on a board that cannot be changed",
+        d:IsShown() and not tab.empty:IsShown() and d.name.text == "To tanks" and d.place.text == "The Deadmines - Edwin VanCleef"
+        and d.who.text == N.TAC_SAVED_BY:format("Tester", "DATE(" .. (now + 100) .. ")") and same(d.board.scene, two.scenes[1]) and d.board.editable == false
+        and d.board:GetWidth() == 342 and d.sceneText.text == "Scene 1 av 2: Fase 1" and not d.prev:IsEnabled() and d.next:IsEnabled(), d.who.text .. " / " .. d.sceneText.text)
+    press(d.next)
+    check("tactics tab: the arrows step through its scenes", same(d.board.scene, two.scenes[2]) and d.sceneText.text == "Scene 2 av 2" and d.prev:IsEnabled() and not d.next:IsEnabled())
+    press(row("Verdensboss"))
+    check("tactics tab: a click in the list chooses another tactic, from its first scene",
+        list():find("*Verdensboss", 1, true) ~= nil and not list():find("*To tanks", 1, true) and d.name.text == "Verdensboss" and d.place.text == N.TAC_NO_INSTANCE
+        and d.sceneText.text == "Scene 1 av 1" and not d.prev:IsEnabled() and not d.next:IsEnabled())
+    press(row("To tanks"))
+    check("tactics tab: a tactic of your own can be edited, played, shown, copied and deleted",
+        d.edit:IsShown() and d.play:IsShown() and d.present:IsShown() and d.copy:IsShown() and d.delete:IsShown() and not d.keep:IsShown() and not d.resume:IsShown()
+        and not d.discard:IsShown() and d.edit.label.text == "Rediger" and d.play.label.text == "Spill av" and d.present.label.text == "Vis til gruppen"
+        and d.copy.label.text == "Kopier" and d.delete.label.text == "Slett")
+
+    -- Play: for yourself.
+    check("tactics tab: Play is greyed out until the slideshow window is there", not d.play:IsEnabled())
+    T.Preview = function(plan, scene) TAC.previewed = { plan, scene } end
+    ns.SetLanguage("nb", true) -- draws the tab again
+    press(d.next)
+    press(d.play)
+    check("tactics tab: Play plays the chosen tactic for you alone, from the scene you were looking at",
+        TAC.previewed ~= nil and TAC.previewed[1].id == two.id and TAC.previewed[2] == 2 and T.Presenting() == nil and #GROUP_WIRE == 0
+        and tip(d.play) == N.TAC_PLAY .. " / " .. N.TAC_PLAY_TIP)
+
+    -- Show to group.
+    local function altine(flags) return { name = "Altine", guid = "Player-1-Altine", class = "MAGE", leader = flags == "leader" } end
+    check("tactics tab: alone, Show to group is greyed out and says why when the mouse is over it",
+        not d.present:IsEnabled() and d.present.motionWhileDisabled == true and tip(d.present) == N.TAC_PRESENT .. " / " .. N.TAC_ERR_NO_GROUP, tip(d.present))
+    TAC.group({ altine("leader") }, {})
+    check("tactics tab: ...and so it is for someone who does not lead the group", not d.present:IsEnabled() and tip(d.present) == N.TAC_PRESENT .. " / " .. N.TAC_ERR_NOT_LEADER)
+    TAC.group({ altine() }, { leader = true })
+    check("tactics tab: the leader of a group can show it", d.present:IsEnabled() and tip(d.present) == N.TAC_PRESENT .. " / " .. N.TAC_PRESENT_TIP)
+    press(d.present)
+    local showing = T.Presenting()
+    check("tactics tab: Show to group starts the slideshow, and a line at the top says so",
+        showing ~= nil and showing.plan.id == two.id and #GROUP_WIRE > 0 and tab.bar:IsShown() and not tab.hint:IsShown()
+        and tab.bar.text.text == N.TAC_BAR_PRESENTING:format("To tanks") and tab.bar.open.label.text == N.TAC_BAR_OPEN and not tab.bar.open:IsEnabled()
+        and d.message.text == "", tab.bar.text.text)
+    T.ShowSlideshow = function() TAC.slideshowShown = (TAC.slideshowShown or 0) + 1 end
+    T.ShowScene(2)
+    press(tab.bar.open)
+    check("tactics tab: ...with a button that brings the slideshow's window back", TAC.slideshowShown == 1 and tab.bar.open:IsEnabled())
+    T.StopPresenting()
+    check("tactics tab: the line goes away when the slideshow ends", not tab.bar:IsShown() and tab.hint:IsShown())
+    do
+        local scenes = {}
+        for scene = 1, 10 do
+            scenes[scene] = { title = "", notes = {}, bg = { kind = "room", room = "round" }, items = {} }
+            for index = 1, 30 do scenes[scene].items[index] = { k = "t", x = index * 10, y = index * 5, t = "Stå her nummer " .. (scene * 100 + index), c = 1, s = 2 } end
+        end
+        local big = save("Altfor stor", 101, "Molten Core", "Ragnaros", scenes)
+        press(row("Altfor stor"))
+        press(d.present)
+        check("tactics tab: a tactic too big to send is not shown, and the tab says why",
+            T.PlanBytes(big) > T.MAX_BYTES and T.Presenting() == nil and d.message.text == N.TAC_ERR_TOO_BIG and not tab.bar:IsShown())
+        press(row("Ilddans"))
+        check("tactics tab: ...until another tactic is chosen", d.message.text == "")
+        T.DeletePlan(big.id)
+    end
+    flush()
+    TAC.sent()
+
+    -- Copy and delete.
+    press(row("To tanks"))
+    local before = plans()
+    press(d.copy)
+    local copyName = N.TAC_COPY_NAME:format("To tanks")
+    check("tactics tab: Copy makes a second tactic under the same boss, named as a copy, and chooses it",
+        plans() == before + 1 and d.name.text == copyName and copyName == "To tanks (kopi)" and list():find("| To tanks | *To tanks (kopi)", 1, true) ~= nil
+        and T.GetPlan(two.id) ~= nil, list())
+    do
+        local copy
+        for _, plan in ipairs(T.Plans()) do if plan.name == copyName then copy = plan end end
+        check("tactics tab: ...with the same scenes and an id of its own", copy ~= nil and copy.id ~= two.id and same(copy.scenes, two.scenes) and copy.boss == two.boss)
+        press(d.delete)
+        check("tactics tab: Delete asks first", plans() == before + 1 and d.delete.label.text == N.TAC_SURE and N.TAC_SURE == "Sikker?")
+        d.delete:Fire("OnLeave")
+        check("tactics tab: ...and moving the mouse away takes the question back", d.delete.label.text == "Slett" and plans() == before + 1)
+        press(d.delete)
+        clock = clock + 6
+        press(d.delete)
+        check("tactics tab: ...as does waiting too long: the next click asks again", plans() == before + 1 and d.delete.label.text == N.TAC_SURE)
+        press(d.delete)
+        check("tactics tab: a second click deletes the tactic, and the first in the list is chosen",
+            plans() == before and T.GetPlan(copy.id) == nil and d.delete.label.text == "Slett" and list():find("*Verdensboss", 1, true) ~= nil and row(copyName) == nil, list())
+    end
+
+    -- A tactic a leader has shown.
+    do
+        local shown = T.Sanitize(TAC.plan())
+        TAC.group({ altine("leader") }, { raid = true })
+        flush()
+        TAC.sent()
+        local messages = TAC.slideshow("sidw1", shown, 1)
+        TAC.receive(messages[1], "Altine-Stormrage")
+        check("tactics tab: while you watch someone's slideshow the line at the top says whose",
+            tab.bar:IsShown() and tab.bar.text.text == N.TAC_BAR_WATCHING:format("Altine", shown.name) and row(shown.name) == nil, tab.bar.text.text)
+        for index = 2, #messages do TAC.receive(messages[index], "Altine-Stormrage") end
+        check("tactics tab: when all of it has arrived it is listed under a heading of its own, after your own",
+            list():find(" | H:" .. N.TAC_RECEIVED .. " | " .. shown.name .. "$") ~= nil and #T.Received() == 1, list())
+        press(row(shown.name))
+        check("tactics tab: a tactic shown to you says who showed it and when, and can be played or kept, not changed",
+            d.name.text == shown.name and d.who.text == N.TAC_RECEIVED_FROM:format("Altine", "DATE(" .. SERVER_NOW .. ")") and d.keep:IsShown() and d.keep:IsEnabled()
+            and d.keep.label.text == "Behold en kopi" and d.play:IsShown() and not d.edit:IsShown() and not d.present:IsShown() and not d.copy:IsShown()
+            and not d.delete:IsShown() and select(4, d.play:GetPoint(1)) == 168 and tip(d.keep) == N.TAC_KEEP .. " / " .. N.TAC_KEEP_TIP, d.who.text)
+        before = plans()
+        press(d.keep)
+        local kept = T.Received()[1].kept
+        check("tactics tab: Keep a copy puts it among your own, under its dungeon and boss, and chooses it there",
+            plans() == before + 1 and kept ~= nil and T.GetPlan(kept).name == shown.name and d.edit:IsShown() and not d.keep:IsShown()
+            and d.who.text == N.TAC_SAVED_BY:format("Altine", "DATE(123456)") and select(4, d.play:GetPoint(1)) == 104, d.who.text)
+        for _, candidate in ipairs(tab.rows) do
+            if candidate:IsShown() and candidate.type == "received" then press(candidate) end
+        end
+        check("tactics tab: ...and the one that was shown says it is kept already", d.keep:IsShown() and not d.keep:IsEnabled() and d.keep.label.text == N.TAC_KEPT)
+        T.StopWatching()
+        TAC.group({})
+        flush()
+        TAC.sent()
+        check("tactics tab: the line goes away when you stop watching", not tab.bar:IsShown())
+    end
+
+    -- An alt outside the guild, and a stranger.
+    do
+        DragonworldDB.memberCharacters["Mainy-Stormrage"] = 5
+        setGuild("Other Guild")
+        clearChat()
+        dw("tactics")
+        check("tactics tab: an alt of a member, outside the guild, has the tab and its tactics",
+            not ns.IsMember() and ns.HasAccess() and win:IsShown() and tab:IsVisible() and chipByID.tactics:IsShown() and chipByID.tactics.selected
+            and not chipByID.dungeons:IsShown() and row("To tanks") ~= nil and not has("bare for medlemmer"), chatText())
+        DragonworldDB.memberCharacters["Mainy-Stormrage"] = nil
+        fire("PLAYER_GUILD_UPDATE", "player")
+        clearChat()
+        dw("tactics")
+        check("tactics tab: a character with nobody in the guild is told the addon is for members, and nothing opens",
+            not ns.HasAccess() and not win:IsShown() and has("bare for medlemmer av guilden Dragonworld") and T.OpenEditor() == false and T.ResumeEditor() == false
+            and (DragonworldTacticsEditor == nil or not DragonworldTacticsEditor:IsShown()), chatText())
+        setGuild("Dragonworld")
+        flush()
+        clearChat()
+        dw("tactics")
+        check("tactics tab: ...and back in the guild it opens again", ns.IsMember() and tab:IsVisible() and row("To tanks") ~= nil)
+    end
+
+    -- The list, "New tactic", the board, the two arrows and five buttons; for a tactic shown to you two buttons.
+    press(row("To tanks"))
+    local problems, count = TAC.layoutProblems(tab, 4)
+    check("tactics tab: the list, the board and the buttons lie inside the tab's 612 x 434, none over another", #problems == 0 and count == 10
+        and tab:GetWidth() == 612 and tab:GetHeight() == 434, table.concat(problems, "; ") .. " (" .. count .. ")")
+    for _, candidate in ipairs(tab.rows) do
+        if candidate:IsShown() and candidate.type == "received" then press(candidate) end
+    end
+    problems, count = TAC.layoutProblems(tab, 4)
+    check("tactics tab: ...also for a tactic that was shown to you", #problems == 0 and count == 7, table.concat(problems, "; ") .. " (" .. count .. ")")
+    do
+        -- The board ends above the line that steps through the scenes, that above the buttons.
+        local _, _, _, boardBottom = TAC.box(d.board, tab)
+        local _, navTop, _, navBottom = TAC.box(d.prev, tab)
+        local _, messageTop = TAC.box(d.message, tab)
+        local _, buttonsTop = TAC.box(d.keep, tab)
+        check("tactics tab: from the top: the board, the scenes, room for two lines of what went wrong, the buttons",
+            boardBottom < navTop and navBottom < messageTop and messageTop + 24 <= buttonsTop, boardBottom .. " " .. navTop .. " " .. messageTop .. " " .. buttonsTop)
+    end
+    TAC.windowsDone()
+end)()
+
+-- 7. The editor: a window of its own where a tactic is made.
+;(function()
+    local T = ns.Tactics
+    local same, press, tip = TAC.same, TAC.press, TAC.tip
+    local N = ns.strings.nb
+    TAC.windowsStart()
+    TAC.kept.preview, TAC.kept.showSlideshow = T.Preview, T.ShowSlideshow
+    T.Preview, T.ShowSlideshow = nil, nil
+    local function db() return DragonworldDB.modules.tactics end
+    local function plans() return #T.Plans() end
+    local function tick(box, on) box.checked = on; box.scripts.OnClick(box) end
+    ns.OpenModule("tactics")
+    local tab = DragonworldTacticsScroll.parent
+    local d = tab.detail
+    local function tabRow(kind, name)
+        for _, candidate in ipairs(tab.rows) do
+            if candidate:IsShown() and candidate.type == kind and (name == nil or candidate.label.text == name) then return candidate end
+        end
+    end
+
+    -- Opening it.
+    check("tactics editor: nothing is built before it is opened, and the files leave no names of their own behind",
+        DragonworldTacticsEditor == nil and DragonworldTacticsRaidScroll == nil and Tab == nil and Ed == nil and U == nil and db().draft == nil)
+    local specials = #UISpecialFrames
+    press(tab.newButton)
+    local ed = DragonworldTacticsEditor
+    local board = ed.board
+    local function plan() return db().draft.plan end
+    local function scene() return board.scene end
+    check("tactics editor: New tactic opens a window of its own, above the main window and the windows that lie over it",
+        ed ~= nil and ed:IsShown() and ed.parent == UIParent and ed:GetWidth() == 1000 and ed:GetHeight() == 640 and ed.strata == "DIALOG" and ed.level == 100
+        and win.strata == "HIGH" and win:IsShown() and select(1, ed:GetPoint(1)) == "CENTER" and ed.backdropColor[4] >= 0.9)
+    check("tactics editor: Escape closes it, and it can be moved", #UISpecialFrames == specials + 1 and UISpecialFrames[#UISpecialFrames] == "DragonworldTacticsEditor" and ed.movable == true)
+    check("tactics editor: it starts on a new tactic with one empty scene, as a draft with nothing unsaved, the select tool in hand",
+        db().draft ~= nil and db().draft.dirty == false and plan().name == "" and #plan().scenes == 1 and scene() == plan().scenes[1] and board.editable == true
+        and same(board.tool, { kind = "select" }) and ed.toolChips.select.selected and ed.status.text == "" and not ed.prompt:IsShown() and tabRow("draft") == nil
+        and board:GetWidth() == 600 and board:GetHeight() == 375)
+    check("tactics editor: its texts are in the chosen language",
+        ed.title.text == "Rediger taktikk" and ed.save.label.text == "Lagre" and ed.play.label.text == "Spill av" and ed.present.label.text == "Vis til gruppen"
+        and ed.close.label.text == "Lukk" and ed.nameLabel.text == N.TAC_ED_NAME and ed.instLabel.text == "Dungeon eller raid" and ed.bossLabel.text == "Boss"
+        and ed.toolsLabel.text == "Verktøy" and ed.toolChips.a.label.text == "Pil" and ed.markersLabel.text == "Markører" and ed.colourLabel.text == "Farge"
+        and ed.sizeChips[1].label.text == "Liten" and ed.labelLabel.text == N.TAC_LABEL and ed.undoChip.label.text == "Angre" and ed.roomLabel.text == "Rom"
+        and ed.raidLabel.text == "Raidgrupper" and ed.sceneNew.label.text == "Ny scene" and ed.sceneDelete.label.text == "Slett scenen"
+        and ed.sceneTitleLabel.text == N.TAC_SCENE_TITLE and ed.notesLabel.text == N.TAC_SCENE_NOTES and ed.instChip.label.text == N.TAC_ED_CHOOSE)
+    ns.SetLanguage("en", true)
+    check("tactics editor: ...and follow it when it changes", ed.title.text == "Edit tactic" and ed.toolChips.erase.label.text == "Eraser" and ed.sceneEmpty.label.text == "Empty scene"
+        and ed.roomChip.label.text == "Round room" and ed.hint.text == "|cffffd100Select|r\n" .. ns.strings.en.TAC_TOOL_SELECT_TIP)
+    ns.SetLanguage("nb", true)
+    ed:Fire("OnDragStart")
+    ed.points = { { "TOPLEFT", UIParent, "TOPLEFT", 40, -30 } }
+    ed:Fire("OnDragStop")
+    check("tactics editor: where it is dragged to is remembered", ed.moving == false and same(db().editor, { point = "TOPLEFT", relativePoint = "TOPLEFT", x = 40, y = -30 }))
+    do
+        -- On a small screen the window is made smaller, never larger.
+        local width, height = UIParent.width, UIParent.height
+        UIParent.width, UIParent.height = 800, 600
+        ed:Hide()
+        check("tactics editor: closed with nothing changed, no draft is left", db().draft == nil and not ed:IsShown())
+        press(tab.newButton)
+        local small = ed.ownScale
+        UIParent.width, UIParent.height = 2000, 1200
+        ed:Hide()
+        press(tab.newButton)
+        check("tactics editor: it is scaled down to fit a small screen, and never up", small == 0.8 and ed.ownScale == 1)
+        UIParent.width, UIParent.height = width, height
+    end
+
+    -- The name, the dungeon or raid, the boss.
+    ed.nameBox:TypeText("To tanks ")
+    check("tactics editor: typing the name changes the working copy, which is unsaved from then on and listed first in the tab",
+        plan().name == "To tanks" and db().draft.dirty == true and ed.status.text == N.TAC_ED_UNSAVED and tab.heads[1].text == N.TAC_DRAFT
+        and tabRow("draft", "To tanks") ~= nil and plans() == 0)
+    lastMenu = nil
+    press(ed.instChip)
+    check("tactics editor: the dungeon or raid is chosen in a menu: Other first, then the dungeons, then the raids",
+        lastMenu ~= nil and lastMenu.owner == ed.instChip and #lastMenu.radios == 1 + #ns.DUNGEONS and lastMenu.radios[1].text == N.TAC_ED_OTHER
+        and same(lastMenu.titles, { "Dungeons", "Raids" }) and lastMenu.radios[2].text == "Hall of Thanes" and lastMenu.radios[5].text == "The Deadmines"
+        and lastMenu.radios[36].text == "Shaper's Terrace" and lastMenu.radios[37].text == "Molten Core" and lastMenu.radios[38].text == "Onyxia's Lair"
+        and not lastMenu.radios[1].selected() and not lastMenu.radios[5].selected(), lastMenu and #lastMenu.radios)
+    lastMenu.radios[5].click()
+    check("tactics editor: choosing one writes it into the tactic and on the button",
+        plan().inst == 4 and plan().instName == "The Deadmines" and ed.instChip.label.text == "The Deadmines" and ed.instChip:GetWidth() == 326
+        and not ed.otherBox:IsShown() and lastMenu.radios[5].selected())
+    lastMenu = nil
+    press(ed.bossMenu)
+    check("tactics editor: the boss menu lists that dungeon's bosses", lastMenu ~= nil and lastMenu.titles[1] == "Boss" and #lastMenu.radios == 7
+        and lastMenu.radios[1].text == "Rhahk'Zor" and lastMenu.radios[6].text == "Edwin VanCleef" and tip(ed.bossMenu) == "Boss / " .. N.TAC_ED_BOSS_TIP)
+    lastMenu.radios[6].click()
+    check("tactics editor: ...and choosing one fills the field", plan().boss == "Edwin VanCleef" and ed.bossBox:GetText() == "Edwin VanCleef" and lastMenu.radios[6].selected())
+    ed.bossBox:TypeText("Kokken | sjefen")
+    check("tactics editor: ...which also takes a name of your own, without the character the game reads as a code", plan().boss == "Kokken / sjefen")
+    press(ed.instChip)
+    lastMenu.radios[1].click()
+    check("tactics editor: Other gives a field to type the place in",
+        plan().inst == 0 and plan().instName == "" and ed.otherBox:IsShown() and ed.otherBox.focused == true and ed.instChip.label.text == N.TAC_ED_OTHER_SHORT
+        and ed.instChip:GetWidth() == 170 and lastMenu.radios[1].selected())
+    ed.otherBox:TypeText("Azshara")
+    lastMenu = nil
+    press(ed.bossMenu)
+    check("tactics editor: ...and there the boss menu says the name must be typed", plan().instName == "Azshara" and lastMenu.titles[1] == N.TAC_ED_BOSS_NONE and #lastMenu.radios == 0)
+    lastMenu = nil
+    press(ed.roomChip)
+    check("tactics editor: ...and the room menu has the drawn rooms, and says a dungeon must be chosen for the game's maps",
+        lastMenu.owner == ed.roomChip and same(lastMenu.titles, { N.TAC_ROOM_DRAWN, N.TAC_ROOM_MAPS }) and #lastMenu.radios == #T.ROOMS
+        and lastMenu.radios[1].text == N.TAC_ROOM_ROUND and lastMenu.radios[1].selected() and #lastMenu.buttons == 1
+        and lastMenu.buttons[1].text == N.TAC_ROOM_NEED_INSTANCE and lastMenu.buttons[1].enabled == false)
+    press(ed.instChip)
+    lastMenu.radios[5].click()
+    ed.bossBox:TypeText("Edwin VanCleef")
+
+    -- The tools.
+    do
+        local tools = {}
+        for _, kind in ipairs({ "a", "l", "z", "t", "erase", "select" }) do
+            press(ed.toolChips[kind])
+            tools[kind] = TAC.copy(board.tool)
+            if not ed.toolChips[kind].selected then tools[kind] = "not lit" end
+        end
+        check("tactics editor: each tool button puts its tool in the board's hand, with the colour and size for what comes next",
+            same(tools.a, { kind = "a", c = 1, s = 2 }) and same(tools.l, { kind = "l", c = 1, s = 2 }) and same(tools.z, { kind = "z", c = 1 })
+            and same(tools.t, { kind = "t", c = 1, s = 2, t = "" }) and same(tools.erase, { kind = "erase" }) and same(tools.select, { kind = "select" })
+            and not ed.toolChips.a.selected and ed.swatches[1].selected and ed.sizeChips[2].selected)
+        local tips = {}
+        for kind, key in pairs({ select = "TAC_TOOL_SELECT", a = "TAC_TOOL_ARROW", l = "TAC_TOOL_LINE", z = "TAC_TOOL_AREA", t = "TAC_TOOL_TEXT", erase = "TAC_TOOL_ERASE" }) do
+            if tip(ed.toolChips[kind]) ~= N[key] .. " / " .. N[key .. "_TIP"] then tips[#tips + 1] = kind end
+        end
+        check("tactics editor: every tool says what it does and how when the mouse is over it", #tips == 0 and N.TAC_TOOL_LINE_TIP:find("Shift", 1, true) ~= nil
+            and tip(ed.undoChip) == N.TAC_UNDO .. " / " .. N.TAC_UNDO_TIP and tip(ed.frontChip) == N.TAC_FRONT .. " / " .. N.TAC_FRONT_TIP
+            and tip(ed.labelBox) == N.TAC_LABEL .. " / " .. N.TAC_LABEL_TIP and tip(ed.roomChip) == N.TAC_ROOM .. " / " .. N.TAC_ROOM_TIP, table.concat(tips, ","))
+        press(ed.toolChips.l)
+        check("tactics editor: ...and the tool in hand is explained under the scene's title", ed.hint.text == "|cffffd100" .. N.TAC_TOOL_LINE .. "|r\n" .. N.TAC_TOOL_LINE_TIP)
+    end
+    local cell = {}
+    for _, candidate in ipairs(ed.cells) do cell[candidate.id] = candidate end
+    do
+        local at = {}
+        for _, id in ipairs({ "boss", "add", "tank", "ranged", "rt1", "rt8", "stack", "eye", "flag" }) do
+            at[#at + 1] = id .. "=" .. select(4, cell[id]:GetPoint(1)) .. "," .. select(5, cell[id]:GetPoint(1))
+        end
+        -- Enemies and roles share the first row (the roles after a gap), the eight raid marks have the second, the sixteen others the next two.
+        check("tactics editor: the palette has every icon of the board, by group, eight to a row inside the column",
+            #ed.cells == #T.ICONS and table.concat(at, " ") == "boss=0,-104 add=23,-104 tank=54,-104 ranged=146,-104 rt1=0,-127 rt8=161,-127 stack=0,-150 eye=138,-173 flag=161,-173"
+            and cell.boss.icon.texture ~= nil and cell.boss:GetWidth() == 21 and select(5, ed.colourLabel:GetPoint(1)) == -200, table.concat(at, " "))
+    end
+    press(cell.tank)
+    check("tactics editor: an icon in the palette becomes the marker tool, starting with the colour that suits it",
+        same(board.tool, { kind = "m", i = "tank", c = 6, s = 2, t = "" }) and cell.tank.selected and not cell.boss.selected and ed.swatches[6].selected
+        and not ed.swatches[1].selected and not ed.toolChips.l.selected
+        and tip(cell.tank) == "Tank / " .. N.TAC_ICONS_ROLE .. ". " .. N.TAC_MARKER_TIP and tip(cell.rt8) == "Skull / " .. N.TAC_ICONS_MARK .. ". " .. N.TAC_MARKER_TIP
+        and ed.hint.text == "|cffffd100Tank|r\n" .. N.TAC_MARKER_TIP, tip(cell.tank))
+    press(ed.swatches[2])
+    press(ed.sizeChips[3])
+    ed.labelBox:TypeText("MT")
+    check("tactics editor: the colour, the size and the label go into the tool, for the next marker",
+        same(board.tool, { kind = "m", i = "tank", c = 2, s = 3, t = "MT" }) and ed.swatches[2].selected and ed.sizeChips[3].selected and #ed.swatches == 8
+        and tip(ed.swatches[2]) == N.TAC_COLOR_RED .. " / " .. N.TAC_COLOR_TIP and tip(ed.sizeChips[3]) == N.TAC_SIZE .. " / " .. N.TAC_SIZE_TIP)
+    ed.labelBox:SetFocus()
+    TAC.click(board, 500, 300)
+    check("tactics editor: a click on the board places the marker, the label is used up, and the typing is over",
+        same(scene().items, { { k = "m", i = "tank", x = 500, y = 300, t = "MT", c = 2, s = 3 } }) and ed.labelBox:GetText() == "" and board.tool.t == ""
+        and ed.undoChip:IsEnabled() and db().draft.dirty and plan().scenes[1].items == scene().items and ed.labelBox.focused == false)
+    TAC.click(board, 600, 300)
+    check("tactics editor: ...so the next marker has none", #scene().items == 2 and scene().items[2].t == "" and scene().items[2].x == 600 and scene().items[2].c == 2)
+
+    -- Changing what is on the board.
+    press(ed.toolChips.select)
+    check("tactics editor: what was placed last stays selected when the select tool is taken, so it can be changed at once",
+        board:GetSelected() == 2 and ed.deleteChip:IsEnabled() and ed.labelBox:GetText() == "")
+    TAC.click(board, 900, 600)
+    check("tactics editor: with nothing selected there is nothing to delete or to move to the front or back",
+        board:GetSelected() == nil and not ed.deleteChip:IsEnabled() and not ed.frontChip:IsEnabled() and not ed.backChip:IsEnabled() and ed.deleteChip.dimmed)
+    TAC.click(board, 500, 300)
+    check("tactics editor: selecting an item shows its colour, its size and its label",
+        board:GetSelected() == 1 and ed.swatches[2].selected and ed.sizeChips[3].selected and ed.labelBox:GetText() == "MT" and ed.deleteChip:IsEnabled()
+        and ed.frontChip:IsEnabled() and ed.backChip:IsEnabled())
+    ed.labelBox:TypeText("OT")
+    press(ed.swatches[5])
+    press(ed.sizeChips[1])
+    check("tactics editor: ...and they change that item", same(scene().items[1], { k = "m", i = "tank", x = 500, y = 300, t = "OT", c = 5, s = 1 }) and ed.swatches[5].selected
+        and ed.sizeChips[1].selected and scene().items[2].c == 2)
+    press(ed.undoChip)
+    press(ed.undoChip)
+    check("tactics editor: Undo takes back one change at a time", scene().items[1].s == 3 and scene().items[1].c == 2 and scene().items[1].t == "OT" and ed.swatches[2].selected
+        and ed.sizeChips[3].selected)
+    press(ed.backChip)
+    check("tactics editor: To back does nothing to what is at the back already", scene().items[1].x == 500)
+    press(ed.frontChip)
+    check("tactics editor: To front puts the selected item on top of the others, To back under them",
+        scene().items[2].x == 500 and board:GetSelected() == 2 and (function() press(ed.backChip); return scene().items[1].x == 500 and board:GetSelected() == 1 end)())
+    press(ed.deleteChip)
+    check("tactics editor: Delete removes the selected item", #scene().items == 1 and scene().items[1].x == 600 and board:GetSelected() == nil and not ed.deleteChip:IsEnabled())
+    press(ed.toolChips.erase)
+    TAC.click(board, 600, 300)
+    check("tactics editor: the eraser removes what is clicked", #scene().items == 0)
+    press(ed.undoChip)
+    press(ed.undoChip)
+    check("tactics editor: ...and both can be undone", #scene().items == 2 and scene().items[1].t == "OT")
+
+    -- Drawing.
+    press(ed.swatches[4])
+    press(ed.sizeChips[2])
+    scene().items = {}
+    board:Redraw()
+    press(ed.toolChips.a)
+    TAC.drag(board, 100, 100, 300, 200)
+    press(ed.toolChips.l)
+    TAC.drag(board, 100, 400, 400, 400, 10)
+    press(ed.toolChips.z)
+    TAC.click(board, 700, 300)
+    press(ed.toolChips.t)
+    local focused = ed.labelBox.focused
+    ed.labelBox:ClearFocus()
+    TAC.click(board, 500, 100)
+    local withoutText, asked = #scene().items, ed.labelBox.focused
+    ed.labelBox:TypeText("Stack her")
+    TAC.click(board, 500, 100)
+    check("tactics editor: an arrow and a line are dragged, an area is clicked, each in the chosen colour and size",
+        same(scene().items[1], { k = "a", x = 100, y = 100, x2 = 300, y2 = 200, c = 4, s = 2 }) and same(scene().items[2], { k = "l", p = { 100, 400, 400, 400 }, c = 4, s = 2 })
+        and same(scene().items[3], { k = "z", x = 700, y = 300, r = 80, c = 4 }), #scene().items)
+    check("tactics editor: the text tool asks for its words first, also when the board is clicked without any, and places them where it is clicked next",
+        focused == true and withoutText == 3 and asked == true and same(scene().items[4], { k = "t", x = 500, y = 100, t = "Stack her", c = 4, s = 2 })
+        and ed.labelBox:GetText() == "" and ed.labelBox.focused == true)
+    TAC.click(board, 500, 100, "RightButton")
+    check("tactics editor: a right click on the board puts the tool down and selects what is under the mouse",
+        same(board.tool, { kind = "select" }) and ed.toolChips.select.selected and board:GetSelected() == 4 and ed.labelBox:GetText() == "Stack her")
+    ed.labelBox:TypeText("")
+    local emptied = scene().items[4].t
+    ed.labelBox:TypeText("Spre dere")
+    check("tactics editor: a text's words can be changed, but not to nothing", emptied == "Stack her" and scene().items[4].t == "Spre dere")
+    do
+        local kept = scene().items
+        local full = {}
+        for index = 1, T.MAX_ITEMS do full[index] = { k = "m", i = "dps", x = index * 20, y = 600, t = "", c = 1, s = 1 } end
+        scene().items = full
+        board:Redraw()
+        press(cell.boss)
+        TAC.click(board, 500, 300)
+        check("tactics editor: a scene that is full takes no more, and the window says so in plain words",
+            #scene().items == 40 and ed.status.text == N.TAC_LIMIT_ITEMS:format(40) and N.TAC_LIMIT_ITEMS:format(40):find("40 ting", 1, true) ~= nil, ed.status.text)
+        scene().items = kept
+        board:Redraw()
+        press(ed.toolChips.select)
+    end
+
+    -- The room.
+    lastMenu = nil
+    press(ed.roomChip)
+    check("tactics editor: with a dungeon chosen the room menu also lists the game's maps of it",
+        #lastMenu.radios == #T.ROOMS + 2 and lastMenu.radios[2].text == N.TAC_ROOM_SQUARE and lastMenu.radios[11].text == "The Deadmines"
+        and lastMenu.radios[12].text == "The Deadmines (2)" and #lastMenu.buttons == 0 and ed.roomChip.label.text == N.TAC_ROOM_ROUND)
+    lastMenu.radios[2].click()
+    check("tactics editor: a drawn room is put under the scene", same(scene().bg, { kind = "room", room = "square" }) and ed.roomChip.label.text == N.TAC_ROOM_SQUARE
+        and lastMenu.radios[2].selected() and not lastMenu.radios[1].selected() and ed.bgChip.dimmed)
+    press(ed.bgChip)
+    check("tactics editor: the tool that moves a map says it is only for maps", same(board.tool, { kind = "select" }) and ed.status.text == N.TAC_TOOL_BG_OFF
+        and tip(ed.bgChip) == N.TAC_TOOL_BG .. " / " .. N.TAC_TOOL_BG_OFF)
+    lastMenu.radios[11].click()
+    check("tactics editor: one of the game's maps is put there whole, with the tool that moves it in hand",
+        same(scene().bg, { kind = "map", map = 291, zoom = 10, cx = 500, cy = 500 }) and ed.roomChip.label.text == "The Deadmines" and same(board.tool, { kind = "bg" })
+        and ed.bgChip.selected and not ed.bgChip.dimmed and board.mapMissing == false and ed.missing.text == "" and lastMenu.radios[11].selected()
+        and board.mouseWheel == true and tip(ed.bgChip) == N.TAC_TOOL_BG .. " / " .. N.TAC_TOOL_BG_TIP)
+    TAC.mouse(board, 500, 312)
+    board:Fire("OnMouseWheel", 1)
+    local zoomed = TAC.copy(scene().bg)
+    TAC.drag(board, 500, 300, 400, 300)
+    check("tactics editor: the wheel zooms the map and a drag moves it",
+        zoomed.zoom == 12 and scene().bg.zoom == 12 and scene().bg.cx > zoomed.cx and scene().bg.cy == zoomed.cy and scene().bg.cx == math.floor(scene().bg.cx),
+        zoomed.zoom .. " " .. zoomed.cx .. " " .. scene().bg.cx)
+    press(ed.undoChip)
+    press(ed.undoChip)
+    press(ed.undoChip)
+    check("tactics editor: undoing back to the drawn room puts the tool down", same(scene().bg, { kind = "room", room = "square" }) and same(board.tool, { kind = "select" })
+        and ed.roomChip.label.text == N.TAC_ROOM_SQUARE and ed.bgChip.dimmed and board.mouseWheel == false)
+
+    -- The raid.
+    local function member(name)
+        for _, candidate in ipairs(ed.memberRows) do
+            if candidate:IsShown() and candidate.who == name then return candidate end
+        end
+    end
+    local function shownMembers()
+        local count = 0
+        for _, candidate in ipairs(ed.memberRows) do if candidate:IsShown() then count = count + 1 end end
+        return count
+    end
+    check("tactics editor: alone, the eight groups are there to be placed, you are in the first, and the panel says when players appear",
+        #ed.groupRows == 8 and ed.groupRows[1].chip.label.text == "Gruppe 1 (1)" and ed.groupRows[8].chip.label.text == "Gruppe 8" and shownMembers() == 1
+        and member("Tester") ~= nil and ed.raidHint.text == N.TAC_RAID_SOLO and N.TAC_RAID_SOLO:find("gruppe", 1, true) ~= nil
+        and DragonworldTacticsRaidScroll.scrollChild == ed.raidContent and ed.raidContent:GetHeight() == 8 * 24 + 14)
+    press(ed.groupRows[3].chip)
+    check("tactics editor: a click on a group takes the tool that places that group",
+        same(board.tool, { kind = "g", g = { 3 }, t = "" }) and ed.groupRows[3].chip.selected and ed.groupRows[3].check.checked and not ed.groupRows[1].chip.selected
+        and ed.raidHint.text == N.TAC_RAID_PLACING:format("3") and not ed.toolChips.select.selected
+        and tip(ed.groupRows[3].chip) == "Gruppe 3 / " .. N.TAC_GROUP_TIP and tip(ed.groupRows[3].check) == "Gruppe 3 / " .. N.TAC_GROUP_TICK_TIP)
+    tick(ed.groupRows[1].check, true)
+    tick(ed.groupRows[2].check, true)
+    local three = table.concat(board.tool.g, "+")
+    tick(ed.groupRows[3].check, false)
+    check("tactics editor: ticking several groups makes them one team",
+        three == "1+2+3" and same(board.tool, { kind = "g", g = { 1, 2 }, t = "" }) and ed.groupRows[1].chip.selected and ed.groupRows[2].chip.selected
+        and not ed.groupRows[3].chip.selected and not ed.groupRows[3].check.checked and ed.raidHint.text == N.TAC_RAID_PLACING:format("1+2"))
+    ed.labelBox:TypeText("Venstre")
+    TAC.click(board, 200, 500)
+    check("tactics editor: ...which a click places as one badge, with the label",
+        same(scene().items[#scene().items], { k = "g", g = { 1, 2 }, x = 200, y = 500, t = "Venstre" }) and board.tool.t == "")
+    tick(ed.groupRows[1].check, false)
+    tick(ed.groupRows[2].check, false)
+    check("tactics editor: with the last tick gone the tool is put down", same(board.tool, { kind = "select" }) and not ed.groupRows[1].chip.selected and ed.raidHint.text == N.TAC_RAID_SOLO)
+    tick(ed.groupRows[5].check, true)
+    press(ed.groupRows[7].chip)
+    check("tactics editor: a click on another group's button places that group alone", same(board.tool.g, { 7 }) and not ed.groupRows[5].check.checked and ed.groupRows[7].check.checked)
+
+    TAC.group({ { name = "Altine", guid = "Player-1-Altine", class = "MAGE", role = "HEALER" },
+                { name = "Akro", realm = "Polis", guid = "Player-9-Akro", class = "ROGUE", online = false } }, { leader = true, role = "TANK" })
+    check("tactics editor: in a party the players are listed in the first group, in class colour, with their role, grey when offline",
+        shownMembers() == 3 and ed.groupRows[1].chip.label.text == "Gruppe 1 (3)" and ed.raidHint.text == N.TAC_RAID_PLACING:format("7")
+        and member("Tester").text.text == ns.RoleIcon(ns.ROLES[1], 11) .. " " .. ns.ColoredName("Tester", "PALADIN")
+        and member("Altine").text.text == ns.RoleIcon(ns.ROLES[2], 11) .. " " .. ns.ColoredName("Altine", "MAGE")
+        and member("Akro Polis").text.text == "|cff808080Akro Polis|r", member("Altine") and member("Altine").text.text)
+    press(member("Altine"))
+    check("tactics editor: a click on a name takes the tool that places that player",
+        same(board.tool, { kind = "p", n = "Altine", cl = "MAGE" }) and member("Altine").mark:IsShown() and not member("Tester").mark:IsShown()
+        and not ed.groupRows[7].chip.selected and ed.raidHint.text == N.TAC_RAID_HOW and tip(member("Altine")) == "Altine / " .. N.TAC_PLAYER_TIP
+        and ed.hint.text == "|cffffd100Altine|r\n" .. N.TAC_PLAYER_TIP)
+    TAC.click(board, 300, 200)
+    check("tactics editor: ...and a click on the board places them by name", same(scene().items[#scene().items], { k = "p", n = "Altine", cl = "MAGE", x = 300, y = 200 }))
+    TAC.group({ { name = "Altine", guid = "Player-1-Altine", class = "MAGE" }, { name = "Borin", guid = "Player-1-Borin", class = "WARRIOR", subgroup = 2 },
+                { name = "Cedric", guid = "Player-9-Cedric", class = "ROGUE", subgroup = 2 }, { name = "Zed", guid = "Player-9-Zed", class = "PRIEST", subgroup = 8 } },
+              { raid = true, leader = true })
+    do
+        local _, _, _, _, first = member("Tester"):GetPoint(1)
+        local _, _, _, _, borin = member("Borin"):GetPoint(1)
+        local _, _, _, _, zed = member("Zed"):GetPoint(1)
+        local _, _, _, _, lastGroup = ed.groupRows[8].chip:GetPoint(1)
+        -- A group's line is 22 and 2 of air, a player's 14: group 2 starts at 24 + 2 * 14, group 8 at 7 * 24 + 4 * 14.
+        check("tactics editor: in a raid the players stand under their own groups, and the list is as tall as what is in it",
+            shownMembers() == 5 and ed.groupRows[1].chip.label.text == "Gruppe 1 (2)" and ed.groupRows[2].chip.label.text == "Gruppe 2 (2)"
+            and ed.groupRows[3].chip.label.text == "Gruppe 3" and ed.groupRows[8].chip.label.text == "Gruppe 8 (1)" and first == -22 and borin == -(24 + 28 + 22)
+            and lastGroup == -(7 * 24 + 4 * 14) and zed == lastGroup - 22 and ed.raidContent:GetHeight() == 8 * 24 + 5 * 14 and member("Altine").mark:IsShown(),
+            first .. " " .. borin .. " " .. lastGroup .. " " .. ed.raidContent:GetHeight())
+    end
+    check("tactics editor: the leader of the raid can show the working copy to it", ed.present:IsEnabled() and tip(ed.present) == N.TAC_PRESENT .. " / " .. N.TAC_PRESENT_TIP)
+    press(ed.present)
+    check("tactics editor: ...as it is on the board, saved or not", T.Presenting() ~= nil and T.Presenting().plan.name == "To tanks" and T.Presenting().plan.id == plan().id
+        and plans() == 0 and T.Presenting().plan ~= plan() and tab.bar:IsShown())
+    T.StopPresenting()
+    TAC.group({})
+    flush()
+    TAC.sent()
+    check("tactics editor: alone, Show to group is greyed out and says why, and Play waits for the slideshow window",
+        not ed.present:IsEnabled() and ed.present.motionWhileDisabled == true and tip(ed.present) == N.TAC_PRESENT .. " / " .. N.TAC_ERR_NO_GROUP and not ed.play:IsEnabled()
+        and shownMembers() == 1)
+    T.Preview = function(played, at) TAC.previewed = { played, at } end
+    ns.SetLanguage("nb", true)
+    press(ed.play)
+    check("tactics editor: Play plays a copy of the working copy for you alone, from the scene on the board",
+        ed.play:IsEnabled() and TAC.previewed[1] ~= plan() and TAC.previewed[1].id == plan().id and same(TAC.previewed[1].scenes, T.Sanitize(plan()).scenes) and TAC.previewed[2] == 1)
+    press(ed.toolChips.select)
+
+    -- The scenes.
+    local function strip()
+        local parts = {}
+        for index, chip in ipairs(ed.sceneChips) do
+            if chip:IsShown() then parts[#parts + 1] = (chip.selected and "*" or "") .. chip.label.text .. "@" .. select(4, chip:GetPoint(1)) .. "+" .. chip:GetWidth() end
+        end
+        return table.concat(parts, " | ")
+    end
+    check("tactics editor: one scene to start with, which cannot be deleted", strip() == "*1@208+110" and not ed.sceneDelete:IsEnabled() and ed.sceneNew:IsEnabled()
+        and not ed.sceneEarlier:IsEnabled() and not ed.sceneLater:IsEnabled() and #ed.sceneChips == T.MAX_SCENES and #ed.noteBoxes == T.MAX_NOTES)
+    ed.sceneTitle:TypeText("Fase 1")
+    ed.noteBoxes[1]:TypeText("Tanks bytter på 3 stacks")
+    ed.noteBoxes[3]:TypeText("Løp ut ved Inferno ")
+    check("tactics editor: the scene's title is shown in the strip, and the notes are the lines that say something",
+        scene().title == "Fase 1" and strip() == "*1 Fase 1@208+110" and same(scene().notes, { "Tanks bytter på 3 stacks", "Løp ut ved Inferno" }))
+    local firstScene = scene()
+    press(ed.sceneNew)
+    check("tactics editor: New scene adds a copy of the scene after it, and shows it",
+        #plan().scenes == 2 and scene() == plan().scenes[2] and scene() ~= firstScene and same(scene().items, firstScene.items) and scene().items ~= firstScene.items
+        and scene().items[1] ~= firstScene.items[1] and same(scene().bg, firstScene.bg) and same(scene().notes, firstScene.notes) and scene().title == ""
+        and strip() == "1 Fase 1@208+110 | *2@322+110" and db().draft.scene == 2 and ed.sceneDelete:IsEnabled() and ed.sceneEarlier:IsEnabled() and not ed.sceneLater:IsEnabled()
+        and ed.sceneTitle:GetText() == "" and ed.noteBoxes[1]:GetText() == "Tanks bytter på 3 stacks" and ed.noteBoxes[2]:GetText() == "Løp ut ved Inferno"
+        and ed.noteBoxes[3]:GetText() == "" and not board:CanUndo(), strip())
+    ed.sceneTitle:TypeText("Fase 2")
+    scene().items[1].x = 150
+    board:Redraw()
+    press(ed.sceneEmpty)
+    check("tactics editor: Empty scene adds one with nothing on the board, in the same room",
+        #plan().scenes == 3 and scene() == plan().scenes[3] and #scene().items == 0 and #scene().notes == 0 and scene().title == "" and same(scene().bg, firstScene.bg)
+        and scene().bg ~= firstScene.bg and strip() == "1 Fase 1@208+110 | 2 Fase 2@322+110 | *3@436+110" and firstScene.items[1].x == 100, strip())
+    local empty = scene()
+    press(ed.sceneEarlier)
+    check("tactics editor: Earlier moves the scene one place towards the start", plan().scenes[2] == empty and scene() == empty and plan().scenes[3].title == "Fase 2"
+        and strip() == "1 Fase 1@208+110 | *2@322+110 | 3 Fase 2@436+110" and ed.sceneLater:IsEnabled())
+    press(ed.sceneLater)
+    press(ed.sceneChips[1])
+    check("tactics editor: Later moves it back, and a click in the strip shows another scene with its own title and notes",
+        plan().scenes[3] == empty and scene() == firstScene and strip() == "*1 Fase 1@208+110 | 2 Fase 2@322+110 | 3@436+110" and ed.sceneTitle:GetText() == "Fase 1"
+        and ed.noteBoxes[2]:GetText() == "Løp ut ved Inferno" and tip(ed.sceneChips[2]) == N.TAC_SCENE_N:format(2) .. " / Fase 2"
+        and tip(ed.sceneNew) == N.TAC_SCENE_NEW .. " / " .. N.TAC_SCENE_NEW_TIP)
+    press(ed.sceneChips[3])
+    press(ed.sceneDelete)
+    check("tactics editor: Delete scene asks first", #plan().scenes == 3 and ed.sceneDelete.label.text == N.TAC_SURE)
+    press(ed.sceneDelete)
+    check("tactics editor: ...and a second click removes the scene", #plan().scenes == 2 and plan().scenes[2].title == "Fase 2" and scene() == plan().scenes[2]
+        and ed.sceneDelete.label.text == N.TAC_SCENE_DELETE and strip() == "1 Fase 1@208+110 | *2 Fase 2@322+110")
+    for _ = 3, T.MAX_SCENES do press(ed.sceneEmpty) end
+    do
+        local last = ed.sceneChips[10]
+        check("tactics editor: a tactic has at most ten scenes, and ten still fit in the strip",
+            #plan().scenes == 10 and not ed.sceneNew:IsEnabled() and not ed.sceneEmpty:IsEnabled() and last:IsShown() and last:GetWidth() == 56
+            and select(4, last:GetPoint(1)) == 208 + 9 * 60 and select(4, last:GetPoint(1)) + 56 <= 808 and last.selected)
+    end
+    while #plan().scenes > 2 do
+        press(ed.sceneDelete)
+        press(ed.sceneDelete)
+    end
+    press(ed.sceneChips[1])
+
+    -- How big it is.
+    do
+        local share = T.PlanBytes(plan()) / T.MAX_BYTES
+        check("tactics editor: the meter says how much of what can be sent the tactic uses",
+            ed.meterText.text == N.TAC_METER:format(math.floor(share * 100 + 0.5)) and share < 0.5 and ed.meterFill:GetWidth() == share * 210
+            and tip(ed.meterHover) == N.TAC_METER_TITLE .. " / " .. N.TAC_METER_TIP, ed.meterText.text)
+        local kept = plan().scenes
+        local function fat(count)
+            local scenes = {}
+            for index = 1, count do
+                scenes[index] = { title = "", notes = {}, bg = { kind = "room", room = "round" }, items = {} }
+                for item = 1, 30 do scenes[index].items[item] = { k = "t", x = item * 10, y = item * 5, t = "Stå her nummer " .. (index * 100 + item), c = 1, s = 2 } end
+            end
+            return scenes
+        end
+        plan().scenes = fat(7)
+        ed.nameBox:TypeText("To tanks")
+        share = T.PlanBytes(plan()) / T.MAX_BYTES
+        check("tactics editor: ...warns when it is nearly full", share >= 0.8 and share <= 1 and ed.meterText.text == N.TAC_METER_NEAR:format(math.floor(share * 100 + 0.5))
+            and ed.status.text == N.TAC_ED_UNSAVED, share)
+        plan().scenes = fat(10)
+        ed.nameBox:TypeText("To tanks")
+        share = T.PlanBytes(plan()) / T.MAX_BYTES
+        check("tactics editor: ...and says clearly when the tactic is too big to show to a group",
+            share > 1 and ed.meterText.text == N.TAC_METER_OVER:format(math.floor(share * 100 + 0.5)) and ed.meterFill:GetWidth() == 210 and ed.status.text == N.TAC_ERR_TOO_BIG
+            and tip(ed.meterHover) == N.TAC_METER_TITLE .. " / " .. N.TAC_ERR_TOO_BIG, ed.meterText.text)
+        plan().scenes = kept
+        ed.nameBox:TypeText("To tanks")
+        check("tactics editor: ...until it is small enough again", ed.status.text == N.TAC_ED_UNSAVED and ed.meterText.text:find(" - ", 1, true) == nil)
+    end
+
+    -- Where everything lies.
+    do
+        local problems, count = TAC.layoutProblems(ed, 8)
+        -- Close, Show, Play, Save; the name, the dungeon button, the boss field and its arrow; six tools, 31 icons, 8 colours, 3 sizes, the label, 4 actions,
+        -- the room and the map tool; the board; two scene buttons in the strip, five scene buttons, the title, five notes; the raid list.
+        check("tactics editor: every button and field lies inside the window's 1000 x 640, none over another",
+            #problems == 0 and count == 4 + 4 + 6 + 31 + 8 + 3 + 1 + 4 + 2 + 1 + 2 + 5 + 1 + 5 + 1, table.concat(problems, "; ") .. " (" .. count .. ")")
+        local l, t, r, b = TAC.box(board, ed)
+        local _, labelsTop = TAC.box(ed.nameLabel, ed)
+        local _, _, _, fieldsBottom = TAC.box(ed.nameBox, ed)
+        local _, stripTop, _, stripBottom = TAC.box(ed.sceneChips[1], ed)
+        local _, buttonsTop, _, buttonsBottom = TAC.box(ed.sceneNew, ed)
+        local _, notesTop = TAC.box(ed.noteBoxes[1], ed)
+        local _, _, notesRight, notesBottom = TAC.box(ed.noteBoxes[5], ed)
+        local toolsLeft, _, toolsRight = TAC.box(ed.left, ed)
+        local raidLeft, _, raidRight = TAC.box(ed.right, ed)
+        local _, _, _, missingTop = TAC.box(ed.bgChip, ed)
+        check("tactics editor: from the top: the buttons, the fields, the board with the scenes, their buttons and the notes under it; tools left, raid right",
+            labelsTop == 42 and fieldsBottom == 78 and l == 208 and t == 84 and r == 808 and b == 459 and stripTop == 463 and stripBottom < buttonsTop
+            and buttonsBottom < notesTop and notesRight == 808 and notesBottom == 627 and toolsLeft == 12 and toolsRight == 198 and raidLeft == 818 and raidRight == 988
+            and missingTop < 630 - 36, table.concat({ l, t, r, b, stripTop, buttonsTop, notesTop, notesBottom, missingTop }, " "))
+        ed.prompt:Show()
+        check("tactics editor: the question about unsaved work covers the window, above the board's own frames",
+            same({ TAC.box(ed.prompt, ed) }, { 6, 6, 994, 634 }) and ed.prompt.level > board:GetFrameLevel() + board.levels and ed.prompt.mouse == true)
+        ed.prompt:Hide()
+
+        -- The texts fit in every language (the fake draws each byte 6 wide): the text of every button
+        -- in both windows inside the button, and the editor's headings in the room they have.
+        local tight = {}
+        local function walk(frame, root, code)
+            local label = frame.label
+            if label and label.text and label.text ~= "" and label.points then
+                local left, _, right = TAC.box(label, root)
+                if label:GetStringWidth() > right - left then tight[#tight + 1] = code .. " '" .. label.text .. "'" end
+            end
+            for _, child in ipairs(frame.children) do walk(child, root, code) end
+        end
+        local headings = { title = 180, nameLabel = 190, instLabel = 330, bossLabel = 210, meterText = 210, toolsLabel = 186, markersLabel = 186, colourLabel = 186,
+                           sizeLabel = 186, labelLabel = 186, roomLabel = 186, raidLabel = 170, sceneTitleLabel = 196, notesLabel = 398 }
+        for _, language in ipairs(ns.LANGUAGES) do
+            local code = language.code
+            ns.SetLanguage(code, true)
+            walk(tab, tab, code)
+            walk(ed, ed, code)
+            for key, room in pairs(headings) do
+                if ed[key]:GetStringWidth() > room then tight[#tight + 1] = code .. " " .. key end
+            end
+            for _, key in ipairs({ "TAC_METER", "TAC_METER_NEAR", "TAC_METER_OVER" }) do
+                if #ns.strings[code][key]:format(999) * 6 > 210 then tight[#tight + 1] = code .. " " .. key end
+            end
+        end
+        ns.SetLanguage("nb", true)
+        check("tactics: the text of every button and heading in the tab and the editor fits its place in all 7 languages", #tight == 0, table.concat(tight, ", "))
+    end
+
+    -- Saving.
+    ed.nameBox:TypeText("")
+    press(ed.save)
+    check("tactics editor: a tactic without a name is not saved, and the window asks for one",
+        plans() == 0 and ed.status.text == N.TAC_ERR_NO_NAME and ed.nameBox.focused == true and db().draft.dirty == true)
+    ed.nameBox:TypeText("To tanks")
+    SERVER_NOW = SERVER_NOW + 500
+    press(ed.save)
+    local id = plan().id
+    local stored = T.GetPlan(id)
+    check("tactics editor: Save writes the working copy to your tactics, and nothing is unsaved after it",
+        plans() == 1 and stored ~= nil and stored.name == "To tanks" and stored.inst == 4 and stored.boss == "Edwin VanCleef" and #stored.scenes == 2
+        and stored.scenes[1].title == "Fase 1" and same(stored.scenes, T.Sanitize(plan()).scenes) and stored.updated == SERVER_NOW and plan().updated == SERVER_NOW
+        and db().draft.dirty == false and ed.status.text == N.TAC_ED_SAVED and ed:IsShown())
+    check("tactics editor: ...where the tab lists it under its dungeon and boss, chosen, and no longer as a draft",
+        tabRow("draft") == nil and tabRow("plan", "To tanks").selected and tab.heads[1].text == "The Deadmines" and tab.subs[1].text == "Edwin VanCleef" and d.name.text == "To tanks")
+
+    -- Closing, and the draft.
+    press(ed.close)
+    check("tactics editor: closed with everything saved, no draft is left", not ed:IsShown() and db().draft == nil)
+    press(d.edit)
+    check("tactics editor: Edit opens the saved tactic as a working copy of its own",
+        ed:IsShown() and plan().id == id and plan().name == "To tanks" and ed.nameBox:GetText() == "To tanks" and ed.instChip.label.text == "The Deadmines"
+        and ed.bossBox:GetText() == "Edwin VanCleef" and scene().title == "Fase 1" and ed.sceneTitle:GetText() == "Fase 1" and db().draft.dirty == false
+        and same(board.tool, { kind = "select" }) and ed.status.text == "" and tip(ed.close) == N.TAC_ED_CLOSE .. " / " .. N.TAC_ED_CLOSE_TIP)
+    press(cell.boss)
+    TAC.click(board, 500, 200)
+    local placed = #scene().items
+    check("tactics editor: a change there does not touch the saved tactic", db().draft.dirty and #T.GetPlan(id).scenes[1].items == placed - 1 and tabRow("draft", "To tanks") ~= nil)
+    ed:Hide()
+    check("tactics editor: closing or Escape with unsaved changes keeps them as a draft, first in the tab's list",
+        not ed:IsShown() and db().draft ~= nil and db().draft.dirty == true and #db().draft.plan.scenes[1].items == placed and tab.heads[1].text == N.TAC_DRAFT
+        and tabRow("draft", "To tanks") ~= nil and tabRow("plan", "To tanks") ~= nil)
+    press(tabRow("draft"))
+    check("tactics tab: the draft says it is not saved, and can be continued, played or discarded",
+        d.who.text == N.TAC_DRAFT_INFO and d.resume:IsShown() and d.resume.label.text == N.TAC_DRAFT_CONTINUE and d.discard:IsShown() and d.discard.label.text == N.TAC_DRAFT_DISCARD
+        and d.play:IsShown() and not d.edit:IsShown() and not d.delete:IsShown() and not d.keep:IsShown() and #d.board.scene.items == placed
+        and #TAC.layoutProblems(tab, 4) == 0)
+    press(tab.newButton)
+    check("tactics editor: asked for a new tactic, it opens on the unsaved one and asks what to do with it",
+        ed:IsShown() and ed.prompt:IsShown() and ed.prompt.text.text == N.TAC_DRAFT_ASK:format("To tanks") and ed.prompt.keep.label.text == N.TAC_DRAFT_KEEP
+        and ed.prompt.drop.label.text == N.TAC_DRAFT_DROP and plan().id == id and #scene().items == placed)
+    press(ed.prompt.keep)
+    check("tactics editor: ...and goes on with it when told so", not ed.prompt:IsShown() and ed:IsShown() and plan().id == id and #scene().items == placed and db().draft.dirty)
+    press(ed.sceneChips[2])
+    ed.sceneTitle:TypeText("Fase to")
+
+    -- A reload: the saved data comes back as other tables.
+    do
+        local before = db()
+        TAC.fresh(TAC.copy(before))
+        check("tactics editor: after a reload the window is closed and the unsaved work is still in the saved data",
+            not ed:IsShown() and db() ~= before and db().draft ~= nil and db().draft.dirty == true and db().draft.plan ~= before.draft.plan and db().draft.scene == 2
+            and db().draft.plan.scenes[2].title == "Fase to" and #db().draft.plan.scenes[1].items == placed)
+        ns.OpenModule("ryddesekk")
+        ns.OpenModule("tactics")
+        check("tactics tab: ...and listed first", tab.heads[1].text == N.TAC_DRAFT and tabRow("draft", "To tanks") ~= nil and tabRow("plan", "To tanks") ~= nil)
+        press(tabRow("draft"))
+        press(d.resume)
+        check("tactics editor: Continue editing opens it where it was left",
+            ed:IsShown() and not ed.prompt:IsShown() and plan() == db().draft.plan and scene() == plan().scenes[2] and ed.sceneTitle:GetText() == "Fase to"
+            and ed.nameBox:GetText() == "To tanks" and ed.status.text == N.TAC_ED_UNSAVED and ed.sceneChips[2].selected and T.ResumeEditor() == true)
+        press(ed.close)
+        local ok, problem = pcall(function()
+            for _, junk in ipairs({ "junk", 5, true, { plan = 5, dirty = true }, { plan = {}, dirty = "yes" }, { dirty = true }, { plan = { scenes = "x" }, dirty = true, scene = "x" } }) do
+                TAC.fresh({ draft = junk })
+                ns.OpenModule("ryddesekk")
+                ns.OpenModule("tactics")
+                T.ResumeEditor()
+                T.CloseEditor()
+            end
+        end)
+        check("tactics editor: a draft that is damaged in the saved data causes no error", ok, problem)
+        local clean = TAC.copy(before)
+        clean.draft.dirty = false
+        TAC.fresh(clean)
+        ns.OpenModule("ryddesekk")
+        ns.OpenModule("tactics")
+        check("tactics editor: a draft with nothing unsaved in it is not kept", db().draft == nil and tabRow("draft") == nil and T.ResumeEditor() == false and not ed:IsShown())
+        TAC.fresh(TAC.copy(before))
+        ns.OpenModule("ryddesekk")
+        ns.OpenModule("tactics")
+    end
+
+    -- Throwing the unsaved work away.
+    press(tabRow("plan", "To tanks"))
+    press(d.edit)
+    check("tactics editor: Edit on the saved tactic asks the same, since the draft has changes to it",
+        ed:IsShown() and ed.prompt:IsShown() and plan().id == id and #plan().scenes[1].items == placed and scene() == plan().scenes[2])
+    press(ed.prompt.drop)
+    check("tactics editor: Discard them opens what was asked for: the tactic as it was saved",
+        not ed.prompt:IsShown() and ed:IsShown() and plan().id == id and #plan().scenes[1].items == placed - 1 and db().draft.dirty == false and tabRow("draft") == nil
+        and plan().scenes[2].title == "Fase 2")
+    ed.nameBox:TypeText("To tanks, ny")
+    press(tab.newButton)
+    press(ed.prompt.drop)
+    check("tactics editor: ...or the new tactic", plan().id ~= id and plan().name == "" and ed.nameBox:GetText() == "" and db().draft.dirty == false
+        and T.GetPlan(id).name == "To tanks" and ed.instChip.label.text == N.TAC_ED_CHOOSE and not ed.otherBox:IsShown())
+    ed.nameBox:TypeText("Kladd")
+    press(tabRow("draft"))
+    press(d.discard)
+    check("tactics tab: Discard asks first", db().draft ~= nil and d.discard.label.text == N.TAC_SURE and ed:IsShown())
+    press(d.discard)
+    check("tactics tab: ...and a second click throws the draft away and closes the editor", db().draft == nil and not ed:IsShown() and tabRow("draft") == nil and plans() == 1)
+
+    -- Losing access closes it.
+    do
+        press(d.edit)
+        ed.nameBox:TypeText("To tanks, endret")
+        DragonworldDB.memberCharacters["Mainy-Stormrage"] = nil
+        setGuild("Other Guild")
+        check("tactics editor: a character that is no longer in the guild loses the window, not the work", not ns.HasAccess() and not ed:IsShown() and db().draft.dirty == true)
+        setGuild("Dragonworld")
+        flush()
+        ns.OpenModule("tactics")
+        press(tabRow("draft"))
+        press(d.discard)
+        press(d.discard)
+    end
+    TAC.windowsDone()
+end)()
+
+-- 8. The slideshow window: a preview for yourself, showing to the group, and watching a leader.
+;(function()
+    local T = ns.Tactics
+    local same, press, tip = TAC.same, TAC.press, TAC.tip
+    local N = ns.strings.nb
+    TAC.windowsStart()
+    TAC.kept.preview, TAC.kept.showSlideshow = T.Preview, T.ShowSlideshow
+    local maxPlans = T.MAX_PLANS
+    local function db() return DragonworldDB.modules.tactics end
+    local function altine(flags) return { name = "Altine", guid = "Player-1-Altine", class = "MAGE", leader = flags == "leader" } end
+    local function borin(flags) return { name = "Borin", guid = "Player-1-Borin", class = "WARRIOR", subgroup = 2, assistant = flags == "assistant" } end
+    local function all(show, sender, from)
+        for index = from or 1, #show do TAC.receive(show[index], sender) end
+    end
+    local function tick(box, on) box.checked = on; box.scripts.OnClick(box) end
+    -- A fight starts or ends. (The game fires PLAYER_REGEN_DISABLED just before the lockdown starts.)
+    local function fight(on)
+        if on then
+            fire("PLAYER_REGEN_DISABLED")
+            inCombat = true
+        else
+            inCombat = false
+            fire("PLAYER_REGEN_ENABLED")
+        end
+    end
+    -- Three scenes: raid groups 1 and 2 stand in the first, nothing of mine is in the second, my name is in the third.
+    local function three()
+        local plan = TAC.plan()
+        plan.scenes[3] = { title = "Fase 3", notes = { "Løp ut" }, bg = { kind = "room", room = "square" },
+                           items = { { k = "p", n = "Tester", cl = "PALADIN", x = 100, y = 100 } } }
+        return plan
+    end
+    -- A scene of 30 texts is several messages long: three of them do not go out at once.
+    local function fat(n)
+        local scene = { title = "Fase " .. n, notes = {}, bg = { kind = "room", room = "round" }, items = {} }
+        for index = 1, 30 do scene.items[index] = { k = "t", x = index * 10, y = index * 5, t = "Stå her nummer " .. (n * 100 + index), c = 1, s = 2 } end
+        return scene
+    end
+    local big = { id = "pbigv", name = "Stor", inst = 101, instName = "Molten Core", boss = "Ragnaros", author = "x", updated = 1, scenes = { fat(1), fat(2), fat(3) } }
+    local clean = T.Sanitize(three())
+    if DragonworldTacticsViewer then DragonworldTacticsViewer:Hide() end
+
+    -- Opening it: Play in the tab and in the editor.
+    check("tactics viewer: the tab's two ways in are there, the file leaves no name of its own behind, and with no slideshow there is nothing to open",
+        type(T.Preview) == "function" and type(T.ShowSlideshow) == "function" and V == nil and T.ShowSlideshow() == false
+        and (DragonworldTacticsViewer == nil or not DragonworldTacticsViewer:IsShown()) and (DragonworldTacticsPill == nil or not DragonworldTacticsPill:IsShown()))
+    local stored = T.SavePlan(three())
+    ns.OpenModule("tactics")
+    local tab = DragonworldTacticsScroll.parent
+    T.SelectPlan(stored.id)
+    press(tab.detail.next)
+    press(tab.detail.play)
+    local v = DragonworldTacticsViewer
+    local board = v.board
+    check("tactics viewer: Play opens a window of its own on the scene you were looking at, with a large board that cannot be changed",
+        v:IsShown() and v.parent == UIParent and v:GetWidth() == 1000 and v:GetHeight() == 616 and v.strata == "DIALOG" and v.backdropColor[4] >= 0.9
+        and same(board.scene, clean.scenes[2]) and board.editable == false and board.highlightMine == true and board:GetWidth() == 704 and board:GetHeight() == 440
+        and not v.wait:IsShown() and T.Presenting() == nil and #GROUP_WIRE == 0)
+    check("tactics viewer: it names the tactic and what it is for, and the scene by number",
+        v.title.text == clean.name and v.place.text == "The Deadmines - Edwin VanCleef" and v.heading.text == "Scene 2 av 3", v.heading.text)
+    check("tactics viewer: a preview says plainly that only you see it",
+        v.mode.text.text == N.TAC_VIEW_MODE_PREVIEW and N.TAC_VIEW_MODE_PREVIEW:find("Bare du ser", 1, true) ~= nil)
+    do
+        T.OpenEditor(stored.id)
+        local ed = DragonworldTacticsEditor
+        press(ed.sceneChips[3])
+        press(ed.play)
+        check("tactics viewer: Play in the editor opens it above the editor and the editor's question, on the editor's scene, with a copy of the work",
+            ed:IsShown() and v:IsShown() and v.strata == ed.strata and v.level > ed.prompt.level and v.level >= 200 and same(board.scene, clean.scenes[3])
+            and board.scene ~= ed.board.scene and v.heading.text == "Scene 3 av 3: Fase 3", v.heading.text)
+        T.CloseEditor()
+    end
+
+    -- Looking through the scenes.
+    -- The scene buttons as one text: * the one on the board, - not arrived, ! where the leader is.
+    local function chips()
+        local out = {}
+        for _, chip in ipairs(v.chips) do
+            if chip:IsShown() then out[#out + 1] = (chip.selected and "*" or "") .. (chip.dimmed and "-" or "") .. chip.label.text .. (chip.mark:IsShown() and "!" or "") end
+        end
+        return table.concat(out, " ")
+    end
+    check("tactics viewer: each scene has a numbered button, and the last one has no Next",
+        chips() == "1 2 *3" and v.prev:IsEnabled() and not v.next:IsEnabled() and v.prev.label.text == N.TAC_VIEW_PREV and v.next.label.text == N.TAC_VIEW_NEXT, chips())
+    check("tactics viewer: the scene's notes stand under the board, one line each",
+        v.notes[1]:IsShown() and v.notes[1].text == "Løp ut" and v.noteDots[1]:IsShown() and not v.notes[2]:IsShown() and not v.noteDots[2]:IsShown() and #v.notes == T.MAX_NOTES
+        and v.notes[1].font[2] >= 14)
+    check("tactics viewer: when something in the scene is about you, a line says what the gold ring means",
+        v.mine:IsShown() and v.mine.text == N.TAC_VIEW_MINE and board.glowN == 1)
+    press(v.prev)
+    check("tactics viewer: Previous and Next step through the scenes",
+        same(board.scene, clean.scenes[2]) and v.heading.text == "Scene 2 av 3" and chips() == "1 *2 3" and v.next:IsEnabled() and not v.notes[1]:IsShown())
+    check("tactics viewer: ...and a scene with nothing of yours has no such line", not v.mine:IsShown() and board.glowN == 0)
+    press(v.chips[1])
+    check("tactics viewer: a numbered button goes straight to its scene",
+        same(board.scene, clean.scenes[1]) and v.heading.text == "Scene 1 av 3: Fase 1" and chips() == "*1 2 3" and not v.prev:IsEnabled()
+        and v.notes[1].text == "Tanks bytter på 3 stacks" and v.notes[2].text == "Healere: stå samlet; ikke løp, vent" and v.notes[2]:IsShown() and not v.notes[3]:IsShown())
+    check("tactics viewer: ...and tells its title when the mouse is over it", tip(v.chips[3]) == "Scene 3 / Fase 3" and tip(v.chips[2]) == "Scene 2", tip(v.chips[3]))
+    check("tactics viewer: looking through a preview sends nothing to anyone", #GROUP_WIRE == 0 and T.Presenting() == nil and T.Watching() == nil)
+    do
+        local given = three()
+        local ok, problem = pcall(function()
+            assert(T.Preview(given, 2) == true and same(board.scene, given.scenes[2]) and board.scene ~= given.scenes[2], "not a copy")
+            assert(T.Preview(nil, 1) == false and T.Preview("junk") == false and T.Preview(5, 5) == false and v.heading.text == "Scene 2 av 3", "junk")
+            assert(T.Preview(three(), "x") == true and v.heading.text == "Scene 1 av 3: Fase 1", "x")
+            assert(T.Preview(three(), 99) == true and v.heading.text == "Scene 3 av 3: Fase 3", "99")
+            assert(T.Preview(three(), -4) == true and v.heading.text == "Scene 1 av 3: Fase 1", "-4")
+            assert(T.Preview(three(), SECRET) == true and T.Preview(three(), 0 / 0) == true and T.Preview(three()) == true and v.heading.text == "Scene 1 av 3: Fase 1", "secret")
+            assert(T.Preview(three(), 2.7) == true and v.heading.text == "Scene 2 av 3", "2.7")
+            assert(T.Preview({ scenes = "x" }) == true and v.heading.text == "Scene 1 av 1" and v.title.text == N.TAC_UNNAMED and v.place.text == N.TAC_NO_INSTANCE, "no scenes")
+            assert(T.Preview({ name = "Hull", scenes = { TAC.scene1(), nil, TAC.scene2() } }, 3) == true and v.heading.text == "Scene 1 av 1: Fase 1", "hole")
+        end)
+        check("tactics viewer: the window gets a copy of the tactic; what is no tactic is not opened; an odd scene number or a damaged tactic causes no error", ok, problem)
+    end
+    T.Preview(three(), 1)
+
+    -- The window itself.
+    do
+        local listed = false
+        for _, name in ipairs(UISpecialFrames) do listed = listed or name == "DragonworldTacticsViewer" end
+        v:Fire("OnDragStart")
+        v.points = { { "TOPLEFT", UIParent, "TOPLEFT", 40, -30 } }
+        v:Fire("OnDragStop")
+        check("tactics viewer: Escape hides it, it can be moved, and where it is dragged to is remembered",
+            listed and v.movable == true and v.moving == false and same(db().viewer, { point = "TOPLEFT", relativePoint = "TOPLEFT", x = 40, y = -30 }))
+        local before = db()
+        v.points = { { "CENTER", UIParent, "CENTER", 0, 0 } }
+        TAC.fresh(TAC.copy(before))
+        check("tactics viewer: ...also after a reload", select(1, v:GetPoint(1)) == "TOPLEFT" and select(4, v:GetPoint(1)) == 40 and select(5, v:GetPoint(1)) == -30 and #v.points == 1)
+        local ok, problem = pcall(TAC.fresh, { viewer = { point = "JUNK", x = "a" }, pill = 5, autoOpen = "no", plans = before.plans })
+        check("tactics viewer: a damaged place in the saved data puts it in the middle, without an error", ok and select(1, v:GetPoint(1)) == "CENTER" and v.auto.checked == true, problem)
+        TAC.fresh({ plans = before.plans })
+
+        local width, height = UIParent.width, UIParent.height
+        UIParent.width, UIParent.height = 800, 600
+        v:Hide()
+        T.Preview(three(), 1)
+        local small = v.ownScale
+        UIParent.width, UIParent.height = SECRET, SECRET
+        v:Hide()
+        local okSecret = pcall(T.Preview, three(), 1)
+        local hidden = v.ownScale
+        UIParent.width, UIParent.height = 2000, 1200
+        v:Hide()
+        T.Preview(three(), 1)
+        check("tactics viewer: it is scaled down to fit a small screen, never up, and a screen size the game hides changes nothing",
+            small == 0.8 and okSecret and hidden == 1 and v.ownScale == 1, tostring(small))
+        UIParent.width, UIParent.height = width, height
+    end
+    ns.SetLanguage("en", true)
+    check("tactics viewer: its texts follow the chosen language",
+        v.mode.text.text == ns.strings.en.TAC_VIEW_MODE_PREVIEW and v.prev.label.text == "< Previous" and v.next.label.text == "Next >" and v.present.label.text == "Show to group"
+        and v.close.label.text == "Close" and v.auto.label.text == ns.strings.en.TAC_VIEW_AUTO and v.heading.text == "Scene 1 of 3: Fase 1" and v.mine.text == ns.strings.en.TAC_VIEW_MINE)
+    ns.SetLanguage("nb", true)
+    check("tactics viewer: alone, Show to group is greyed out and says why when the mouse is over it",
+        v.present:IsShown() and not v.present:IsEnabled() and v.present.motionWhileDisabled == true and tip(v.present) == N.TAC_PRESENT .. " / " .. N.TAC_ERR_NO_GROUP
+        and not v.stop:IsShown() and not v.keep:IsShown() and not v.follow:IsShown() and not v.leader:IsShown() and not v.warn:IsShown() and not v.notice:IsShown(), tip(v.present))
+    TAC.group({ altine("leader") }, {})
+    check("tactics viewer: ...and so it is for someone who does not lead the group", not v.present:IsEnabled() and tip(v.present) == N.TAC_PRESENT .. " / " .. N.TAC_ERR_NOT_LEADER)
+    do
+        -- The board, Close, Previous, Next, three scenes, Show to group and the tick box.
+        local problems, count = TAC.layoutProblems(v, 10)
+        local _, headTop = TAC.box(v.heading, v)
+        local boardLeft, boardTop, boardRight, boardBottom = TAC.box(board, v)
+        local _, noteTop = TAC.box(v.notes[1], v)
+        local _, _, _, noteBottom = TAC.box(v.notes[T.MAX_NOTES], v)
+        check("tactics viewer: the board and the buttons lie inside the window, none over another", #problems == 0 and count == 9, table.concat(problems, "; ") .. " (" .. count .. ")")
+        check("tactics viewer: from the top: the scene's title, the board, the notes; the board is at least 700 wide and takes half the window",
+            headTop + 20 <= boardTop and boardBottom < noteTop and noteBottom <= 616 - 10 and boardRight - boardLeft >= 700
+            and (boardRight - boardLeft) * (boardBottom - boardTop) >= 0.5 * 1000 * 616, headTop .. " " .. boardTop .. " " .. boardBottom .. " " .. noteTop .. " " .. noteBottom)
+    end
+
+    -- Showing it to the group.
+    TAC.group({ altine(), borin() }, { raid = true, leader = true })
+    flush()
+    TAC.sent()
+    clock = clock + 60                                                    -- room for ten messages at once again
+    do
+        local scenes = {}
+        for n = 1, 10 do scenes[n] = fat(n) end
+        T.Preview({ id = "phugev", name = "Enorm", scenes = scenes }, 1)
+        press(v.present)
+        check("tactics viewer: a tactic too big to send is not shown to the group, and the window says why",
+            T.Presenting() == nil and #GROUP_WIRE == 0 and v.notice:IsShown() and v.notice.text == N.TAC_ERR_TOO_BIG and v.mode.text.text == N.TAC_VIEW_MODE_PREVIEW
+            and v.present:IsShown() and v.present:IsEnabled() and not v.stop:IsShown(), v.notice.text)
+        -- The board, Close, Previous, Next, ten scenes, Show to group and the tick box.
+        local problems, count = TAC.layoutProblems(v, 10)
+        check("tactics viewer: ten scenes have their ten buttons, in two rows of five", chips() == "*1 2 3 4 5 6 7 8 9 10" and #problems == 0 and count == 16
+            and select(5, v.chips[6]:GetPoint(1)) < select(5, v.chips[5]:GetPoint(1)) and select(4, v.chips[6]:GetPoint(1)) == select(4, v.chips[1]:GetPoint(1)),
+            table.concat(problems, "; ") .. " (" .. count .. ")")
+    end
+    T.Preview({ id = "pnoname", scenes = { TAC.scene2() } }, 1)
+    press(v.present)
+    check("tactics viewer: ...and so it does for a tactic that has no name yet",
+        T.Presenting() == nil and #GROUP_WIRE == 0 and v.notice:IsShown() and v.notice.text == N.TAC_ERR_NO_NAME and v.title.text == N.TAC_UNNAMED and v.present:IsShown(), v.notice.text)
+    T.Preview(big, 2)
+    check("tactics viewer: the leader of a group can show the tactic from here", v.present:IsEnabled() and tip(v.present) == N.TAC_PRESENT .. " / " .. N.TAC_PRESENT_TIP)
+    press(v.present)
+    local sent, channel = TAC.sent()
+    local p = T.Presenting()
+    local sid = sent[1] and sent[1]:match("^S\t(%w+)\t1\t3\t1\t")
+    check("tactics viewer: Show to group starts the slideshow from its first scene, and the window becomes its controls",
+        p ~= nil and p.plan.id == "pbigv" and #sent > 1 and channel == "RAID" and sid ~= nil and v:IsShown() and v.mode.text.text == N.TAC_VIEW_MODE_SHOW
+        and board.scene == p.plan.scenes[1] and v.heading.text == "Scene 1 av 3: Fase 1" and chips() == "*1 2 3" and not v.present:IsShown() and v.stop:IsShown()
+        and v.stop.label.text == N.TAC_VIEW_END and not v.keep:IsShown() and not v.follow:IsShown() and not v.notice:IsShown(), tostring(sent[1]))
+    check("tactics viewer: while the slideshow is going out, it says how much has been sent",
+        p.sent == #sent and p.sent < p.total and v.info:IsShown() and v.info.text:find(N.TAC_VIEW_SENDING:format(p.sent, p.total), 1, true) ~= nil and not v.warn:IsShown()
+        and not v.info.text:find(N.TAC_VIEW_PING_HINT, 1, true), v.info.text)
+    for _ = 1, 4 do flush() end
+    TAC.sent()
+    p = T.Presenting()
+    check("tactics viewer: ...then that all of it is sent, how many have it, and only now that a click on the board points for everyone",
+        p.sent == p.total and v.info.text:find(N.TAC_VIEW_SENT, 1, true) ~= nil and v.info.text:find(N.TAC_VIEW_VIEWERS:format(0), 1, true) ~= nil
+        and v.info.text:find(N.TAC_VIEW_PING_HINT, 1, true) ~= nil and not v.info.text:find(N.TAC_VIEW_SENDING:match("^[^%%]+"), 1, true), v.info.text)
+    press(v.next)
+    check("tactics viewer: Next moves the whole group to the next scene",
+        same((TAC.sent()), { "G\t" .. sid .. "\t2" }) and T.Presenting().scene == 2 and board.scene == p.plan.scenes[2] and v.heading.text == "Scene 2 av 3: Fase 2" and chips() == "1 *2 3")
+    press(v.chips[3])
+    press(v.prev)
+    press(v.prev)
+    check("tactics viewer: ...and so do the numbered buttons and Previous",
+        same((TAC.sent()), { "G\t" .. sid .. "\t3", "G\t" .. sid .. "\t2", "G\t" .. sid .. "\t1" }) and T.Presenting().scene == 1 and board.scene == p.plan.scenes[1] and not v.prev:IsEnabled())
+    do
+        clock = clock + 1
+        local pings = #board.pings
+        TAC.click(board, 300, 200)
+        check("tactics viewer: a click on the board points at that spot for everyone, and on your own board",
+            same((TAC.sent()), { "P\t" .. sid .. "\t300\t200" }) and #board.pings == pings + 1 and board.pings[#board.pings].x == 300 and board.pings[#board.pings].y == 200)
+        check("tactics viewer: nobody has received it yet, and it says who sees a slideshow at all",
+            tip(v.infoHover) == N.TAC_VIEW_VIEWERS_TITLE .. " / " .. N.TAC_VIEW_VIEWERS_NONE .. " / " .. N.TAC_VIEW_VIEWERS_TIP, tip(v.infoHover))
+        TAC.receive("A\t" .. sid .. "\t3", "Borin-Stormrage")
+        check("tactics viewer: it counts who has received all of it, with their names when the mouse is over the line",
+            v.info.text:find(N.TAC_VIEW_VIEWERS:format(1), 1, true) ~= nil and v.infoHover:IsShown()
+            and tip(v.infoHover) == N.TAC_VIEW_VIEWERS_TITLE .. " / Borin / " .. N.TAC_VIEW_VIEWERS_TIP, tip(v.infoHover))
+        -- The board, Close, Previous, Next, three scenes, End the slideshow and the tick box.
+        local problems, count = TAC.layoutProblems(v, 10)
+        check("tactics viewer: while showing, everything still lies inside the window, none over another", #problems == 0 and count == 9, table.concat(problems, "; ") .. " (" .. count .. ")")
+    end
+
+    -- Closing only hides; the pill.
+    TAC.sent()
+    press(v.close)
+    local pill = DragonworldTacticsPill
+    check("tactics viewer: Close only hides the window: the slideshow goes on, and a small button on the screen leads back to it",
+        not v:IsShown() and T.Presenting() ~= nil and #GROUP_WIRE == 0 and pill ~= nil and pill:IsShown() and pill.parent == UIParent and pill.kind == "Button"
+        and pill.text.text == N.TAC_VIEW_PILL:format("Stor") and pill.icon.texture == "Interface\\Icons\\INV_Misc_Map_01"
+        and tip(v.close) == N.TAC_ED_CLOSE .. " / " .. N.TAC_VIEW_CLOSE_TIP, pill and pill.text.text)
+    check("tactics viewer: the small button says what it is for", tip(pill) == "Stor / " .. N.TAC_VIEW_PILL_SHOW .. "\n" .. N.TAC_VIEW_PILL_DRAG
+        and tip(pill.close) == N.TAC_ED_CLOSE .. " / " .. N.TAC_VIEW_PILL_X_SHOW, tip(pill))
+    press(pill)
+    check("tactics viewer: a click on it brings the window back as it was", v:IsShown() and not pill:IsShown() and v.mode.text.text == N.TAC_VIEW_MODE_SHOW and T.Presenting().scene == 1)
+    pill:Fire("OnDragStart")
+    pill.points = { { "BOTTOMLEFT", UIParent, "BOTTOMLEFT", 300, 200 } }
+    pill:Fire("OnDragStop")
+    check("tactics viewer: the small button can be moved, and where it is dragged to is remembered",
+        pill.movable == true and same(db().pill, { point = "BOTTOMLEFT", relativePoint = "BOTTOMLEFT", x = 300, y = 200 }))
+    T.Preview(three(), 3)
+    check("tactics viewer: reading another tactic meanwhile does not end the slideshow, and the small button leads back to it",
+        v:IsShown() and v.mode.text.text == N.TAC_VIEW_MODE_PREVIEW and v.title.text == clean.name and T.Presenting() ~= nil and T.Presenting().plan.id == "pbigv"
+        and #GROUP_WIRE == 0 and pill:IsShown() and v.present:IsShown() and not v.stop:IsShown())
+    press(v.prev)
+    check("tactics viewer: ...and looking through that one moves nobody", #GROUP_WIRE == 0 and T.Presenting().scene == 1 and v.heading.text == "Scene 2 av 3")
+    press(pill)
+    check("tactics viewer: ...back on the slideshow", v.mode.text.text == N.TAC_VIEW_MODE_SHOW and v.title.text == "Stor" and board.scene == p.plan.scenes[1] and not pill:IsShown() and v.stop:IsShown())
+    v:Hide()                                                              -- Escape
+    press(pill.close)
+    check("tactics viewer: for the one who shows, the x only puts the small button away",
+        not pill:IsShown() and not v:IsShown() and T.Presenting() ~= nil and #GROUP_WIRE == 0)
+    T.ShowScene(2)
+    TAC.sent()
+    check("tactics viewer: ...and the tab's line about the slideshow opens the window, on the scene being shown",
+        not v:IsShown() and tab.bar:IsShown() and tab.bar.open:IsEnabled() and (press(tab.bar.open) or true) and v:IsShown() and v.heading.text == "Scene 2 av 3: Fase 2")
+
+    -- Ending it.
+    check("tactics viewer: End the slideshow says what it does", tip(v.stop) == N.TAC_VIEW_END .. " / " .. N.TAC_VIEW_END_TIP)
+    press(v.stop)
+    check("tactics viewer: End the slideshow asks first", T.Presenting() ~= nil and v.stop.label.text == N.TAC_SURE and #GROUP_WIRE == 0)
+    v.stop:Fire("OnLeave")
+    check("tactics viewer: ...and moving the mouse away takes the question back", v.stop.label.text == N.TAC_VIEW_END and T.Presenting() ~= nil)
+    press(v.stop)
+    TAC.receive("A\t" .. sid .. "\t3", "Altine-Stormrage")                -- news from the group between the two clicks
+    check("tactics viewer: ...but news from the group does not", v.stop.label.text == N.TAC_SURE and v.info.text:find(N.TAC_VIEW_VIEWERS:format(2), 1, true) ~= nil)
+    press(v.stop)
+    check("tactics viewer: a second click ends it for the group, and the window stays open on the same tactic, as a preview",
+        T.Presenting() == nil and same((TAC.sent()), { "E\t" .. sid }) and v:IsShown() and v.mode.text.text == N.TAC_VIEW_MODE_PREVIEW and v.title.text == "Stor"
+        and v.notice:IsShown() and v.notice.text == N.TAC_VIEW_STOPPED and v.present:IsShown() and v.present:IsEnabled() and not v.stop:IsShown() and not pill:IsShown()
+        and same(board.scene, T.Sanitize(big).scenes[2]) and not v.info:IsShown() and not v.infoHover:IsShown())
+    press(v.next)
+    check("tactics viewer: ...where the buttons only move your own window", #GROUP_WIRE == 0 and v.heading.text == "Scene 3 av 3: Fase 3")
+
+    -- The game refuses the messages.
+    T.Preview(three(), 1)
+    sendResult = 11
+    press(v.present)
+    check("tactics viewer: when the game holds the messages back, a box says so, and that it keeps trying",
+        T.Presenting() ~= nil and T.Presenting().problem == "TAC_ERR_LOCKED" and v.warn:IsShown() and v.warn.text == N.TAC_VIEW_LOCKED and v.warnEdge:IsShown() and v.warnFill:IsShown()
+        and colour(v.warnEdge.flatColour, 1.00, 0.65, 0.20) and #GROUP_WIRE == 0 and not pill:IsShown(), v.warn.text)
+    for _ = 1, 23 do
+        clock = clock + 5
+        flushNow()
+    end
+    check("tactics viewer: ...for as long as it does", T.Presenting().problem == "TAC_ERR_LOCKED" and v.warn.text == N.TAC_VIEW_LOCKED)
+    clock = clock + 5
+    flushNow()
+    check("tactics viewer: when it has given up, the box turns red and tells what the leader can do",
+        T.Presenting().problem == "TAC_ERR_BLOCKED" and v.warn:IsShown() and v.warn.text == N.TAC_VIEW_BLOCKED and colour(v.warnEdge.flatColour, 1.00, 0.35, 0.30)
+        and N.TAC_VIEW_BLOCKED:find("kan fortsatt lese den", 1, true) ~= nil and N.TAC_VIEW_BLOCKED:find("mellom kampene", 1, true) ~= nil
+        and v.info.text:find(N.TAC_VIEW_SENDING:format(0, T.Presenting().total), 1, true) ~= nil and not v.info.text:find(N.TAC_VIEW_PING_HINT, 1, true), v.warn.text)
+    do
+        -- The box lies under the scene buttons and above End the slideshow, with what follows it, in every language.
+        local tight = {}
+        for _, language in ipairs(ns.LANGUAGES) do
+            ns.SetLanguage(language.code, true)
+            local _, _, _, chipsBottom = TAC.box(v.chips[1], v)
+            local left, top, right = TAC.box(v.warn, v)
+            local _, _, _, infoBottom = TAC.box(v.info, v)
+            local _, stopTop = TAC.box(v.stop, v)
+            if not (top - 9 >= chipsBottom + 4 and left - 9 >= 732 and right + 9 <= 986 and infoBottom <= stopTop - 4) then
+                tight[#tight + 1] = language.code .. " " .. top .. " " .. infoBottom .. " " .. stopTop
+            end
+        end
+        ns.SetLanguage("nb", true)
+        check("tactics viewer: the warning and what stands under it have room in all 7 languages", #tight == 0, table.concat(tight, ", "))
+    end
+    sendResult = 0
+    press(v.next)
+    check("tactics viewer: ...and the box goes away when the messages get through again",
+        T.Presenting().problem == nil and not v.warn:IsShown() and not v.warnEdge:IsShown() and not v.warnFill:IsShown() and v.info.text:find(N.TAC_VIEW_SENT, 1, true) ~= nil
+        and v.info.text:find(N.TAC_VIEW_PING_HINT, 1, true) ~= nil)
+    TAC.sent()
+    clearChat()
+    TAC.group({})
+    check("tactics viewer: when the group is gone the slideshow is over, and the window stays open as a preview, without an error",
+        T.Presenting() == nil and v:IsShown() and v.mode.text.text == N.TAC_VIEW_MODE_PREVIEW and v.notice.text == N.TAC_VIEW_STOPPED and v.present:IsShown()
+        and not v.present:IsEnabled() and not pill:IsShown() and not has("Feil"), chatText())
+    flush()
+    TAC.sent()
+
+    -- Watching: a raid led by Altine, with Borin as an assistant. I am an ordinary member in group 2.
+    TAC.group({ altine("leader"), borin("assistant") }, { raid = true, subgroup = 2 })
+    flush()
+    TAC.sent()
+    v:Hide()
+    clearChat()
+    local plan = T.Sanitize(three())
+    local other = T.Sanitize(three())
+    other.id, other.name = "pother", "Annen plan"
+    local show = TAC.slideshow("sidv1", plan, 1)   -- S, then each of the three scenes in two pieces
+    local sounds = #SOUNDS_PLAYED
+    TAC.receive(show[1], "Altine-Stormrage")
+    check("tactics viewer: when a leader starts a slideshow the window opens by itself, with a soft sound, and says who is showing it",
+        T.Watching() ~= nil and v:IsShown() and #SOUNDS_PLAYED == sounds + 1 and SOUNDS_PLAYED[#SOUNDS_PLAYED] == 844 and v.mode.text.text == N.TAC_VIEW_MODE_WATCH:format("Altine")
+        and v.title.text == plan.name and v.place.text == "The Deadmines - Edwin VanCleef" and not pill:IsShown() and #chat == 0, v.mode.text.text)
+    check("tactics viewer: a scene that has not arrived says so, instead of an empty board",
+        board.scene == nil and v.wait:IsShown() and v.wait.text.text == N.TAC_VIEW_WAITING and v.wait.level > board:GetFrameLevel() + board.levels and v.heading.text == "Scene 1 av 3"
+        and chips() == "*1! -2 -3" and v.info.text:find(N.TAC_VIEW_ARRIVING:format(0, 3), 1, true) ~= nil and tip(v.chips[2]) == "Scene 2 / " .. N.TAC_VIEW_NOT_ARRIVED, chips())
+    check("tactics viewer: someone watching can keep a copy, but not before all of it has arrived",
+        v.keep:IsShown() and not v.keep:IsEnabled() and v.keep.label.text == N.TAC_KEEP and tip(v.keep) == N.TAC_KEEP .. " / " .. N.TAC_VIEW_KEEP_WAIT
+        and not v.present:IsShown() and not v.stop:IsShown(), tip(v.keep))
+    TAC.receive(show[2], "Altine-Stormrage")
+    TAC.receive(show[3], "Altine-Stormrage")
+    check("tactics viewer: a scene is drawn as soon as it is here, while the rest is on its way",
+        not v.wait:IsShown() and board.scene == T.Watching().plan.scenes[1] and same(board.scene, plan.scenes[1]) and v.heading.text == "Scene 1 av 3: Fase 1"
+        and v.notes[1].text == "Tanks bytter på 3 stacks" and chips() == "*1! -2 -3" and v.info.text:find(N.TAC_VIEW_ARRIVING:format(1, 3), 1, true) ~= nil
+        and v.info.text:find(N.TAC_VIEW_WATCH_HINT, 1, true) ~= nil, chips())
+    check("tactics viewer: your raid group on the board is marked as yours", v.mine:IsShown() and board.glowN >= 1)
+    GROUP.subgroup = 5
+    fire("GROUP_ROSTER_UPDATE")
+    check("tactics viewer: ...until you are moved to another group", not v.mine:IsShown() and board.glowN == 0)
+    GROUP.subgroup = 2
+    fire("GROUP_ROSTER_UPDATE")
+    flush()
+    TAC.receive("G\tsidv1\t3", "Altine-Stormrage")
+    check("tactics viewer: the window follows the leader, also to a scene that is still on its way",
+        v.wait:IsShown() and board.scene == nil and v.heading.text == "Scene 3 av 3" and chips() == "1 -2 *3!" and v.mine:IsShown() == false, chips())
+    all(show, "Altine-Stormrage", 4)
+    check("tactics viewer: ...which is shown when it comes",
+        not v.wait:IsShown() and same(board.scene, plan.scenes[3]) and v.heading.text == "Scene 3 av 3: Fase 3" and chips() == "1 2 *3!"
+        and v.info.text == "|cffa6a6a6" .. N.TAC_VIEW_WATCH_HINT .. "|r" and v.mine:IsShown(), v.info.text)
+    TAC.receive("G\tsidv1\t2", "Altine-Stormrage")
+    check("tactics viewer: it follows the leader from scene to scene",
+        same(board.scene, plan.scenes[2]) and v.heading.text == "Scene 2 av 3" and chips() == "1 *2! 3" and not v.follow:IsShown() and not v.leader:IsShown())
+    do
+        local pings = #board.pings
+        TAC.receive("P\tsidv1\t300\t200", "Altine-Stormrage")
+        check("tactics viewer: where the leader points lights up on the board", #board.pings == pings + 1 and board.pings[#board.pings].x == 300 and board.pings[#board.pings].y == 200)
+    end
+
+    -- Looking through the scenes on your own.
+    TAC.sent()
+    press(v.chips[3])
+    check("tactics viewer: you may look through the scenes yourself; the window then says where the leader is",
+        same(board.scene, plan.scenes[3]) and T.Watching().scene == 2 and #GROUP_WIRE == 0 and chips() == "1 2! *3" and v.leader:IsShown()
+        and v.leader.text == N.TAC_VIEW_LEADER_AT:format("Altine", 2) and v.follow:IsShown() and v.follow.label.text == N.TAC_VIEW_FOLLOW
+        and tip(v.follow) == N.TAC_VIEW_FOLLOW .. " / " .. N.TAC_VIEW_FOLLOW_TIP and v.info.text == "" and not v.info:IsShown(), chips())
+    do
+        TAC.receive("G\tsidv1\t1", "Altine-Stormrage")
+        local pings = #board.pings
+        TAC.receive("P\tsidv1\t10\t10", "Altine-Stormrage")
+        check("tactics viewer: ...and stays where you are when the leader moves on or points at something in another scene",
+            same(board.scene, plan.scenes[3]) and v.leader.text == N.TAC_VIEW_LEADER_AT:format("Altine", 1) and chips() == "1! 2 *3" and #board.pings == pings, chips())
+        press(v.prev)
+        -- The board, Close, Previous, Next, three scenes, Follow the leader, Keep a copy and the tick box.
+        local problems, count = TAC.layoutProblems(v, 10)
+        local _, leaderTop = TAC.box(v.leader, v)
+        local _, _, _, chipsBottom = TAC.box(v.chips[1], v)
+        local _, _, _, followBottom = TAC.box(v.follow, v)
+        local _, keepTop = TAC.box(v.keep, v)
+        check("tactics viewer: Follow the leader has its place between the scene buttons and Keep a copy", #problems == 0 and count == 10 and same(board.scene, plan.scenes[2])
+            and chips() == "1! *2 3" and leaderTop >= chipsBottom + 4 and followBottom <= keepTop - 4, table.concat(problems, "; ") .. " (" .. count .. ")")
+    end
+    TAC.sent()
+    press(v.follow)
+    check("tactics viewer: Follow the leader goes back to the leader's scene",
+        same(board.scene, plan.scenes[1]) and not v.follow:IsShown() and not v.leader:IsShown() and chips() == "*1! 2 3" and #GROUP_WIRE == 0, chips())
+    TAC.receive("G\tsidv1\t2", "Altine-Stormrage")
+    check("tactics viewer: ...and follows again from there", same(board.scene, plan.scenes[2]) and chips() == "1 *2! 3")
+
+    -- Closing only hides.
+    TAC.sent()
+    press(v.close)
+    check("tactics viewer: for someone watching too, Close only hides the window: the slideshow is still there, behind the small button",
+        not v:IsShown() and T.Watching() ~= nil and #GROUP_WIRE == 0 and pill:IsShown() and pill.text.text == N.TAC_VIEW_PILL:format(plan.name)
+        and tip(pill) == plan.name .. " / " .. N.TAC_VIEW_PILL_WATCH:format("Altine") .. "\n" .. N.TAC_VIEW_PILL_DRAG
+        and tip(pill.close) == N.TAC_ED_CLOSE .. " / " .. N.TAC_VIEW_PILL_X_WATCH, tip(pill))
+    TAC.receive("G\tsidv1\t3", "Altine-Stormrage")
+    all(show, "Altine-Stormrage")                                         -- sent again for someone who came late
+    check("tactics viewer: ...and it stays hidden when the leader moves on, or sends the slideshow again for a latecomer",
+        not v:IsShown() and pill:IsShown() and #SOUNDS_PLAYED == sounds + 1 and T.Watching().scene == 1)
+    press(pill)
+    check("tactics viewer: the small button opens the window again, on the leader's scene",
+        v:IsShown() and not pill:IsShown() and v.mode.text.text == N.TAC_VIEW_MODE_WATCH:format("Altine") and same(board.scene, plan.scenes[1]) and chips() == "*1! 2 3")
+    press(v.chips[2])
+    v:Hide()                                                              -- Escape
+    check("tactics viewer: ...and so does T.ShowSlideshow (Open the slideshow in the tab), following the leader again",
+        T.Watching() ~= nil and pill:IsShown() and T.ShowSlideshow() == true and v:IsShown() and same(board.scene, plan.scenes[1]) and not v.follow:IsShown())
+
+    -- Fights.
+    fight(true)
+    check("tactics viewer: when a fight starts the window gets out of the way", not v:IsShown() and T.Watching() ~= nil and pill:IsShown())
+    TAC.receive("G\tsidv1\t2", "Altine-Stormrage")
+    check("tactics viewer: ...and stays away during the fight", not v:IsShown())
+    fight(false)
+    check("tactics viewer: ...and comes back when the fight is over, where the leader is now",
+        v:IsShown() and not pill:IsShown() and same(board.scene, plan.scenes[2]) and #SOUNDS_PLAYED == sounds + 1)
+    press(v.close)
+    fight(true)
+    fight(false)
+    check("tactics viewer: a window you closed yourself does not come back after a fight", not v:IsShown() and pill:IsShown())
+    fight(true)
+    all(TAC.slideshow("sidv2", other, 2), "Altine-Stormrage")
+    check("tactics viewer: a slideshow that starts during a fight does not open the window: only the small button shows",
+        T.Watching() ~= nil and T.Watching().plan.id == "pother" and not v:IsShown() and pill:IsShown() and pill.text.text == N.TAC_VIEW_PILL:format("Annen plan")
+        and #SOUNDS_PLAYED == sounds + 1 and #chat == 0)
+    fight(false)
+    check("tactics viewer: ...it opens when the fight is over, if the slideshow is still running",
+        v:IsShown() and v.title.text == "Annen plan" and v.heading.text == "Scene 2 av 3" and #SOUNDS_PLAYED == sounds + 2 and not pill:IsShown()
+        and v.mode.text.text == N.TAC_VIEW_MODE_WATCH:format("Altine"))
+    TAC.sent()
+    v:Hide()
+    UnitAffectingCombat = function(unit) return unit == "player" and TAC.fighting == true end
+    TAC.fighting = true
+    TAC.receive(TAC.slideshow("sidv3", plan, 1)[1], "Altine-Stormrage")
+    check("tactics viewer: ...the same when the game only says that you are fighting", not v:IsShown() and pill:IsShown() and T.Watching().plan.id == "ptest1")
+    TAC.receive("E\tsidv3", "Altine-Stormrage")
+    TAC.fighting = false
+    fire("PLAYER_REGEN_ENABLED")
+    check("tactics viewer: a slideshow that started and ended during the fight opens nothing afterwards", not v:IsShown() and not pill:IsShown() and T.Watching() == nil)
+    UnitAffectingCombat = nil
+
+    -- The x on the pill.
+    fight(true)
+    TAC.receive(TAC.slideshow("sidv4", plan, 1)[1], "Altine-Stormrage")
+    check("tactics viewer: (a slideshow starts in a fight)", T.Watching() ~= nil and pill:IsShown() and not v:IsShown())
+    TAC.sent()
+    press(pill.close)
+    check("tactics viewer: the x on the small button closes the slideshow for you, and tells nobody",
+        T.Watching() == nil and not pill:IsShown() and not v:IsShown() and #GROUP_WIRE == 0)
+    fight(false)
+    all(TAC.slideshow("sidv4", plan, 1), "Altine-Stormrage")
+    check("tactics viewer: ...after that it opens neither when the fight is over nor when the leader sends it again",
+        T.Watching() == nil and not v:IsShown() and not pill:IsShown() and #SOUNDS_PLAYED == sounds + 2)
+    all(TAC.slideshow("sidv5", plan, 1), "Altine-Stormrage")
+    TAC.sent()
+    check("tactics viewer: ...but the leader's next slideshow opens as usual",
+        v:IsShown() and T.Watching() ~= nil and #SOUNDS_PLAYED == sounds + 3 and v.title.text == plan.name and same(board.scene, plan.scenes[1]))
+
+    -- Keeping a copy.
+    do
+        local before = #T.Plans()
+        check("tactics viewer: when all of it has arrived, Keep a copy can be used",
+            v.keep:IsEnabled() and v.keep.label.text == N.TAC_KEEP and tip(v.keep) == N.TAC_KEEP .. " / " .. N.TAC_KEEP_TIP and before == 1)
+        T.MAX_PLANS = 1
+        press(v.keep)
+        check("tactics viewer: when the copy cannot be kept, it says why", #T.Plans() == before and v.notice:IsShown() and v.notice.text == N.TAC_ERR_FULL and v.keep:IsEnabled(), v.notice.text)
+        T.MAX_PLANS = maxPlans
+        press(v.keep)
+        local kept = T.Received()[1].kept
+        check("tactics viewer: Keep a copy saves the tactic among your own, and says so",
+            #T.Plans() == before + 1 and kept ~= nil and T.GetPlan(kept).name == plan.name and same(T.GetPlan(kept).scenes, plan.scenes) and v.notice.text == N.TAC_VIEW_KEPT_NOW
+            and not v.keep:IsEnabled() and v.keep.label.text == N.TAC_KEPT and T.Watching() ~= nil and v:IsShown(), v.notice.text)
+        T.DeletePlan(kept)
+        check("tactics viewer: ...and it can be kept again when that copy has been deleted", v.keep:IsEnabled() and v.keep.label.text == N.TAC_KEEP and #T.Plans() == before)
+    end
+
+    -- The slideshow ends.
+    TAC.receive("G\tsidv5\t2", "Altine-Stormrage")
+    TAC.receive("E\tsidv5", "Altine-Stormrage")
+    check("tactics viewer: when the slideshow ends the window stays open on the tactic, and says that it has ended",
+        T.Watching() == nil and v:IsShown() and v.mode.text.text == N.TAC_VIEW_MODE_ENDED and v.title.text == plan.name and same(board.scene, plan.scenes[2]) and not pill:IsShown()
+        and not v.follow:IsShown() and not v.leader:IsShown() and v.keep:IsShown() and v.keep:IsEnabled() and not v.present:IsShown() and not v.stop:IsShown()
+        and chips() == "1 *2 3" and not v.info:IsShown(), chips())
+    TAC.sent()
+    press(v.next)
+    check("tactics viewer: ...where it can still be read, scene by scene", same(board.scene, plan.scenes[3]) and #GROUP_WIRE == 0 and v.heading.text == "Scene 3 av 3: Fase 3")
+    do
+        local show6 = TAC.slideshow("sidv6", plan, 1)
+        local played = #SOUNDS_PLAYED
+        all({ show6[1], show6[2], show6[3] }, "Altine-Stormrage")         -- only the first scene gets through
+        check("tactics viewer: a new slideshow goes on in the window that is open, following the leader again",
+            v:IsShown() and v.mode.text.text == N.TAC_VIEW_MODE_WATCH:format("Altine") and same(board.scene, plan.scenes[1]) and chips() == "*1! -2 -3" and #SOUNDS_PLAYED == played
+            and not v.keep:IsEnabled(), chips())
+        TAC.receive("E\tsidv6", "Altine-Stormrage")
+        press(v.chips[2])
+        check("tactics viewer: a scene that never arrived says so, and a tactic with a scene missing cannot be kept",
+            v.wait:IsShown() and v.wait.text.text == N.TAC_VIEW_MISSING and board.scene == nil and chips() == "1 *2 -3" and v.keep:IsShown() and not v.keep:IsEnabled()
+            and v.mode.text.text == N.TAC_VIEW_MODE_ENDED and tip(v.keep) == N.TAC_KEEP .. " / " .. N.TAC_VIEW_KEEP_WAIT, chips())
+    end
+
+    -- Opening by itself turned off.
+    check("tactics viewer: a box in the window chooses whether it opens by itself; it does until you say no",
+        v.auto.kind == "CheckButton" and v.auto.checked == true and v.auto.label.text == N.TAC_VIEW_AUTO and db().autoOpen == nil
+        and tip(v.auto) == N.TAC_VIEW_AUTO .. " / " .. N.TAC_VIEW_AUTO_TIP)
+    tick(v.auto, false)
+    v:Hide()
+    clearChat()
+    sounds = #SOUNDS_PLAYED
+    all(TAC.slideshow("sidv7", plan, 2), "Altine-Stormrage")
+    TAC.sent()
+    check("tactics viewer: with that turned off, a new slideshow gives one line in chat and the small button, and nothing else",
+        db().autoOpen == false and T.Watching() ~= nil and not v:IsShown() and pill:IsShown() and #chat == 1 and has(N.TAC_VIEW_CHAT:format("Altine", plan.name))
+        and #SOUNDS_PLAYED == sounds, chatText())
+    press(pill)
+    check("tactics viewer: ...the small button opens it", v:IsShown() and v.mode.text.text == N.TAC_VIEW_MODE_WATCH:format("Altine") and same(board.scene, plan.scenes[2]) and v.auto.checked == false)
+    TAC.receive("E\tsidv7", "Altine-Stormrage")
+    all(TAC.slideshow("sidv8", other, 1), "Altine-Stormrage")
+    TAC.sent()
+    check("tactics viewer: ...and a window that is open on what a leader showed goes on with the leader's next slideshow",
+        v:IsShown() and v.title.text == "Annen plan" and v.mode.text.text == N.TAC_VIEW_MODE_WATCH:format("Altine") and #chat == 1 and #SOUNDS_PLAYED == sounds)
+    do
+        local before = db()
+        TAC.fresh(TAC.copy(before))
+        check("tactics viewer: the choice is saved, and so is where the small button was moved to",
+            db() ~= before and db().autoOpen == false and v.auto.checked == false and select(1, pill:GetPoint(1)) == "BOTTOMLEFT" and select(4, pill:GetPoint(1)) == 300)
+        tick(v.auto, true)
+        check("tactics viewer: ...until it is ticked again", db().autoOpen == true)
+    end
+
+    -- Odd answers from the game, and the group going away.
+    do
+        local realLockdown = InCombatLockdown
+        InCombatLockdown = function() return SECRET end
+        UnitAffectingCombat = function() error("fight kaboom") end
+        v:Hide()
+        TAC.receive("E\tsidv8", "Altine-Stormrage")
+        local ok, problem = pcall(all, TAC.slideshow("sidv9", plan, 1), "Altine-Stormrage")
+        InCombatLockdown = realLockdown
+        UnitAffectingCombat = nil
+        check("tactics viewer: an answer about fights that the game hides, or a failing one, causes no error and counts as no fight",
+            ok and v:IsShown() and T.Watching() ~= nil and not has("Feil"), tostring(problem) .. chatText())
+        TAC.sent()
+    end
+    clearChat()
+    TAC.group({})
+    check("tactics viewer: when the group is gone, watching is over and the window stays, without an error",
+        T.Watching() == nil and v:IsShown() and v.mode.text.text == N.TAC_VIEW_MODE_ENDED and not pill:IsShown() and not has("Feil"), chatText())
+    flush()
+    TAC.sent()
+
+    -- Showing and watching, one after the other.
+    TAC.group({ altine("leader"), borin() }, { raid = true, assistant = true })
+    flush()
+    TAC.sent()
+    T.Preview(three(), 1)
+    press(v.present)
+    TAC.sent()
+    clock = clock + 10                                                    -- (at the same moment it would be a race, which the core settles)
+    all(TAC.slideshow("sidv10", other, 1), "Altine-Stormrage")
+    check("tactics viewer: when the leader starts a slideshow while you show one, yours ends and the window goes over to theirs",
+        T.Presenting() == nil and T.Watching() ~= nil and v:IsShown() and v.mode.text.text == N.TAC_VIEW_MODE_WATCH:format("Altine") and v.title.text == "Annen plan"
+        and v.keep:IsShown() and not v.stop:IsShown() and not v.present:IsShown() and not v.notice:IsShown())
+    TAC.sent()
+    T.Present(three())
+    check("tactics viewer: showing a tactic yourself while you watch puts the window on your own slideshow",
+        T.Watching() == nil and T.Presenting() ~= nil and v:IsShown() and v.mode.text.text == N.TAC_VIEW_MODE_SHOW and v.stop:IsShown() and not v.keep:IsShown()
+        and v.title.text == clean.name and board.scene == T.Presenting().plan.scenes[1])
+    T.StopPresenting()
+    flush()
+    TAC.sent()
+
+    -- A character that loses access.
+    do
+        DragonworldDB.memberCharacters["Mainy-Stormrage"] = nil
+        setGuild("Other Guild")
+        check("tactics viewer: a character that is no longer in the guild loses the window, and cannot open it",
+            not ns.HasAccess() and not v:IsShown() and T.Preview(three(), 1) == false and not v:IsShown() and T.ShowSlideshow() == false and not pill:IsShown())
+        setGuild("Dragonworld")
+        flush()
+    end
+
+    -- The words.
+    do
+        local tight, loose = {}, {}
+        T.Preview(three(), 1)
+        local function room(label)
+            local left, _, right = TAC.box(label, v)
+            return right - left
+        end
+        local wide, narrow, close, auto, mode = room(v.present.label), room(v.prev.label), room(v.close.label), room(v.auto.label), room(v.mode.text)
+        for _, language in ipairs(ns.LANGUAGES) do
+            local t = ns.strings[language.code]
+            local function fits(key, space, text)
+                if #(text or t[key]) * 6 > space then tight[#tight + 1] = language.code .. " " .. key end
+            end
+            for _, key in ipairs({ "TAC_PRESENT", "TAC_VIEW_END", "TAC_SURE", "TAC_KEEP", "TAC_KEPT", "TAC_VIEW_FOLLOW" }) do fits(key, wide) end
+            fits("TAC_VIEW_PREV", narrow)
+            fits("TAC_VIEW_NEXT", narrow)
+            fits("TAC_ED_CLOSE", close)
+            fits("TAC_VIEW_AUTO", 2 * auto)                               -- two lines beside the box
+            for _, key in ipairs({ "TAC_VIEW_MODE_PREVIEW", "TAC_VIEW_MODE_SHOW", "TAC_VIEW_MODE_ENDED" }) do fits(key, 3 * mode) end
+            fits("TAC_VIEW_MODE_WATCH", 3 * mode, t.TAC_VIEW_MODE_WATCH:format(("n"):rep(40)))
+            -- A text that names the tab or the small button uses their own words.
+            if not (t.TAC_VIEW_PILL:find(t.TAC_TITLE, 1, true) == 1 and t.TAC_VIEW_KEPT_NOW:find(t.TAC_TITLE, 1, true) and t.TAC_VIEW_PILL_X_SHOW:find(t.TAC_TITLE, 1, true)
+                    and t.TAC_VIEW_CHAT:find(t.TAC_TITLE, 1, true)) then
+                loose[#loose + 1] = language.code
+            end
+        end
+        check("tactics viewer: the text of every button, of the tick box and of the line at the top fits its place in all 7 languages",
+            #tight == 0 and wide == 242 and narrow == 112 and auto == 228, table.concat(tight, ", "))
+        check("tactics viewer: a text that names the tab or the small button uses their own words, in every language", #loose == 0, table.concat(loose, ", "))
+    end
+
+    v:Hide()
+    T.MAX_PLANS = maxPlans
+    TAC.fighting = nil
+    check("tactics viewer: nothing malformed was sent to the group, and nothing is left running",
+        #GROUP_WIRE_ERRORS == 0 and sendResult == 0 and inCombat == false and UnitAffectingCombat == nil and T.Presenting() == nil and T.Watching() == nil and not pill:IsShown(),
+        GROUP_WIRE_ERRORS[1])
+    TAC.windowsDone()
 end)()
 
 -- ============================== error handling ==================================

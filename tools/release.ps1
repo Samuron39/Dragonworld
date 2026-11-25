@@ -19,7 +19,9 @@
 #      Skriver også når den ble lagt ut (DW.RELEASED_AT), og hvis den har nye
 #      eller fjernede filer eller bilder siden forrige versjon, at den krever
 #      omstart av spillet (DW.RESTART_RELEASE). Ellers holder /reload.
-#   4. Committer alt, lager taggen vX.Y.Z og pusher til GitHub.
+#   4. Committer alt, lager taggen vX.Y.Z og pusher til GitHub (til main, også
+#      fra en worktree). Stopper før noe er gjort hvis GitHubs main har arbeid
+#      denne mappen mangler: da må "git merge origin/main" kjøres først.
 #   5. Lager Dragonworld.zip (mappen Dragonworld fra taggen, pluss
 #      Installer-Dragonworld.cmd øverst) og en GitHub release med zip-en og
 #      installeringsfilen. Oppdateringsprogrammet henter alltid siste release.
@@ -31,7 +33,9 @@
 param(
     [hashtable]$News,
     [string]$Notes = '',
-    [switch]$NoInstall
+    [switch]$NoInstall,
+    # The last line of the commit message: the session that releases names its own model.
+    [string]$CoAuthor = 'Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -41,7 +45,6 @@ $Toc = Join-Path $Addon 'Dragonworld.toc'
 $VersionFile = Join-Path $Addon 'Version.lua'
 $Dist = Join-Path $Root 'dist'
 $Game = 'D:\wow\World of Warcraft\_forever_\Interface\AddOns\Dragonworld'
-$CoAuthor = 'Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>'
 
 function Step([string]$text) { Write-Host "==> $text" -ForegroundColor Cyan }
 
@@ -92,6 +95,13 @@ try {
     if ($tocText -notmatch '(?m)^## Version:\s*(\d+)\.(\d+)\.(\d+)\s*$') { throw 'Fant ikke "## Version: X.Y.Z" i Dragonworld.toc' }
     $major, $minor, $patch = [int]$Matches[1], [int]$Matches[2], [int]$Matches[3]
     Invoke-Checked git @('fetch', '--tags', '--quiet', 'origin')
+    # Several sessions work at once, each in its own copy of the repository (a
+    # git worktree). A version released from a copy that lacks what is already
+    # on GitHub's main would take that work away from the guild again.
+    git merge-base --is-ancestor origin/main HEAD
+    if ($LASTEXITCODE -ne 0) {
+        throw 'GitHub (origin/main) has work that this folder lacks. Run "git merge origin/main" here, run the tests, and release again.'
+    }
     while ($true) {
         $version = "$major.$minor.$patch"
         git rev-parse -q --verify "refs/tags/v$version" *> $null
@@ -152,7 +162,10 @@ try {
         Invoke-Checked git @('commit', '--quiet', '-m', "Dragonworld $version", '-m', $CoAuthor)
     }
     Invoke-Checked git @('tag', '-a', "v$version", '-m', "Dragonworld $version")
-    Invoke-Checked git @('push', '--quiet', 'origin', 'HEAD')
+    # To main, also from a worktree on its own branch: main is where the next
+    # session and the other PC get the code from. (Checked above: nothing on
+    # GitHub's main is lost by this.)
+    Invoke-Checked git @('push', '--quiet', 'origin', 'HEAD:refs/heads/main')
     Invoke-Checked git @('push', '--quiet', 'origin', "v$version")
 
     # 5. Zip og release.

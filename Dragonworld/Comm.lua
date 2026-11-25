@@ -13,6 +13,9 @@
 --
 -- The game's rules: 255 characters per message, 10 messages "in the bank" per
 -- name, and one new one per second. Trial accounts cannot send at all.
+--
+-- A module that talks to the party or raid you are in, instead of the guild,
+-- uses DW.CreateGroupSender and DW.OnGroupMessage (further down).
 
 local ADDON_NAME, DW = ...
 local L = DW.L
@@ -118,6 +121,11 @@ end
 
 local handlers = {} -- [message name] = function(text, sender)
 
+-- The same for messages from the group you are in (see "Messages to the
+-- group" below), and the channels they may come on.
+local groupHandlers = {} -- [message name] = function(text, sender, channel)
+local GROUP_CHANNELS = { RAID = true, PARTY = true, INSTANCE_CHAT = true }
+
 -- For debugging: how the game wrote the sender on the last message from
 -- someone else, and on our own last echo.
 local lastSender, lastEcho
@@ -140,8 +148,19 @@ frame:SetScript("OnEvent", function(self, event, prefix, text, channel, sender)
     if type(prefix) ~= "string" or DW.IsSecret(prefix) then
         return
     end
-    local handler = handlers[prefix]
-    if not handler or channel ~= "GUILD" or not DW.IsMember() then
+    if type(channel) ~= "string" or DW.IsSecret(channel) then
+        return
+    end
+    -- Guild messages are for members; group messages for everyone who may
+    -- use the personal tabs (the group can hold people from outside the guild).
+    local handler, fromGroup
+    if channel == "GUILD" then
+        handler = DW.IsMember() and handlers[prefix]
+    elseif GROUP_CHANNELS[channel] then
+        handler = DW.HasAccess() and groupHandlers[prefix]
+        fromGroup = true
+    end
+    if not handler then
         return
     end
     if type(text) ~= "string" or type(sender) ~= "string" or DW.IsSecret(text) or DW.IsSecret(sender) then
@@ -153,13 +172,301 @@ frame:SetScript("OnEvent", function(self, event, prefix, text, channel, sender)
     end
     lastSender = sender
     -- A broken message from someone else must never cause an error for us.
-    local ok, problem = pcall(handler, text, sender)
+    local ok, problem
+    if fromGroup then
+        ok, problem = pcall(handler, text, sender, channel)
+    else
+        ok, problem = pcall(handler, text, sender)
+    end
     if not ok then
         DW.PrintError(L.ERROR, problem)
     end
 end)
 
 pcall(frame.RegisterEvent, frame, "CHAT_MSG_ADDON")
+
+-- Messages to the group ------------------------------------------------------------
+--
+-- For a module that talks to the party or raid you are in (Tactics). It works
+-- like the guild messages above (255 characters, 10 in the bank and one more
+-- per second, your own echo and secret values dropped, an error in the handler
+-- caught), with these differences:
+--   * A message goes out on "RAID" when you are in a raid, otherwise on
+--     "PARTY"; in a group the game put together for an instance, when you
+--     have no group of your own, on "INSTANCE_CHAT". Messages are taken only
+--     from the channels RAID, PARTY and INSTANCE_CHAT.
+--   * It is for everyone with DW.HasAccess(), not only for guild members.
+--   * What is waiting is dropped when you are in no group.
+--   * The game can refuse addon messages for a while (in a fight in an
+--     instance: C_ChatInfo.InChatMessagingLockdown() is true, or
+--     SendAddonMessage answers 11). Then what is waiting is kept and tried
+--     again every 5 seconds. After 2 minutes of that it is dropped.
+--
+-- How a module uses it:
+--   local Group = DW.CreateGroupSender("DragonworldXx")
+--   DW.OnGroupMessage("DragonworldXx", function(text, sender, channel) ... end)
+--
+--   Group(text)            queues a message (the same as Group.Send(text)).
+--                          Returns true if it was taken.
+--   Group(text, true)      ...ahead of the ordinary ones that wait. Urgent
+--                          messages keep their own order.
+--   Group.Waiting()        how many messages wait. Group.Waiting(pattern)
+--                          counts only those that match the Lua pattern.
+--   Group.Locked()         true when the game refused the last attempt (see
+--                          above). It turns false when a message goes out.
+--   Group.LastResult()     the game's answer to the last attempt: 0 sent,
+--                          3 and 8 slow down, 5 not in a group, 11 locked.
+--                          false when nothing was attempted (the game is in its
+--                          chat lockdown, or does not say whether you are in a
+--                          group), nil before the first attempt or when the
+--                          call failed.
+--   Group.Clear()          drops what waits. Group.Clear(pattern) drops only
+--                          the messages that match.
+--   Group.OnChange(fn)     fn(what) is called after something changed:
+--                            "sent"     one or more messages went out
+--                            "locked"   the game started refusing; we keep trying
+--                            "gaveup"   refused for 2 minutes: what waited was dropped
+--                            "nogroup"  what waited was dropped: you are in no group
+
+local LOCK_RETRY = 5      -- seconds between attempts while the game refuses
+local LOCK_GIVE_UP = 120  -- seconds of refusing before what waits is dropped
+
+-- What a game function answers, or nil when it is missing, fails or the
+-- answer is secret.
+local function GameSays(fn, ...)
+    if type(fn) ~= "function" then
+        return nil
+    end
+    local ok, value = pcall(fn, ...)
+    if not ok or DW.IsSecret(value) then
+        return nil
+    end
+    return value
+end
+
+-- The channel that reaches the group you are in. A group the game's group
+-- finder made is an "instance group", with a channel of its own: RAID and
+-- PARTY would answer "not in a group" there.
+local function GroupChannel()
+    local home, instance = LE_PARTY_CATEGORY_HOME, LE_PARTY_CATEGORY_INSTANCE
+    if home and instance and GameSays(IsInGroup, instance) == true and GameSays(IsInGroup, home) == false then
+        return "INSTANCE_CHAT"
+    end
+    return GameSays(IsInRaid) == true and "RAID" or "PARTY"
+end
+
+-- Sends one addon message and gives the game's answer (the last value it returns).
+local function Attempt(prefix, message, channel)
+    return (select(-1, C_ChatInfo.SendAddonMessage(prefix, message, channel)))
+end
+
+function DW.CreateGroupSender(prefix)
+    if C_ChatInfo and C_ChatInfo.RegisterAddonMessagePrefix then
+        pcall(C_ChatInfo.RegisterAddonMessagePrefix, prefix)
+    end
+
+    local urgent, queue = {}, {} -- the urgent messages go out first
+    local tokens, lastRefill = 10, nil
+    local scheduled = false
+    local locked = false      -- the game refused the last attempt
+    local lockedSince         -- GetTime() of the first refusal of what waits now
+    local lastResult
+    local listeners = {}
+    local Pump
+
+    local function Notify(what)
+        for _, listener in ipairs(listeners) do
+            local ok, problem = pcall(listener, what)
+            if not ok then
+                DW.PrintError(L.ERROR, problem)
+            end
+        end
+    end
+
+    local function Schedule(delay)
+        if scheduled then
+            return
+        end
+        scheduled = true
+        C_Timer.After(delay, function()
+            scheduled = false
+            Pump()
+        end)
+    end
+
+    local function Drop()
+        urgent, queue = {}, {}
+        lockedSince = nil
+    end
+
+    -- The game does not take addon messages right now.
+    local function Refused()
+        local now = GetTime()
+        local wasLocked = locked
+        locked = true
+        lockedSince = lockedSince or now
+        if now - lockedSince >= LOCK_GIVE_UP then
+            Drop()
+            Notify("gaveup")
+        else
+            Schedule(LOCK_RETRY)
+            if not wasLocked then
+                Notify("locked")
+            end
+        end
+    end
+
+    Pump = function()
+        if #urgent + #queue == 0 then
+            return
+        end
+        if not DW.HasAccess() or not (C_ChatInfo and C_ChatInfo.SendAddonMessage) then
+            Drop()
+            return
+        end
+        local inGroup = GameSays(IsInGroup)
+        if inGroup == false then
+            Drop()
+            locked = false
+            Notify("nogroup")
+            return
+        end
+        -- (No plain answer about the group counts as refused too: keep and retry.)
+        if inGroup ~= true or GameSays(C_ChatInfo.InChatMessagingLockdown) == true then
+            lastResult = false
+            Refused()
+            return
+        end
+
+        local now = GetTime()
+        tokens = math.min(10, tokens + (now - (lastRefill or now)))
+        lastRefill = now
+
+        local sent = false
+        while #urgent + #queue > 0 and tokens >= 1 do
+            local list = #urgent > 0 and urgent or queue
+            local ok, result = pcall(Attempt, prefix, list[1], GroupChannel())
+            if not ok or DW.IsSecret(result) then
+                result = nil
+            end
+            lastResult = result
+            if result == 0 or result == true then
+                table.remove(list, 1)
+                tokens = tokens - 1
+                sent = true
+                locked, lockedSince = false, nil
+            elseif result == 5 then
+                Drop() -- not in a group
+                locked = false
+                Notify("nogroup")
+                return
+            elseif result == 1 or result == 2 or result == 4 then
+                table.remove(list, 1) -- the message is invalid; it will never be sent
+            elseif result == 3 or result == 8 then
+                tokens = 0 -- throttled: wait a bit
+                break
+            else
+                -- 11 (the addon message lockdown), or an answer we do not
+                -- know: the game did not take it.
+                if sent then
+                    Notify("sent")
+                end
+                Refused()
+                return
+            end
+        end
+
+        if #urgent + #queue > 0 then
+            Schedule(1.2)
+        else
+            lockedSince = nil
+        end
+        if sent then
+            Notify("sent")
+        end
+    end
+
+    local function Send(message, first)
+        if type(message) ~= "string" or #message > 255 then
+            return false
+        end
+        for _, list in ipairs({ urgent, queue }) do
+            for _, waiting in ipairs(list) do
+                if waiting == message then
+                    return true -- already in the queue
+                end
+            end
+        end
+        local list = first and urgent or queue
+        list[#list + 1] = message
+        -- While the game refuses, the next attempt is the planned one, not
+        -- one more for every message that is queued.
+        if not (locked and scheduled) then
+            Pump()
+        end
+        return true
+    end
+
+    local function Waiting(pattern)
+        if pattern == nil then
+            return #urgent + #queue
+        end
+        local count = 0
+        for _, list in ipairs({ urgent, queue }) do
+            for _, waiting in ipairs(list) do
+                if waiting:find(pattern) then
+                    count = count + 1
+                end
+            end
+        end
+        return count
+    end
+
+    local function Clear(pattern)
+        if pattern == nil then
+            Drop()
+            return
+        end
+        for _, list in ipairs({ urgent, queue }) do
+            for index = #list, 1, -1 do
+                if list[index]:find(pattern) then
+                    table.remove(list, index)
+                end
+            end
+        end
+        if #urgent + #queue == 0 then
+            lockedSince = nil
+        end
+    end
+
+    return setmetatable({
+        Send = Send,
+        Waiting = Waiting,
+        Clear = Clear,
+        Locked = function()
+            return locked
+        end,
+        LastResult = function()
+            return lastResult
+        end,
+        OnChange = function(listener)
+            if type(listener) == "function" then
+                listeners[#listeners + 1] = listener
+            end
+        end,
+    }, {
+        __call = function(_, message, first)
+            return Send(message, first)
+        end,
+    })
+end
+
+-- Registers who gets the group messages with a given name. The function is
+-- only called for messages from someone else, on one of the group channels.
+-- It must check itself that the sender is in the group, and what they may do.
+function DW.OnGroupMessage(prefix, handler)
+    groupHandlers[prefix] = handler
+end
 
 -- What we have received ----------------------------------------------------------
 --

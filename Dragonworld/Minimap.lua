@@ -9,7 +9,8 @@
 -- the right side (see "The tab in the guild window"), in the Professions window shortcuts to
 -- the Dragonworld tabs Professions and Materialer, in Looking For Group a
 -- shortcut to Dungeons, and in the Legacy window a shortcut to Achievements (see
--- "Shortcuts under the game's side tabs").
+-- "Shortcuts under the game's side tabs"). The Dragonworld tab opens the whole
+-- addon; the other shortcuts open only their pane, beside the game window.
 
 local ADDON_NAME, DW = ...
 local L = DW.L
@@ -166,8 +167,9 @@ end
 -- SpellBook-SkillLineTab, the icon and highlight when the mouse is over, 20 points below
 -- the tab above. A click does the same as the minimap button: opens Dragonworld,
 -- or the tab with what is new. It also blinks like the other buttons.
--- Below it comes one more, made the same way, that opens the Achievements tab
--- (with the guild shield in the corner, so you can see it is Dragonworld's).
+-- Below it comes one more, made the same way, that opens the Achievements pane
+-- beside the guild window (the compact view in MainWindow.lua; it has the guild
+-- shield in the corner, so you can see it is Dragonworld's).
 -- They are only shown when the guild (not another community) is chosen in the window.
 --
 -- The window is only loaded when it is first opened, so the tab is made then. We
@@ -179,6 +181,9 @@ local WINDOW_TABS = { "GuildPreferredPlaySettingsTab", "GuildInfoTab", "GuildBen
 
 local guildTab, achievementsTab
 local ACHIEVEMENTS_ICON = "Interface\\Icons\\Achievement_Level_60" -- the same as the module's
+-- How far the window's tabs stick out on its right side: 32 wide, and their
+-- frame art a little more. The compact view opens past them.
+local GUILD_TAB_ROOM = 44
 
 local function LowestTab(window)
     for _, key in ipairs(WINDOW_TABS) do
@@ -252,7 +257,8 @@ local function CreateSquareTab(window, name, icon)
     return tab
 end
 
--- The Achievements tab: opens Dragonworld on that tab.
+-- The Achievements tab: opens the Achievements pane beside the guild window
+-- (the compact view), and closes it on a second click.
 local function CreateAchievementsTab(window)
     local tab = CreateSquareTab(window, "DragonworldGuildAchievementsTab", ACHIEVEMENTS_ICON)
     tab.badge = tab:CreateTexture(nil, "OVERLAY", nil, 7)
@@ -260,10 +266,18 @@ local function CreateAchievementsTab(window)
     tab.badge:SetPoint("BOTTOMLEFT", tab.icon, "BOTTOMLEFT", -2, -2)
     tab.badge:SetTexture(DW.ICON)
 
+    -- Lit while its pane is open, like the game's tab for the page that is
+    -- showing (the checked texture of RightSideTabTemplate).
+    tab.checked = tab:CreateTexture(nil, "OVERLAY")
+    tab.checked:SetAllPoints(tab)
+    tab.checked:SetTexture("Interface\\Buttons\\CheckButtonHilight")
+    tab.checked:SetBlendMode("ADD")
+    tab.checked:Hide()
+
     tab:SetScript("OnClick", function()
         PlayClickSound()
-        if DW.OpenModule and DW.IsMember() then
-            DW.OpenModule("achievements")
+        if DW.OpenCompact and DW.IsMember() then
+            DW.OpenCompact("achievements", window, GUILD_TAB_ROOM)
         end
     end)
     tab:SetScript("OnEnter", function(self)
@@ -338,10 +352,11 @@ DW.OnMembershipChanged(UpdateGuildTab)
 -- Materialer in the Professions window, Dungeons in Looking For Group, Achievements
 -- in the Legacy window. They are made
 -- with the game's own template, so they look exactly the same, with a small guild shield
--- in the corner so you can see they are Dragonworld's. A click opens Dragonworld on
--- that tab. The Dungeons shortcut blinks when someone in the guild is open to
--- dungeons at your level. The windows are only loaded when they are opened, so the
--- shortcuts are made then.
+-- in the corner so you can see they are Dragonworld's. A click opens that tab's pane
+-- beside the game window (the compact view in MainWindow.lua), a second click closes
+-- it, and the shortcut looks selected while its pane is open. The Dungeons shortcut
+-- blinks when someone in the guild is open to dungeons at your level. The windows are
+-- only loaded when they are opened, so the shortcuts are made then.
 
 local SIDE_WINDOWS = {
     {
@@ -480,16 +495,35 @@ local function CreateSideTab(window, first, shortcut)
     end
     tab.tooltipText = "Dragonworld"
 
+    -- A click opens the pane beside this window, past its side tabs (they
+    -- stick out as far as a tab is wide).
     if tab.SetCustomOnMouseUpHandler then
         tab:SetCustomOnMouseUpHandler(function(self, button, upInside)
-            if button == "LeftButton" and upInside ~= false and DW.OpenModule and DW.CanUseModule(self.module) then
-                DW.OpenModule(self.module)
+            if button == "LeftButton" and upInside ~= false and DW.OpenCompact and DW.CanUseModule(self.module) then
+                DW.OpenCompact(self.module, window, self:GetWidth())
             end
         end)
     end
     tab:Hide()
     return tab
 end
+
+-- The shortcut whose pane is open in the compact view looks selected, like
+-- the game's own tab for the page that is showing.
+local function UpdateShortcutsChecked()
+    local id, dockedTo = DW.CompactView()
+    for _, side in ipairs(SIDE_WINDOWS) do
+        for _, tab in ipairs(side.created or {}) do
+            if tab.SetChecked then
+                tab:SetChecked(id ~= nil and id == tab.module and dockedTo == tab:GetParent())
+            end
+        end
+    end
+    if achievementsTab then
+        achievementsTab.checked:SetShown(id == "achievements" and dockedTo == achievementsTab:GetParent())
+    end
+end
+DW.OnCompactChanged(UpdateShortcutsChecked)
 
 -- Creates the shortcuts in a window when it exists (is loaded), once.
 local function SetUpSideTabs(side)

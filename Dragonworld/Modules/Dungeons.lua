@@ -380,6 +380,8 @@ function DW.OpenDungeonPicker()
     if not window or not DW.IsMember() then
         return
     end
+    -- Laid out for the full window: the compact view becomes it first.
+    DW.ExpandWindow()
     if not picker then
         picker = CreatePicker(window)
     end
@@ -2292,6 +2294,8 @@ function DW.OpenGroupForm()
     if not window or not DW.IsMember() then
         return
     end
+    -- Laid out for the full window: the compact view becomes it first.
+    DW.ExpandWindow()
     local p = G.form or G.CreateForm(window)
     DW.HideOverlays("DragonworldGroupForm")
     local mine = G.Mine()

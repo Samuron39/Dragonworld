@@ -16,6 +16,10 @@
 -- version and the order of the tabs. The first time the window is opened, the
 -- first-time setup is shown instead of the modules: the language choice, and
 -- then flashing and the action bar button.
+--
+-- The same window can also be a compact view: a slim title bar and one
+-- module's pane, beside the game window it was opened from (see "The compact
+-- view").
 
 local ADDON_NAME, DW = ...
 local L = DW.L
@@ -39,6 +43,13 @@ local BODY_WIDTH = WIDTH - 2 * PAD
 local BODY_HEIGHT = HEIGHT - HEADER_HEIGHT - 8 - PAD
 local CONTENT_WIDTH = BODY_WIDTH - SIDEBAR_WIDTH - 10
 
+-- The compact view is the pane (CONTENT_WIDTH x BODY_HEIGHT, the size every
+-- pane is laid out for) with a slim title bar over it: 632 x 480.
+local COMPACT_PAD = 10 -- from the window's edge to the pane
+local COMPACT_BAR = 36 -- from the window's top to the pane: the title bar
+local COMPACT_WIDTH = CONTENT_WIDTH + 2 * COMPACT_PAD
+local COMPACT_HEIGHT = COMPACT_BAR + BODY_HEIGHT + COMPACT_PAD
+
 local SETTINGS = "settings" -- the settings page; not a module
 
 local window
@@ -46,6 +57,8 @@ local moduleChips = {} -- chips for the modules, top to bottom
 local panels = {}      -- [module id or SETTINGS] = the frame with the content
 local selected         -- what is shown now
 local pending          -- what to open when the language is chosen
+local compact = false  -- the window is the compact view (only while it is shown)
+local compactDock      -- the game window the compact view was opened from
 
 -- Chips -----------------------------------------------------------------------
 
@@ -275,7 +288,7 @@ end
 
 -- The order before the player has chosen (chosen by the guild leader).
 local DEFAULT_TAB_ORDER = {
-    "home", "roster", "guildchat", "dungeons", "quest", "guildbank", "events", "achievements", "professions", "materialer", "ryddesekk", "keybinds", "forslag",
+    "home", "roster", "guildchat", "dungeons", "tactics", "quest", "guildbank", "events", "achievements", "professions", "materialer", "ryddesekk", "keybinds", "forslag",
 }
 
 -- The modules that have a tab, in the chosen order (or the default order).
@@ -327,7 +340,14 @@ end
 -- Lays out the tabs on the left edge in the chosen order. If there are too many
 -- to fit above Settings, they move a little closer together.
 -- On an alt outside the guild only the personal tabs are shown (Core.lua).
+-- The compact view has no tabs at all.
 local function LayoutChips()
+    if compact then
+        for _, chip in ipairs(moduleChips) do
+            chip:Hide()
+        end
+        return
+    end
     local position = {}
     for index, id in ipairs(OrderedModuleIDs()) do
         position[id] = index
@@ -1071,12 +1091,13 @@ local function RefreshStatusPills()
         return
     end
     local current = DW.GetMyStatus()
-    -- The status is shared with the guild, so alts outside it have none.
-    local member = DW.IsMember()
+    -- The status is shared with the guild, so alts outside it have none. The
+    -- compact view has no room for them.
+    local show = DW.IsMember() and not compact
     for _, pill in ipairs(window.statusPills) do
         pill.label:SetText(L[pill.status.key])
         pill:SetSelected(pill.status.code == current)
-        pill:SetShown(member)
+        pill:SetShown(show)
     end
 end
 
@@ -1142,7 +1163,8 @@ local function RefreshPinnedStrip()
     end
     local strip = window.pinned
     strip.id, strip.write = nil, nil
-    if not DW.IsMember() or not DW.PinnedAnnouncements then
+    -- Not in the compact view: it has no header to show it in.
+    if compact or not DW.IsMember() or not DW.PinnedAnnouncements then
         strip:Hide()
         return
     end
@@ -1235,6 +1257,241 @@ if DW.OnOfficersChanged then
     DW.OnOfficersChanged(RefreshPinnedStrip)
 end
 
+-- The compact view --------------------------------------------------------------
+--
+--   +------------------------------------------------+
+--   | [shield] Dragonworld: Dungeons  [Open ...] [x] |
+--   | +--------------------------------------------+ |
+--   | |                                            | |
+--   | |   the pane of that one module              | |
+--   | |                                            | |
+--   | +--------------------------------------------+ |
+--   +------------------------------------------------+
+--
+-- The shortcuts Dragonworld has put in the game's own windows (Minimap.lua)
+-- open the main window like this: no header, no status buttons, no tabs on
+-- the left, only the one pane, placed beside the game window it was opened
+-- from. It is the same window, so the panes, the alerts and DW.IsModuleShown
+-- work as always. It closes when that game window closes, and the button in
+-- its title bar turns it into the full window on the same tab. Every other
+-- way of opening Dragonworld gives the full window.
+--
+-- The view docks every time it opens: it may be dragged, but that place is
+-- not remembered, and the full window keeps its own saved place.
+
+local DOCK_GAP = 4   -- between the game window's side tabs and the view
+local DOCK_DROP = 24 -- laid over the game window: this far down, so its title bar stays free
+local COMPACT_BUTTON_WIDTH = 160
+
+-- Puts the window where the full window was moved to.
+local function PlaceFull(f)
+    f:ClearAllPoints()
+    local saved = type(DragonworldDB) == "table" and DragonworldDB.window
+    if type(saved) == "table" and type(saved.point) == "string" then
+        f:SetPoint(saved.point, UIParent, saved.relativePoint or saved.point, saved.x or 0, saved.y or 0)
+    else
+        f:SetPoint("CENTER")
+    end
+end
+
+-- Called when the compact view opens, shows another pane, closes or becomes
+-- the full window (the shortcuts show which pane is open).
+local compactListeners = {}
+
+function DW.OnCompactChanged(callback)
+    compactListeners[#compactListeners + 1] = callback
+end
+
+local function FireCompactChanged()
+    for _, callback in ipairs(compactListeners) do
+        local ok, problem = pcall(callback)
+        if not ok then
+            DW.PrintError(L.ERROR, problem)
+        end
+    end
+end
+
+-- Writes the title bar's text: which pane this is, in the chosen language.
+local function RefreshCompactBar()
+    local bar = window and window.compactBar
+    if not bar then
+        return
+    end
+    local module = selected and DW.modules[selected]
+    bar.title:SetText(module and ("Dragonworld: " .. DW.ModuleTitle(module)) or "Dragonworld")
+    bar.full.label:SetText(L.COMPACT_FULL)
+end
+
+-- The title bar: the small guild shield, "Dragonworld: <tab>" and the button
+-- that opens the whole addon. The window's own close button stays where it
+-- is, in the corner. The bar takes no mouse, so the window can be dragged by it.
+local function CreateCompactBar(f)
+    local bar = CreateFrame("Frame", nil, f)
+    bar:SetPoint("TOPLEFT", 0, 0)
+    bar:SetPoint("TOPRIGHT", 0, 0)
+    bar:SetHeight(COMPACT_BAR)
+
+    bar.logo = bar:CreateTexture(nil, "OVERLAY")
+    bar.logo:SetSize(22, 22)
+    bar.logo:SetPoint("TOPLEFT", COMPACT_PAD, -7)
+    bar.logo:SetTexture(DW.ICON)
+
+    bar.full = DW.CreateChip(bar, COMPACT_BUTTON_WIDTH, 22)
+    bar.full:SetPoint("TOPRIGHT", -34, -7) -- left of the close button
+    bar.full.label:SetJustifyH("CENTER")
+    bar.full:SetScript("OnClick", function()
+        GameTooltip:Hide()
+        DW.ExpandWindow()
+    end)
+    bar.full:HookScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_BOTTOM")
+        GameTooltip:AddLine(L.COMPACT_FULL)
+        GameTooltip:AddLine(L.COMPACT_FULL_TIP, 1, 1, 1, true)
+        GameTooltip:Show()
+    end)
+    bar.full:HookScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
+
+    bar.title = bar:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    bar.title:SetPoint("LEFT", bar.logo, "RIGHT", 6, 0)
+    bar.title:SetPoint("RIGHT", bar.full, "LEFT", -8, 0)
+    bar.title:SetJustifyH("LEFT")
+    bar.title:SetWordWrap(false)
+
+    bar:Hide()
+    return bar
+end
+
+-- Lays the window out as the compact view (on) or as the full window (off).
+-- Back as the full window, it is also back at the full window's own place.
+local function SetCompact(on)
+    on = on and true or false
+    if not window or compact == on then
+        return
+    end
+    compact = on
+    local f = window
+    if on and not f.compactBar then
+        f.compactBar = CreateCompactBar(f)
+    end
+    f:SetSize(on and COMPACT_WIDTH or WIDTH, on and COMPACT_HEIGHT or HEIGHT)
+    f.logo:SetShown(not on)
+    f.title:SetShown(not on)
+    f.subtitle:SetShown(not on)
+    f.headerLine:SetShown(not on)
+    f.settingsChip:SetShown(not on)
+    f.compactBar:SetShown(on)
+
+    -- The pane keeps its size; only what is around it changes.
+    f.body:ClearAllPoints()
+    f.content:ClearAllPoints()
+    if on then
+        f.body:SetPoint("TOPLEFT", COMPACT_PAD, -COMPACT_BAR)
+        f.body:SetSize(CONTENT_WIDTH, BODY_HEIGHT)
+        f.content:SetPoint("TOPLEFT", 0, 0)
+    else
+        f.body:SetPoint("TOPLEFT", PAD, -(HEADER_HEIGHT + 8))
+        f.body:SetSize(BODY_WIDTH, BODY_HEIGHT)
+        f.content:SetPoint("TOPLEFT", SIDEBAR_WIDTH + 10, 0)
+        compactDock = nil
+        PlaceFull(f)
+    end
+    LayoutChips()
+    RefreshStatusPills()
+    RefreshPinnedStrip()
+end
+
+-- The full window again, if it was the compact view.
+local function LeaveCompact()
+    if compact then
+        SetCompact(false)
+        FireCompactChanged()
+    end
+end
+
+-- A number the addon may calculate with. The game may hand out secret values
+-- for the size and place of its own frames.
+local function Plain(value)
+    return type(value) == "number" and not DW.IsSecret(value)
+end
+
+-- Where the view goes beside a game window: "RIGHT" (past its side tabs, which
+-- stick out sideRoom, in that window's own scale) with how far, "LEFT" when
+-- the screen has no room on the right, and when neither side has room over
+-- the window: "OVER" (against its right edge, so the side tabs stay free) or
+-- "OVERLEFT" (from its left edge, when the other would leave the screen).
+-- Nothing when the game will not say where its window is.
+local function DockSide(gameWindow, sideRoom)
+    local left, width, scale = gameWindow:GetLeft(), gameWindow:GetWidth(), gameWindow:GetEffectiveScale()
+    local screen, screenScale, ownScale = UIParent:GetWidth(), UIParent:GetEffectiveScale(), window:GetEffectiveScale()
+    if not (Plain(left) and Plain(width) and Plain(scale) and Plain(screen) and Plain(screenScale) and Plain(ownScale)) then
+        return nil
+    end
+    if width <= 0 or scale <= 0 or screen <= 0 or screenScale <= 0 or ownScale <= 0 then
+        return nil
+    end
+    -- Everything in screen pixels.
+    local tabs = (Plain(sideRoom) and sideRoom > 0 and sideRoom or 0) * scale
+    local need = (DOCK_GAP + COMPACT_WIDTH) * ownScale
+    local leftEdge = left * scale
+    local rightEdge = leftEdge + width * scale
+    if rightEdge + tabs + need <= screen * screenScale then
+        return "RIGHT", tabs / ownScale + DOCK_GAP
+    end
+    if leftEdge - need >= 0 then
+        return "LEFT"
+    end
+    if rightEdge - COMPACT_WIDTH * ownScale >= 0 then
+        return "OVER"
+    end
+    return "OVERLEFT"
+end
+
+-- Places the compact view beside the game window, tops level (or over it, a
+-- little down so its title bar stays free). Our window is anchored to the
+-- game's, never the other way round, and it is clamped to the screen. Without
+-- a game window, or when its place can't be read, the view goes in the middle
+-- of the screen.
+local function PlaceCompact(gameWindow, sideRoom)
+    local f = window
+    local placed = false
+    if gameWindow then
+        local ok, side, x = pcall(DockSide, gameWindow, sideRoom)
+        f:ClearAllPoints()
+        if ok and side == "RIGHT" then
+            placed = pcall(f.SetPoint, f, "TOPLEFT", gameWindow, "TOPRIGHT", x, 0)
+        elseif ok and side == "LEFT" then
+            placed = pcall(f.SetPoint, f, "TOPRIGHT", gameWindow, "TOPLEFT", -DOCK_GAP, 0)
+        elseif ok and side == "OVER" then
+            placed = pcall(f.SetPoint, f, "TOPRIGHT", gameWindow, "TOPRIGHT", 0, -DOCK_DROP)
+        elseif ok and side == "OVERLEFT" then
+            placed = pcall(f.SetPoint, f, "TOPLEFT", gameWindow, "TOPLEFT", 0, -DOCK_DROP)
+        end
+    end
+    if not placed then
+        f:ClearAllPoints()
+        f:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+    end
+end
+
+-- The view closes with the game window it belongs to. The game's frame is
+-- only hooked (once), and nothing is written on it. OnHide also runs when
+-- the whole interface is hidden for a moment (Alt+Z, a cinematic): the game
+-- window is still open then (IsShown), and so is the view.
+local watchedDocks = {}
+
+local function WatchDock(gameWindow)
+    if watchedDocks[gameWindow] then
+        return
+    end
+    watchedDocks[gameWindow] = pcall(gameWindow.HookScript, gameWindow, "OnHide", function(self)
+        if compact and compactDock == self and window and not self:IsShown() then
+            window:Hide()
+        end
+    end)
+end
+
 -- The window ------------------------------------------------------------------
 
 local function CreateWindow()
@@ -1254,12 +1511,7 @@ local function CreateWindow()
     f:Hide()
 
     -- Remember where the window was moved to.
-    local saved = type(DragonworldDB) == "table" and DragonworldDB.window
-    if type(saved) == "table" and type(saved.point) == "string" then
-        f:SetPoint(saved.point, UIParent, saved.relativePoint or saved.point, saved.x or 0, saved.y or 0)
-    else
-        f:SetPoint("CENTER")
-    end
+    PlaceFull(f)
     f:SetMovable(true)
     f:SetClampedToScreen(true)
     f:EnableMouse(true)
@@ -1269,9 +1521,23 @@ local function CreateWindow()
     end)
     f:SetScript("OnDragStop", function(self)
         self:StopMovingOrSizing()
+        -- The compact view docks again the next time it opens: only the full
+        -- window's place is remembered.
+        if compact then
+            return
+        end
         local point, _, relativePoint, x, y = self:GetPoint(1)
         if point and type(DragonworldDB) == "table" then
             DragonworldDB.window = { point = point, relativePoint = relativePoint, x = x, y = y }
+        end
+    end)
+    -- A closed window is always laid out as the full one, so whatever opens
+    -- it next (or sizes itself after it) finds it that way. OnHide also runs
+    -- when the whole interface is hidden for a moment (Alt+Z, a cinematic):
+    -- the window is still open then, and stays what it was.
+    f:SetScript("OnHide", function(self)
+        if not self:IsShown() then
+            LeaveCompact()
         end
     end)
 
@@ -1308,6 +1574,7 @@ local function CreateWindow()
     line:SetHeight(1)
     line:SetPoint("TOPLEFT", PAD, -HEADER_HEIGHT)
     line:SetPoint("TOPRIGHT", -PAD, -HEADER_HEIGHT)
+    f.headerLine = line
 
     -- Everything below the top: chips on the left, content on the right.
     f.body = CreateFrame("Frame", nil, f)
@@ -1355,6 +1622,7 @@ local function ApplyLanguage()
     window.subtitle:SetText(L.SUBTITLE:upper())
     RefreshStatusPills()
     RefreshPinnedStrip()
+    RefreshCompactBar()
     if panels[SETTINGS] then
         panels[SETTINGS]:Refresh()
     end
@@ -1379,22 +1647,43 @@ DW.OnMembershipChanged(function()
     RefreshPinnedStrip()
     if window:IsShown() and window.body:IsShown() and selected and selected ~= SETTINGS
         and not DW.CanUseModule(selected) then
-        Select(FirstModuleID())
+        if compact then
+            -- The compact view is that one pane: without it there is nothing to show.
+            window:Hide()
+        else
+            Select(FirstModuleID())
+        end
     end
 end)
 
 -- Modules that want to show something when the window opens (e.g. a reminder
 -- the first time) register here. The function gets the window, and is called
 -- every time the window opens with the modules visible, that is, after the
--- language is chosen.
+-- language is chosen. Its second value is true when the window opened as the
+-- compact view: then nothing may be drawn over it (it is smaller), and what
+-- was drawn over the full window must be hidden.
 local openedCallbacks = {}
 
 function DW.OnWindowOpened(callback)
     openedCallbacks[#openedCallbacks + 1] = callback
 end
 
--- Shows the window. id is the module (or SETTINGS) to show; without id it
--- shows what was shown last, or the first module.
+local function RunOpenedCallbacks()
+    -- The reminders are about the guild.
+    if not DW.IsMember() then
+        return
+    end
+    for _, callback in ipairs(openedCallbacks) do
+        local ok, problem = pcall(callback, window, compact)
+        if not ok then
+            DW.PrintError(L.ERROR, problem)
+        end
+    end
+end
+
+-- Shows the full window. id is the module (or SETTINGS) to show; without id
+-- it shows what was shown last, or the first module. If the compact view is
+-- showing, it becomes the full window.
 ShowWindow = function(id)
     if not DW.GuardPersonal() then
         return
@@ -1408,6 +1697,7 @@ ShowWindow = function(id)
         window = CreateWindow()
         ApplyLanguage()
     end
+    LeaveCompact()
     LayoutChips()
     RefreshStatusPills()
     RefreshPinnedStrip()
@@ -1471,17 +1761,7 @@ ShowWindow = function(id)
     end
     window.body:Show()
     Select(id or selected or FirstModuleID())
-
-    -- The reminders are about the guild.
-    if not DW.IsMember() then
-        return
-    end
-    for _, callback in ipairs(openedCallbacks) do
-        local ok, problem = pcall(callback, window)
-        if not ok then
-            DW.PrintError(L.ERROR, problem)
-        end
-    end
+    RunOpenedCallbacks()
 end
 
 -- Overlays ----------------------------------------------------------------------
@@ -1528,26 +1808,116 @@ end
 
 -- Public ------------------------------------------------------------------------
 
--- Opens the main window, or closes it if it is open.
+-- Opens the main window, or closes it if it is open. If the compact view is
+-- showing, it becomes the full window (a click on the minimap button should
+-- not just make it go away).
 function DW.ToggleMainWindow()
-    if window and window:IsShown() then
+    if window and window:IsShown() and not compact then
         window:Hide()
     else
         ShowWindow()
     end
 end
 
--- Opens the main window on a specific module.
+-- Opens the main window (the full one) on a specific module.
 function DW.OpenModule(id)
     ShowWindow(id)
 end
 
 -- Like OpenModule, but closes the window if the module is already shown.
 function DW.ToggleModule(id)
-    if DW.IsModuleShown(id) then
+    if DW.IsModuleShown(id) and not compact then
         window:Hide()
     else
         ShowWindow(id)
+    end
+end
+
+-- Are the first-time steps (language, intro and choices, role) still waiting?
+local function FirstTimePending()
+    return not DW.HasChosenLanguage() or not IsSetupDone() or (DW.NeedsRoleChoice ~= nil and DW.NeedsRoleChoice() and true or false)
+end
+
+-- Opens the compact view on a module: only its pane, beside gameWindow (the
+-- game's own window the shortcut sits in), which it then closes together
+-- with. sideRoom is how far that window's side tabs stick out on its right
+-- side. Called again for the pane that is showing, it closes the view; for
+-- another pane, it switches. Returns true if the compact view is showing
+-- that module afterwards.
+-- While the first-time steps are waiting, or for a tab this character may
+-- not use, it does exactly what DW.OpenModule does (the full window and its
+-- prompts, or the explanation in chat).
+function DW.OpenCompact(id, gameWindow, sideRoom)
+    local module = DW.modules[id]
+    if not (module and module.CreatePanel) or not DW.HasAccess() or not DW.CanUseModule(module) or FirstTimePending() then
+        ShowWindow(id)
+        return false
+    end
+    -- The whole addon is already open: show the tab there. A window that
+    -- shrank and jumped to the game window under the mouse would be a surprise.
+    if window and window:IsShown() and not compact then
+        ShowWindow(id)
+        return false
+    end
+    if type(gameWindow) ~= "table" then
+        gameWindow = nil
+    end
+    if compact and selected == id and compactDock == gameWindow then
+        window:Hide()
+        return false
+    end
+    if not window then
+        window = CreateWindow()
+        ApplyLanguage()
+    end
+    -- What lies over the main window is laid out for the full one.
+    DW.HideOverlays()
+    local moved = not compact or compactDock ~= gameWindow
+    SetCompact(true)
+    compactDock = gameWindow
+    if moved then
+        PlaceCompact(gameWindow, sideRoom)
+    end
+    if gameWindow then
+        WatchDock(gameWindow)
+    end
+    -- The first-time pages are done, but one may still be marked as shown.
+    for _, key in ipairs({ "prompt", "intro", "setup", "rolePrompt" }) do
+        if window[key] then
+            window[key]:Hide()
+        end
+    end
+    pending = nil
+    window:Show()
+    window.body:Show()
+    Select(id)
+    RefreshCompactBar()
+    RunOpenedCallbacks()
+    FireCompactChanged()
+    return compact and selected == id
+end
+
+-- Turns the compact view into the full window, on the same tab: the button
+-- in its title bar. The windows that lie over the main window are laid out
+-- for the full one, so they call this before they open. True if it changed.
+function DW.ExpandWindow()
+    if not compact then
+        return false
+    end
+    ShowWindow(selected)
+    return not compact
+end
+
+-- Is the main window showing as the compact view?
+function DW.IsCompact()
+    return compact
+end
+
+-- The module the compact view shows and the game window it belongs to, or
+-- nothing when it is not showing.
+function DW.CompactView()
+    if compact then
+        return selected, compactDock
     end
 end
 

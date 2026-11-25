@@ -746,6 +746,8 @@ function DW.ShowMemberCard(member)
     if not window or type(member) ~= "table" then
         return
     end
+    -- Laid out for the full window: the compact view becomes it first.
+    DW.ExpandWindow()
     if not card then
         CreateCard(window)
     end

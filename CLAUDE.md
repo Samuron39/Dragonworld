@@ -35,7 +35,11 @@ From PowerShell:
 - `-News` (required): what is new in this version, in a sentence or two for every language in `DW.LANGUAGES` (the script reads the list from Locales.lua and stops if one is missing), at most 220 bytes each and no `|`. Members with an older version see it in the update window in the game ("Nytt i 0.24.0: ..."), and everyone sees it once in chat after updating. Write it for players: what they will notice, not how it is built. Use the names of tabs and buttons as the addon shows them in that language (look them up in Locales.lua, for example `RO_TITLE`: Roster / Medlemmer / Leden).
 - `-Notes`: the longer English text for the GitHub release page. Without it, the English news is used.
 
-The script runs the tests, writes `Version.lua` (`DW.RELEASE`, `DW.RELEASED_AT`, `DW.RESTART_RELEASE`, `DW.RELEASE_NEWS`), commits, tags, pushes, creates the GitHub release and installs the version in the game.
+- `-CoAuthor`: the last line of the commit message, naming the model of the session that releases.
+
+The script runs the tests, writes `Version.lua` (`DW.RELEASE`, `DW.RELEASED_AT`, `DW.RESTART_RELEASE`, `DW.RELEASE_NEWS`), commits, tags, pushes to `main`, creates the GitHub release and installs the version in the game.
+
+From a worktree (`.claude\worktrees\...`): the script stops if GitHub's `main` has work the worktree lacks, which happens when another session released in the meantime. Then run `git merge origin/main`, run the tests and release again; never release around it, or that work disappears from the guild's addon. Set `$env:NODE_PATH` to the main checkout's `tests\node_modules` first (a worktree has none). Afterwards the main checkout's own `main` is behind GitHub: `git pull --ff-only` there when it has no unsaved work.
 
 ## A new PC
 

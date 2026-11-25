@@ -566,6 +566,8 @@ function DW.ShowRecipes(who, which, search)
     if not window or type(who) ~= "table" or type(which) ~= "table" then
         return
     end
+    -- Laid out for the full window: the compact view becomes it first.
+    DW.ExpandWindow()
     if not view then
         CreateView(window)
     end

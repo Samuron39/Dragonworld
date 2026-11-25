@@ -795,6 +795,8 @@ function DW.OpenAltPicker()
     if not window or not DW.IsMember() then
         return
     end
+    -- Laid out for the full window: the compact view becomes it first.
+    DW.ExpandWindow()
     if not picker then
         CreatePicker(window)
     end
