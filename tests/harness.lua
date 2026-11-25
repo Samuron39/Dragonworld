@@ -2340,6 +2340,73 @@ check("bags are re-read on login; the bank numbers stay", me.bags[20] == nil and
     check("back to the bags from before", #BAGS[2] == 3 and me.bags[31] == nil)
 end)()
 
+-- ============ quest items the quest gives a shorter name, and timed items ============
+-- From the game: "Durnan's Scalding Mornbrew" (Duration: 4 min) was called
+-- probably safe to discard, because its quest only says "a Scalding Mornbrew".
+;(function()
+    ITEMS[32] = { name = "Mara's Kobold Candles",   quality = 1, classID = 12, bind = 4 }   -- the quest says "Kobold Candles"
+    ITEMS[33] = { name = "Shaman's Totemic Trials", quality = 1, classID = 12, bind = 4 }   -- only the quest's name says it
+    ITEMS[34] = { name = "Faded William Letter",    quality = 1, classID = 12, bind = 4 }   -- one word in common with a quest
+    ITEMS[35] = { name = "Path to William",         quality = 1, classID = 12, bind = 4 }   -- "to William" is in a quest
+    ITEMS[36] = { name = "Melting Ice Block",       quality = 1, classID = 12, bind = 4 }   -- timed, and no quest says it
+    for id = 32, 36 do table.insert(BAGS[2], id) end
+    local nb = ns.strings.nb
+
+    local lines = hover(32)
+    check("two words in a row from the name are enough: the quest that says them is named",
+        lines[2] == "Behold" and lines[3] == nb.RS_REASON_USED_BY:format("Kobold Candles") and #lines == 3, table.concat(lines, " / "))
+    lines = hover(33)
+    check("the name of the quest counts as quest text too",
+        lines[2] == "Behold" and lines[3] == nb.RS_REASON_USED_BY:format("Totemic Trials"), table.concat(lines, " / "))
+    check("one word in common with a quest is not enough", hover(34)[2] == "Kan trolig kastes", hover(34)[2])
+    check("small words like 'to' do not count as one of the two", hover(35)[2] == "Kan trolig kastes", hover(35)[2])
+
+    -- The time limit is only in the item's own tooltip ("Duration: 4 min").
+    check("a client without tooltip data judges a timed item as before", hover(36)[2] == "Kan trolig kastes")
+    TIMED_ITEMS = { [36] = "Duration: 4 min" }
+    ITEM_DURATION_DAYS, ITEM_DURATION_HOURS = "Duration: %d days", "Duration: %d hrs"
+    ITEM_DURATION_MIN, ITEM_DURATION_SEC = "Duration: %d min", "Duration: %d sec"
+    C_TooltipInfo = {
+        GetBagItem = function(bag, slot)
+            assert(type(bag) == "number" and type(slot) == "number", "GetBagItem(bag, slot)")
+            if TOOLTIP_INFO_THROWS then error("boom from GetBagItem") end
+            local id = BAGS[bag] and BAGS[bag][slot]
+            if not id then return nil end
+            local out = { { leftText = ITEMS[id].name }, { leftText = SECRET }, { leftText = "Quest Item" } }
+            if TIMED_ITEMS[id] then out[#out + 1] = { leftText = TIMED_ITEMS[id] } end
+            return { id = id, lines = out }
+        end,
+    }
+    clearChat()
+    lines = hover(36)
+    check("a quest item with a time limit is kept, even when no quest mentions it",
+        lines[2] == "Behold" and lines[3] == nb.RS_REASON_TIMED and #lines == 3 and chatText() == "", table.concat(lines, " / ") .. chatText())
+    TIMED_ITEMS[36] = "Duration: 30 sec"
+    check("...also in its last seconds", hover(36)[2] == "Behold")
+    check("items without a time limit are judged as before", hover(34)[2] == "Kan trolig kastes" and #hover(7) == 0)
+    TIMED_ITEMS[32] = "Duration: 4 min"
+    check("a timed item its quest mentions still names the quest", hover(32)[3] == nb.RS_REASON_USED_BY:format("Kobold Candles"))
+    clearChat()
+    kast("liste")
+    check("a timed item is left out of the discard list", has("Faded William Letter") and not has("Melting Ice Block") and not has("Kobold Candles"), chatText())
+    saved().marks[36] = "kast"
+    check("your own mark still decides", hover(36)[2] == "Kan kastes")
+    saved().marks[36] = nil
+
+    TOOLTIP_INFO_THROWS = true
+    clearChat()
+    check("if the game refuses to give the tooltip, the item is judged as before, without an error",
+        hover(36)[2] == "Kan trolig kastes" and chatText() == "", chatText())
+    TOOLTIP_INFO_THROWS = nil
+
+    -- Tidy up for the tests that follow.
+    for _ = 32, 36 do table.remove(BAGS[2]) end
+    for id = 32, 36 do ITEMS[id] = nil end
+    C_TooltipInfo, TIMED_ITEMS = nil, nil
+    clearChat()
+    check("back to the bags from before the timed items", #BAGS[2] == 3)
+end)()
+
 -- ================================= Keybinds =====================================
 kbChip.scripts.OnClick(kbChip)
 local kbPanel

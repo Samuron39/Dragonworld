@@ -6,14 +6,18 @@
 -- This is how it is decided, in this order:
 --   1. If you have marked the item yourself, that applies.
 --   2. If the item is mentioned in a quest in your quest log, it is still needed.
---   3. If it is a crafting material, it must not be thrown away. Which
+--      Two words in a row from its name are enough, because quests often
+--      shorten it.
+--   3. If it has a time limit ("Duration: 4 min"), it is kept: it is for
+--      something you are doing right now, and disappears by itself.
+--   4. If it is a crafting material, it must not be thrown away. Which
 --      professions use it is written by the Materialer module in the tooltip.
---   4. If it is not bound to you, it can be sold at the auction house or given
+--   5. If it is not bound to you, it can be sold at the auction house or given
 --      away, and must not be thrown away either.
---   5. If the item starts a quest you have already completed, it can be thrown away.
---   6. If it is a quest item that none of your quests mention, it can
+--   6. If the item starts a quest you have already completed, it can be thrown away.
+--   7. If it is a quest item that none of your quests mention, it can
 --      probably be thrown away.
--- The game does not say which quest an item belongs to, so point 6 is an
+-- The game does not say which quest an item belongs to, so point 7 is an
 -- educated guess. That is why it says "trolig" (probably).
 --
 -- All text is in Locales.lua (the names that start with RS_).
@@ -81,6 +85,9 @@ local function BuildQuestCache()
             local title = info.title or "?"
             local parts = {}
 
+            -- The name of the quest often names the item too.
+            AddText(parts, info.title)
+
             -- The quest objectives, e.g. "Kobold Candle: 3/8".
             local objectives = C_QuestLog.GetQuestObjectives(info.questID)
             if objectives then
@@ -116,6 +123,67 @@ local function BuildQuestCache()
     end
 
     return cache
+end
+
+-- Does the quest text mention the item? Both are in small letters. The whole
+-- name counts, and so do two words in a row from it: quests often shorten the
+-- name ("Durnan's Scalding Mornbrew" is "a Scalding Mornbrew" in the quest).
+-- Small words like "of" and "the" are not counted as one of the two.
+local function Mentions(text, name)
+    if text:find(name, 1, true) then
+        return true
+    end
+    local previous
+    for word in name:gmatch("%S+") do
+        if #word < 4 then
+            previous = nil
+        else
+            if previous and text:find(previous .. " " .. word, 1, true) then
+                return true
+            end
+            previous = word
+        end
+    end
+    return false
+end
+
+-- Does the item in this bag slot have a time limit? The game has no function
+-- that tells, so the item's own tooltip is read: the line is "Duration: 4 min"
+-- and starts like the game's texts for it (ITEM_DURATION_MIN is
+-- "Duration: %d min"), in whatever language the game is in.
+local durationStarts
+
+local function HasTimeLimit(bag, slot)
+    if not (C_TooltipInfo and C_TooltipInfo.GetBagItem) then
+        return false
+    end
+    if not durationStarts then
+        durationStarts = {}
+        for _, key in ipairs({ "ITEM_DURATION_DAYS", "ITEM_DURATION_HOURS", "ITEM_DURATION_MIN", "ITEM_DURATION_SEC" }) do
+            local text = _G[key]
+            local start = type(text) == "string" and text:match("^([^%%]+)%%")
+            if start and #start >= 4 then
+                durationStarts[start] = true
+            end
+        end
+    end
+
+    -- Without this the tooltip would lose its line if the game refuses.
+    local ok, data = pcall(C_TooltipInfo.GetBagItem, bag, slot)
+    if not ok or type(data) ~= "table" or type(data.lines) ~= "table" then
+        return false
+    end
+    for _, line in ipairs(data.lines) do
+        local text = type(line) == "table" and line.leftText
+        if type(text) == "string" and not IsSecret(text) then
+            for start in pairs(durationStarts) do
+                if text:find(start, 1, true) then
+                    return true
+                end
+            end
+        end
+    end
+    return false
 end
 
 local function FindInBags(itemID)
@@ -191,7 +259,7 @@ local function Evaluate(itemID, bag, slot)
     if not usedBy then
         local needle = name:lower()
         for _, quest in ipairs(questCache.quests) do
-            if quest.text:find(needle, 1, true) then
+            if Mentions(quest.text, needle) then
                 usedBy = quest.title
                 break
             end
@@ -199,6 +267,12 @@ local function Evaluate(itemID, bag, slot)
     end
     if usedBy then
         return STATUS_KEEP, L.RS_REASON_USED_BY:format(usedBy)
+    end
+
+    -- Something with a time limit is for a quest you are on right now, even
+    -- when the quest calls it something else.
+    if HasTimeLimit(bag, slot) then
+        return STATUS_KEEP, L.RS_REASON_TIMED
     end
 
     -- Crafting materials and things that can be sold are not thrown away.

@@ -11,11 +11,11 @@
 
 local ADDON_NAME, DW = ...
 
-DW.RELEASE = "0.27.0"
+DW.RELEASE = "0.27.1"
 
 -- When RELEASE was released (seconds since 1970, UTC). With automatic updates
 -- it is downloaded a few minutes after this. Written by release.ps1.
-DW.RELEASED_AT = 1795643232
+DW.RELEASED_AT = 1795647809
 
 -- The newest version that added or removed files or images. With an older
 -- one than this, /reload is not enough; the game must be fully restarted.
@@ -26,7 +26,7 @@ DW.RESTART_RELEASE = "0.27.0"
 -- window of those who still have an older version (it travels to them over
 -- the guild channel, so each text must stay within 220 bytes), and once in
 -- chat after updating. Written by release.ps1 from -News.
-DW.RELEASE_NEWS = { en = "New tab Tactics: draw a boss fight on a board with markers, arrows and text, and show it to your group, scene by scene. Our buttons in the game's own windows now open just that tab, next to the window.", nb = "Ny tab Taktikk: tegn en bosskamp på en tavle med markører, piler og tekst, og vis den til gruppen din, scene for scene. Knappene våre i spillets egne vinduer åpner nå bare den ene taben, ved siden av vinduet.", nl = "Nieuwe tab Tactiek: teken een bossgevecht op een bord met markeringen, pijlen en tekst, en laat het je groep zien, scène voor scène. Onze knoppen in de vensters van het spel openen nu alleen die tab, naast het venster.", de = "Neuer Tab Taktik: Zeichne einen Bosskampf mit Markierungen, Pfeilen und Text auf eine Tafel und zeige ihn deiner Gruppe, Szene für Szene. Unsere Buttons in den Spielfenstern öffnen nun nur diesen Tab neben dem Fenster.", da = "Ny tab Taktik: tegn en bosskamp på en tavle med markører, pile og tekst, og vis den til din gruppe, scene for scene. Vores knapper i spillets egne vinduer åbner nu kun den ene tab, ved siden af vinduet.", sv = "Ny tab Taktik: rita en bosstrid på en tavla med markörer, pilar och text, och visa den för din grupp, scen för scen. Våra knappar i spelets egna fönster öppnar nu bara den ena tabben, bredvid fönstret.", fr = "Nouvel onglet Tactiques : dessine un combat de boss avec marqueurs, flèches et texte, et montre-le à ton groupe, scène par scène. Nos boutons dans les fenêtres du jeu n'ouvrent plus que cet onglet, juste à côté." }
+DW.RELEASE_NEWS = { en = "Tidy Bag no longer calls a quest item safe to discard when its quest uses a shorter name for it, and quest items with a time limit are always kept.", nb = "Ryddesekk sier ikke lenger at en quest-gjenstand kan kastes når questen bruker et kortere navn på den, og quest-gjenstander med tidsfrist beholdes alltid.", nl = "Opruimtas zegt niet meer dat een quest-voorwerp weg kan als de quest er een kortere naam voor gebruikt, en quest-voorwerpen met een tijdslimiet worden altijd bewaard.", de = "Taschenputz hält einen Questgegenstand nicht mehr für wegwerfbar, wenn die Quest ihn kürzer nennt, und Questgegenstände mit Zeitlimit werden immer behalten.", da = "Oprydning siger ikke længere, at en quest-genstand kan smides ud, når questen bruger et kortere navn for den, og quest-genstande med tidsfrist beholdes altid.", sv = "Städsäck säger inte längre att ett questföremål kan kastas när questen använder ett kortare namn på det, och questföremål med tidsgräns behålls alltid.", fr = "Vide-sac ne dit plus qu'un objet de quête est à jeter quand la quête lui donne un nom plus court, et les objets de quête à durée limitée sont toujours gardés." }
 
 -- Set to true by the updater (Updater\update.ps1) on PCs where automatic
 -- updates are turned on. Then the addon knows that new versions download by

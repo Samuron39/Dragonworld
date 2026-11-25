@@ -963,6 +963,7 @@ strings.en = {
     RS_REASON_ACTIVE_STARTER = "Belongs to a quest you are working on.",
     RS_REASON_STARTS_DONE = "The quest this starts is already completed.",
     RS_REASON_STARTS_NEW = "Starts a quest you have not taken yet.",
+    RS_REASON_TIMED = "It has a time limit, so it is most likely for a quest you are on right now. It disappears by itself when the time runs out.",
     RS_REASON_UNSURE = "None of your quests mention this, but it is good quality and may be needed later.",
     RS_REASON_MAYBE = "None of your quests mention this.",
 
@@ -2180,6 +2181,7 @@ strings.nb = {
     RS_REASON_ACTIVE_STARTER = "Hører til en quest du holder på med.",
     RS_REASON_STARTS_DONE = "Questen denne starter er allerede fullført.",
     RS_REASON_STARTS_NEW = "Starter en quest du ikke har tatt ennå.",
+    RS_REASON_TIMED = "Den har tidsfrist, så den hører trolig til en quest du holder på med nå. Den forsvinner av seg selv når tiden er ute.",
     RS_REASON_UNSURE = "Ingen av questene dine nevner denne, men den er av god kvalitet og kan være til senere bruk.",
     RS_REASON_MAYBE = "Ingen av questene dine nevner denne.",
 
@@ -3390,6 +3392,7 @@ strings.nl = {
     RS_REASON_ACTIVE_STARTER = "Hoort bij een quest waar je mee bezig bent.",
     RS_REASON_STARTS_DONE = "De quest die dit start is al voltooid.",
     RS_REASON_STARTS_NEW = "Start een quest die je nog niet hebt aangenomen.",
+    RS_REASON_TIMED = "Dit heeft een tijdslimiet, dus het hoort waarschijnlijk bij een quest waar je nu mee bezig bent. Het verdwijnt vanzelf als de tijd om is.",
     RS_REASON_UNSURE = "Geen van je quests noemt dit, maar het is van goede kwaliteit en kan later nodig zijn.",
     RS_REASON_MAYBE = "Geen van je quests noemt dit.",
 
@@ -4612,6 +4615,7 @@ strings.de = {
     RS_REASON_ACTIVE_STARTER = "Gehört zu einer Quest, an der du gerade arbeitest.",
     RS_REASON_STARTS_DONE = "Die Quest, die das startet, ist schon abgeschlossen.",
     RS_REASON_STARTS_NEW = "Startet eine Quest, die du noch nicht angenommen hast.",
+    RS_REASON_TIMED = "Das hat ein Zeitlimit und gehört daher wahrscheinlich zu einer Quest, die du gerade machst. Es verschwindet von selbst, wenn die Zeit abgelaufen ist.",
     RS_REASON_UNSURE = "Keine deiner Quests erwähnt das, aber es hat gute Qualität und wird vielleicht später gebraucht.",
     RS_REASON_MAYBE = "Keine deiner Quests erwähnt das.",
 
@@ -5834,6 +5838,7 @@ strings.da = {
     RS_REASON_ACTIVE_STARTER = "Hører til en quest du er i gang med.",
     RS_REASON_STARTS_DONE = "Questen som denne starter, er allerede gennemført.",
     RS_REASON_STARTS_NEW = "Starter en quest du ikke har taget endnu.",
+    RS_REASON_TIMED = "Den har en tidsfrist, så den hører nok til en quest, du er i gang med nu. Den forsvinder af sig selv, når tiden er gået.",
     RS_REASON_UNSURE = "Ingen af dine quests nævner denne, men den er af god kvalitet, og du kan få brug for den senere.",
     RS_REASON_MAYBE = "Ingen af dine quests nævner denne.",
 
@@ -7056,6 +7061,7 @@ strings.sv = {
     RS_REASON_ACTIVE_STARTER = "Hör till en quest du håller på med.",
     RS_REASON_STARTS_DONE = "Questen som den här startar är redan klar.",
     RS_REASON_STARTS_NEW = "Startar en quest du inte har tagit än.",
+    RS_REASON_TIMED = "Den har en tidsgräns, så den hör troligen till en quest du håller på med nu. Den försvinner av sig själv när tiden är ute.",
     RS_REASON_UNSURE = "Ingen av dina quests nämner den här, men den har bra kvalitet och kan behövas senare.",
     RS_REASON_MAYBE = "Ingen av dina quests nämner den här.",
 
@@ -8278,6 +8284,7 @@ strings.fr = {
     RS_REASON_ACTIVE_STARTER = "Appartient à une quête que tu as en cours.",
     RS_REASON_STARTS_DONE = "La quête qu'il lance est déjà terminée.",
     RS_REASON_STARTS_NEW = "Lance une quête que tu n'as pas encore prise.",
+    RS_REASON_TIMED = "Sa durée est limitée, il sert donc sûrement à une quête que tu fais en ce moment. Il disparaît tout seul quand le temps est écoulé.",
     RS_REASON_UNSURE = "Aucune de tes quêtes n'en parle, mais il est de bonne qualité et pourrait servir plus tard.",
     RS_REASON_MAYBE = "Aucune de tes quêtes n'en parle.",
 
