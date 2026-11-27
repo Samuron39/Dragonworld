@@ -3443,9 +3443,18 @@ DW.RegisterHomeSection({
             if (entry.time or 0) > since and not (entry.mine or (me and entry.who == me))
                 and not (ctx.hasRosterBaseline and (entry.kind == "L" or entry.kind == "J")) then
                 local member = entry.who and ctx.Member(entry.who)
+                -- A guild first is about everyone in the kill: Home's green
+                -- dot shows when one of them is online.
+                local members
+                if entry.kind == "F" then
+                    members = {}
+                    for _, name in ipairs(type(entry.names) == "table" and entry.names or {}) do
+                        members[#members + 1] = ctx.Member(Text(name))
+                    end
+                end
                 lines[#lines + 1] = {
                     text = RowText(entry), icon = EntryIcon(entry), when = entry.time, changed = true,
-                    member = member or nil, tab = MODULE_ID,
+                    member = member or nil, members = members, tab = MODULE_ID,
                     onClick = function()
                         DW.OpenModule(MODULE_ID)
                     end,

@@ -539,7 +539,10 @@ end
 -- A line is { text (required), icon, when (server time, shown as time ago),
 -- changed (true: counts as new and goes in the chat summary), member (a
 -- roster row: a click opens the card), onClick (when there is no member),
--- tab (module id, for the tooltip), tip, muted, button = { text, onClick } }.
+-- tab (module id, for the tooltip), tip, muted, button = { text, onClick },
+-- members (roster rows, when the line is about several people), noDot }.
+-- Home puts a green dot before a line when its member, or one of its
+-- members, is online now; noDot = true leaves it out.
 DW.HOME_SECTIONS = {}
 
 function DW.RegisterHomeSection(section)

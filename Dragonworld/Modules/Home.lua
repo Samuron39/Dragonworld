@@ -4,7 +4,9 @@
 -- played: announcements, a new message of the day, events, polls,
 -- milestones, level-ups, members who joined or left, suggestions, the guild
 -- bank's gold, and who is online now. Every line can be clicked: a member
--- opens the member card, anything else opens the right tab.
+-- opens the member card, anything else opens the right tab. A green dot
+-- before a line means someone it is about is online now, so a Gratz! or a
+-- whisper reaches them.
 --
 -- The sections come from the modules themselves (DW.RegisterHomeSection in
 -- Core.lua): announcements in Kunngjoringer.lua, the message of the day in
@@ -134,6 +136,49 @@ local function Member(key)
     end
     local nameKey = key:match("^name:(.+)$")
     return byName[nameKey or DW.NameKey(key)]
+end
+
+-- The roster row a member's player is on right now: the member's own row, or
+-- the linked character (Alts.lua) they are playing. nil when they are
+-- offline, and for yourself.
+local function OnlineRow(member)
+    if type(member) ~= "table" then
+        return nil
+    end
+    local row = member.online == true and member or nil
+    if not row then
+        local group = DW.AltGroupOf and DW.AltGroupOf(member)
+        row = group and group.online and group.recent or nil
+    end
+    if not row or IsMe(row) then
+        return nil
+    end
+    return row
+end
+
+-- What the green dot's tooltip says when someone the line is about is online
+-- now, or nil when nobody is (no dot). A line names its people in member (one
+-- roster row) or members (several).
+local function OnlineText(line)
+    if line.noDot then
+        return nil
+    end
+    if type(line.members) == "table" then
+        local names = {}
+        for _, member in ipairs(line.members) do
+            if OnlineRow(member) then
+                names[#names + 1] = tostring(member.name or "?")
+            end
+        end
+        return #names > 0 and L.HOME_ONLINE_WHO:format(table.concat(names, ", ")) or nil
+    end
+    local row = OnlineRow(line.member)
+    if not row then
+        return nil
+    elseif row == line.member then
+        return L.HOME_SEC_ONLINE
+    end
+    return L.MC_ONLINE_AS:format(tostring(row.name or "?"))
 end
 
 local function Baseline()
@@ -290,7 +335,8 @@ local function OnlineLines(ctx)
             else
                 text = L.HOME_ONLINE_ROW_NOZONE:format(name, member.level)
             end
-            lines[#lines + 1] = { text = icon .. text, member = member, changed = false, name = member.name }
+            -- No dot here: everyone in this section is online.
+            lines[#lines + 1] = { text = icon .. text, member = member, changed = false, name = member.name, noDot = true }
         end
     end
     table.sort(lines, function(a, b)
@@ -375,9 +421,15 @@ local function Tooltip(row)
             text = L.HOME_TIP_TAB:format(DW.ModuleTitle(DW.modules[line.tab]))
         end
     end
-    if text and text ~= "" then
+    local hasText = text ~= nil and text ~= ""
+    if hasText or row.onlineText then
         GameTooltip:SetOwner(row, "ANCHOR_RIGHT")
-        GameTooltip:AddLine(text, 1, 1, 1, true)
+        if row.onlineText then
+            GameTooltip:AddLine(row.onlineText, 0.25, 1.00, 0.25, true)
+        end
+        if hasText then
+            GameTooltip:AddLine(text, 1, 1, 1, true)
+        end
         GameTooltip:Show()
     end
 end
@@ -412,6 +464,14 @@ local function GetRow(index)
     row.hover:Hide()
 
     row.icon = row:CreateTexture(nil, "ARTWORK")
+
+    -- The green dot, in the margin before the line: someone it is about is
+    -- online now.
+    row.dot = row:CreateTexture(nil, "ARTWORK")
+    row.dot:SetSize(12, 12)
+    row.dot:SetPoint("LEFT", 6, 0)
+    row.dot:SetTexture("Interface\\FriendsFrame\\StatusIcon-Online")
+    row.dot:Hide()
 
     row.button = DW.CreateButton(row, 74, 20, "gold")
     row.button:SetPoint("RIGHT", -4, 0)
@@ -458,6 +518,8 @@ local function FillRow(index, y, kind, data)
     row:ClearAllPoints()
     row:SetPoint("TOPLEFT", 0, -y)
     row.kind, row.line, row.more, row.section = kind, nil, nil, nil
+    row.onlineText = nil
+    row.dot:Hide()
     row.hover:Hide()
     row.icon:ClearAllPoints()
     row.text:ClearAllPoints()
@@ -487,6 +549,8 @@ local function FillRow(index, y, kind, data)
     elseif kind == "line" then
         local line = data
         row.line = line
+        row.onlineText = OnlineText(line)
+        row.dot:SetShown(row.onlineText ~= nil)
         if line.icon then
             row.icon:SetSize(16, 16)
             row.icon:SetPoint("LEFT", 22, 0)

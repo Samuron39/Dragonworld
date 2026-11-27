@@ -14903,8 +14903,45 @@ end)()
         and fridaRow.button.label.text == N.WEL_BUTTON and eiraRow.text.text == N.HOME_LEFT:format(ns.ColoredName("Eira", "HUNTER"))
         and eiraRow.line.muted and not eiraRow.clickable and eiraRow.text.color[1] == 0.6, fridaRow and fridaRow.text.text)
     fridaRow:Fire("OnEnter")
-    check("home: ...her tooltip shows rank and note", GameTooltip.lines[1] == "Initiate Ny", GameTooltip.lines[1])
+    check("home: ...her tooltip says she is online (in green), then rank and note",
+        GameTooltip.lines[1] == N.HOME_SEC_ONLINE and GameTooltip.colors[1][2] == 1 and GameTooltip.colors[1][1] == 0.25
+        and GameTooltip.lines[2] == "Initiate Ny" and #GameTooltip.lines == 2, GameTooltip.lines[1])
     fridaRow:Fire("OnLeave")
+    do
+        -- The green dot: someone the line is about is online now.
+        local function mile() return lineRow("Hjemmeutfordring", "milestones") end
+        check("home: a green dot before Frida, who is online; none before Borin (offline), his milestone, Eira (left) or a heading",
+            fridaRow.dot:IsShown() and fridaRow.dot.texture == "Interface\\FriendsFrame\\StatusIcon-Online"
+            and not borinRow.dot:IsShown() and not mile().dot:IsShown() and not eiraRow.dot:IsShown()
+            and not header("levels").dot:IsShown() and not header("members").dot:IsShown())
+        check("home: ...and none under Online now, where everyone is online",
+            lineRow("Altine", "online") ~= nil and not lineRow("Altine", "online").dot:IsShown()
+            and lineRow("Frida", "online") ~= nil and not lineRow("Frida", "online").dot:IsShown())
+        borinRow:Fire("OnEnter")
+        check("home: ...an offline member's tooltip is as before", GameTooltip.lines[1] == N.HOME_TIP_CARD and #GameTooltip.lines == 1)
+        borinRow:Fire("OnLeave")
+        ROSTER[3][9] = true                               -- Borin logs in
+        fire("GUILD_ROSTER_UPDATE")
+        flush()
+        flush()
+        refresh()
+        borinRow = sectionRows("levels")[1]
+        borinRow:Fire("OnEnter")
+        check("home: Borin logs in: the dot comes on his level-up and on his milestone, and the tooltip says online first",
+            borinRow.dot:IsShown() and mile().dot:IsShown() and GameTooltip.lines[1] == N.HOME_SEC_ONLINE
+            and GameTooltip.lines[2] == N.HOME_TIP_CARD, GameTooltip.lines[1])
+        borinRow:Fire("OnLeave")
+        ROSTER[3][9] = false                              -- and out again
+        fire("GUILD_ROSTER_UPDATE")
+        flush()
+        flush()
+        refresh()
+        check("home: ...and goes away when he logs out", not sectionRows("levels")[1].dot:IsShown() and not mile().dot:IsShown()
+            and sectionRows("members")[1].dot:IsShown())
+        DrainBanners()
+        drainWire()
+        borinRow = sectionRows("levels")[1]
+    end
     check("home: ...and Frida's join is not repeated under Milestones", lineRow("Frida", "milestones") == nil and #sectionRows("milestones") == 1
         and lineRow("Hjemmeutfordring", "milestones") ~= nil)
     local eventRow = sectionRows("events")[1]
@@ -15153,6 +15190,11 @@ end)()
     check("home: Altine's guild first is under Milestones with the guild-first text",
         firstRow ~= nil and firstRow.text.text == N.ACH_FIRST_ROW:format(ns.ColoredName("Altine", "MAGE") .. ", " .. ns.ColoredName("Borin", "WARRIOR")
             .. ", " .. ns.ColoredName("Dagny", "PRIEST"), "|cffffd100Aku'mai|r", "Blackfathom Deeps"), firstRow and firstRow.text.text)
+    firstRow:Fire("OnEnter")
+    check("home: ...with the green dot, as Altine of the kill is online, and the tooltip says who",
+        firstRow.dot:IsShown() and GameTooltip.lines[1] == N.HOME_ONLINE_WHO:format("Altine")
+        and GameTooltip.lines[2] == N.HOME_TIP_TAB:format(ns.ModuleTitle(ns.modules.achievements)), GameTooltip.lines[1])
+    firstRow:Fire("OnLeave")
     -- Altine and Dagny linked as one player, both online.
     for _, name in ipairs({ "Altine", "Dagny" }) do
         fire("CHAT_MSG_ADDON", "DragonworldPf", ("K\tPlayer-1-%s\t%d\tS\t1-Altine,1-Dagny"):format(name, SERVER_NOW), "GUILD", name .. "-Stormrage")
@@ -15176,6 +15218,42 @@ end)()
         mainName ~= nil and altRow ~= nil and mainRow ~= nil
         and altRow.text.text:find(N.HOME_ALT_OF:format(ns.ColoredName(altName, altName == "Dagny" and "PRIEST" or "MAGE"), mainName), 1, true) ~= nil
         and mainRow.text.text:find("(alt", 1, true) == nil, altRow and altRow.text.text)
+    do
+        -- The green dot counts a player's linked characters: Dagny is offline, Altine (the same player) is on.
+        ROSTER[5][9] = false
+        fire("GUILD_ROSTER_UPDATE")
+        flush()
+        flush()
+        ns.RegisterHomeSection({ id = "zzdot", order = 97, titleKey = "HOME_TITLE", Lines = function(ctx)
+            return {
+                { text = "dot-dagny", member = ctx.Member("Player-1-Dagny") },
+                { text = "dot-me", member = ctx.Member("Player-1-Tester") },
+                { text = "dot-cedric", member = ctx.Member("name:cedric") },
+                { text = "dot-off", member = ctx.Member("Player-1-Altine"), noDot = true },
+                { text = "dot-two", members = { ctx.Member("name:cedric"), ctx.Member("Player-1-Dagny"), ctx.Member("Player-1-Altine") } },
+            }
+        end })
+        reopen()
+        local dagny, me, cedric, off, two = lineRow("dot-dagny"), lineRow("dot-me"), lineRow("dot-cedric"), lineRow("dot-off"), lineRow("dot-two")
+        dagny:Fire("OnEnter")
+        check("home: a member who is online on a linked character gets the dot, and the tooltip says as whom",
+            dagny.dot:IsShown() and GameTooltip.lines[1] == N.MC_ONLINE_AS:format("Altine") and GameTooltip.lines[2] == N.HOME_TIP_CARD,
+            GameTooltip.lines[1])
+        dagny:Fire("OnLeave")
+        check("home: no dot for yourself, for someone offline, or on a line that turns it off",
+            me ~= nil and not me.dot:IsShown() and cedric ~= nil and not cedric.dot:IsShown() and off ~= nil and not off.dot:IsShown())
+        check("home: a line about several people has the dot when one of them is online, without a tooltip of its own",
+            two.dot:IsShown() and two.onlineText == N.HOME_ONLINE_WHO:format("Dagny, Altine") and not two.clickable, two.onlineText)
+        for index = #ns.HOME_SECTIONS, 1, -1 do
+            if ns.HOME_SECTIONS[index].id == "zzdot" then table.remove(ns.HOME_SECTIONS, index) end
+        end
+        ROSTER[5][9] = true
+        fire("GUILD_ROSTER_UPDATE")
+        flush()
+        flush()
+        drainWire()
+        reopen()
+    end
 
     -- 15. The message of the day goes through DW.GuildMOTD (C_GuildInfo.GetMOTD first).
     C_GuildInfo.GetMOTD = function() return "Fra GetMOTD" end

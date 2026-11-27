@@ -11,11 +11,11 @@
 
 local ADDON_NAME, DW = ...
 
-DW.RELEASE = "0.27.1"
+DW.RELEASE = "0.27.2"
 
 -- When RELEASE was released (seconds since 1970, UTC). With automatic updates
 -- it is downloaded a few minutes after this. Written by release.ps1.
-DW.RELEASED_AT = 1795647809
+DW.RELEASED_AT = 1795811715
 
 -- The newest version that added or removed files or images. With an older
 -- one than this, /reload is not enough; the game must be fully restarted.
@@ -26,7 +26,7 @@ DW.RESTART_RELEASE = "0.27.0"
 -- window of those who still have an older version (it travels to them over
 -- the guild channel, so each text must stay within 220 bytes), and once in
 -- chat after updating. Written by release.ps1 from -News.
-DW.RELEASE_NEWS = { en = "Tidy Bag no longer calls a quest item safe to discard when its quest uses a shorter name for it, and quest items with a time limit are always kept.", nb = "Ryddesekk sier ikke lenger at en quest-gjenstand kan kastes når questen bruker et kortere navn på den, og quest-gjenstander med tidsfrist beholdes alltid.", nl = "Opruimtas zegt niet meer dat een quest-voorwerp weg kan als de quest er een kortere naam voor gebruikt, en quest-voorwerpen met een tijdslimiet worden altijd bewaard.", de = "Taschenputz hält einen Questgegenstand nicht mehr für wegwerfbar, wenn die Quest ihn kürzer nennt, und Questgegenstände mit Zeitlimit werden immer behalten.", da = "Oprydning siger ikke længere, at en quest-genstand kan smides ud, når questen bruger et kortere navn for den, og quest-genstande med tidsfrist beholdes altid.", sv = "Städsäck säger inte längre att ett questföremål kan kastas när questen använder ett kortare namn på det, och questföremål med tidsgräns behålls alltid.", fr = "Vide-sac ne dit plus qu'un objet de quête est à jeter quand la quête lui donne un nom plus court, et les objets de quête à durée limitée sont toujours gardés." }
+DW.RELEASE_NEWS = { en = "Home: a green dot before a line means that player is online now, so your Gratz! reaches them. Hover the line to see who, also when they are on another of their characters.", nb = "Hjem: en grønn prikk foran en linje betyr at spilleren er pålogget nå, så Gratz! når fram. Hold musepekeren over linjen for å se hvem, også når de er på en annen av karakterene sine.", nl = "Start: een groene stip voor een regel betekent dat die speler nu online is, dus je Gratz! komt aan. Houd de muis op de regel om te zien wie, ook als die op een ander personage speelt.", de = "Übersicht: Ein grüner Punkt vor einer Zeile zeigt, dass der Spieler gerade online ist, dein Gratz! kommt also an. Mit der Maus über der Zeile siehst du, wer, auch auf einem anderen Charakter.", da = "Hjem: en grøn prik foran en linje betyder, at spilleren er online nu, så dit Gratz! når frem. Hold musen over linjen for at se hvem, også når de er på en anden af deres karakterer.", sv = "Hem: en grön prick framför en rad betyder att spelaren är online nu, så ditt Gratz! når fram. Håll musen över raden för att se vem, även när de är på en annan av sina karaktärer.", fr = "Accueil : un point vert devant une ligne indique que le joueur est en ligne, votre Bravo ! lui parviendra. Survolez la ligne pour voir qui, même s'il joue un autre de ses personnages." }
 
 -- Set to true by the updater (Updater\update.ps1) on PCs where automatic
 -- updates are turned on. Then the addon knows that new versions download by
